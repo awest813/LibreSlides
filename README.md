@@ -2,11 +2,11 @@
 ![Static site](https://img.shields.io/badge/hosting-any%20static%20host-brightgreen.svg)
 ![Offline](https://img.shields.io/badge/works-offline-blue.svg)
 
-# LibreWord
+# LibreSlides
 
-> A fast, offline-first word processor that runs entirely in your browser — no server, no account, your documents stay on your device.
+> A presentation editor in the spirit of Google Slides and PowerPoint that runs entirely in your browser. Install it as an app and it works offline. No server, no account; your presentations stay on your device.
 
-LibreWord looks and works like a desktop word processor: a ribbon, real pages with margins, headers and footers, styles, tables, a table of contents and `.docx` export that opens cleanly in Microsoft Word, Google Docs, LibreOffice and Pages. The whole app is a static site — build it once and host the `dist/` folder anywhere.
+LibreSlides gives you a slide list, a canvas with drag/resize/rotate handles and snapping guides, themes, layouts, transitions, animations, speaker notes and a full-screen slideshow with presenter view. It opens and saves PowerPoint (`.pptx`) files. The whole app is a static site: build it once and host the `dist/` folder anywhere.
 
 ---
 
@@ -14,48 +14,21 @@ LibreWord looks and works like a desktop word processor: a ribbon, real pages wi
 
 | Area | What you get |
 |---|---|
-| **Pages** | True print layout: text, list items and table rows flow across Letter, Legal, A4, A5 or Executive pages with Word's margin presets, portrait/landscape, hard page breaks, headers, footers and page numbers |
-| **Ribbon** | Home, Insert, Layout, References, Review, View and a contextual **Table** tab, plus a **File** backstage (New, Open, Info, Save a Copy, Print) |
-| **Text** | Font family & size, grow/shrink, bold/italic/underline/strike, sub/superscript, font color, highlighter, change case, clear formatting, format painter |
-| **Paragraphs** | Styles gallery (Normal, No Spacing, Title, Subtitle, Heading 1–6, Quote, Intense Quote, Caption), alignment, line & paragraph spacing, indents, first-line/hanging indents, bullets, numbering, checklists |
-| **Insert** | Tables (grid picker, merge/split, header rows, shading, resizable columns), pictures (file, paste, drag & drop, URL; resizable), links, symbols, date & time, horizontal lines, code blocks, live **table of contents** with page numbers |
-| **Review & navigation** | Find & replace (match case, whole word, regex), navigation pane (outline + search results), word count, browser spell check, read aloud, go to page |
-| **View** | Print/Web layout, ruler with draggable margins and indent, zoom 10–500 % (Ctrl + wheel, one page, page width), formatting marks, focus mode, dark mode, full screen |
-| **Files** | Open, save back to and export **Word** (.docx), **OpenDocument** (.odt, the LibreOffice format), **Rich Text** (.rtf), **Markdown**, **HTML** and **plain text**; also open **Word 97–2003** (.doc), templates (.dotx, .ott), flat .fodt and macro-enabled .docm as copies, and export **PDF** (vector, via the print dialog). Word and OpenDocument keep styles, fonts, colours, alignment, spacing, lists, tables with merged cells and widths, pictures, links, page setup, headers/footers, comments and the table of contents. Text files are read as UTF-8, UTF-16 or Windows-1252, whichever they are. Drop a file on the window to open it |
-| **Paste** | Copy from Google Docs, Word (desktop and web), LibreOffice or a web page and keep headings, named styles (Title, Quote…), bold/italic/colours/highlights/fonts, alignment, tabs, nested lists, checklists, tables with widths and shading, page breaks and pictures (pictures from the web are copied into the document; Word's are taken from its RTF). Pasting into an empty line takes the pasted paragraph's style, as in Word. Copying out of LibreWord into Word or Docs keeps Title/Quote styles, checklists and page breaks. **Ctrl+Shift+V** pastes text only |
-| **Review** | Comments with replies, resolve and delete, exported as native Word comments; version history with restore; backup/restore of all documents |
-| **Save to your files** | In Chrome and Edge, a document opened from your computer stays linked to its file: **Save** (Ctrl+S) writes your changes back in the same format (.docx, .odt, .rtf, .md, .html, .txt; a .doc is saved on as .docx or .odt), **Save As** (Ctrl+Shift+S) saves to a new file and keeps saving there. A title-bar indicator shows unsaved changes; LibreWord asks before closing with unsaved changes, warns if another app changed the file, and notes what RTF, Markdown, HTML or text can't keep. Other browsers download a copy instead |
-| **Storage** | Auto-save to IndexedDB, document list with search, rename, duplicate and delete; if another tab saves the same document, autosave pauses so neither tab silently overwrites the other; documents from LibreWord v1 are migrated automatically |
-| **PWA** | Installable, works fully offline after the first visit, offers new versions with an *Update* button (saving first), and registers as a handler for Word, OpenDocument, RTF, Markdown, HTML and text files |
+| **Slides** | Slide list with thumbnails, multi-select, drag-to-reorder, duplicate, skip, cut/copy/paste; 8 layouts (Title, Title and body, Section, Two columns, Title only, Big number, Quote, Blank); "Apply layout" keeps your text |
+| **Canvas** | Select, move, resize and rotate with handles; marquee and Shift-click selection; smart guides that snap to the slide and other objects (hold Alt to move freely); arrow-key nudging; zoom (fit, 50–200 %, Ctrl + wheel) |
+| **Objects** | Text boxes that grow as you type, 24 shapes (with text inside), lines and arrows, pictures (insert, paste, drag & drop, replace, crop-to-fill, rounded corners, flip, alt text), tables (insert rows/columns, header row, banded rows) |
+| **Text** | Fonts (six bundled for offline use plus common system fonts), size, bold/italic/underline/strikethrough, colour, highlight, alignment, vertical alignment, line and paragraph spacing, bulleted and numbered lists with indent levels, clear formatting. Formatting applies to selected text while typing, or to whole boxes when they're selected |
+| **Design** | 9 themes with matching fonts, colours and graphics; theme colours follow theme changes; solid, gradient or picture backgrounds per slide or for all; 16:9, 16:10 and 4:3 sizes |
+| **Arrange** | Bring forward/backward, to front/back, align and distribute, rotate and flip, lock position, exact size/position/rotation in Format options |
+| **Motion** | 6 slide transitions (fade, slide, push, cover, zoom, flip) and 8 entrance animations (appear, fade, fly in, zoom, wipe, spin) on click, with or after the previous one; preview in the editor |
+| **Present** | Full-screen slideshow with keyboard, click and on-screen controls; black/white screen, jump to slide, speaker notes overlay. **Presenter view** opens the audience in a second window (drag it to the projector) and shows the current and next slide, notes and a timer here |
+| **Files** | Open **PowerPoint** `.pptx` and **LibreSlides** `.lslides` files from your device (text and formatting, shapes, pictures, lines, tables, backgrounds, notes, transitions, skipped slides; positions inherited from layouts/masters are resolved). In Chrome and Edge a presentation opened from a file stays linked to it: **Save** (Ctrl+S) writes back to the same file in its format, **Save as** (Ctrl+Shift+S) saves to a new file and keeps saving there. A title-bar indicator shows unsaved changes, and LibreSlides asks before closing with changes not yet saved to the file and warns if another app changed it. Other browsers download the file. You can also download a copy as `.pptx`, **PDF** (vector, via the print dialog) or `.lslides`, and drop files on the window to open them |
+| **Storage** | Autosaved to IndexedDB, with a list of presentations (search, rename, copy, delete), backup/restore of everything, undo/redo, and protection against two tabs overwriting each other |
+| **App** | Installable PWA (Install button on the start screen, or Help › Install) that works fully offline after the first visit, offers new versions with an *Update* button, has a "New presentation" shortcut on its icon, and registers as a handler for `.pptx` and `.lslides` files ("Open with LibreSlides") |
 
-Keyboard shortcuts follow Word (Ctrl+B/I/U, Ctrl+L/E/R/J, Ctrl+Enter, Ctrl+K, Ctrl+]/[, Shift+F3, Ctrl+Alt+1…6, Ctrl+F/H, Ctrl+S, Ctrl+P…), and **F6** moves between the document and the ribbon. Press **Ctrl+/** in the editor for the full list.
+Keyboard shortcuts follow Slides and PowerPoint (Ctrl+M new slide, Ctrl+D duplicate, Ctrl+Enter / F5 present, Ctrl+Shift+> bigger text, Ctrl+↑/↓ to reorder…). Press **Ctrl+/** in the editor for the full list.
 
-## Using LibreWord on a Chromebook
-
-LibreWord runs in Chrome, so it works on any Chromebook with nothing to set up beyond installing it from wherever it is hosted (for example the GitHub Pages site this repository deploys).
-
-1. **Install it.** Open LibreWord in Chrome and click **Install app** in the top-right corner of the start screen (or the install icon at the right of the address bar, or ⋮ → *Cast, save and share* → *Install page as app*). It gets its own window and a Launcher icon, and from then on it works fully offline.
-2. **Open documents from the Files app.** Right-click a `.docx`, `.doc`, `.odt`, `.rtf`, `.txt`, `.md` or `.html` file → **Open with** → **LibreWord**. To open `.docx` files with LibreWord every time, choose *Open with* → *Change default…*. This works for files in *My files*, *Downloads*, Google Drive, USB drives and the Linux files folder. You can also click **Open from device…** in LibreWord or press **Ctrl+O**, or drag a file onto the window.
-3. **Save back to the same file.** A document opened this way stays linked to its file: **Ctrl+S** writes your changes back to it, in its own format. The first save after restarting may ask you to allow LibreWord to edit the file. **Ctrl+Shift+S** saves somewhere new, and new documents ask where to save the first time you use Save As.
-4. **Nothing is lost if you forget.** Every change is also kept inside LibreWord automatically, and LibreWord asks before closing a document with changes not yet saved to its file. Use **File → Info** to see where a document is saved.
-
-Tips:
-
-- Chromebook keyboards have no F1–F12 keys. For shortcuts like **Shift+F3** (change case) or **F7** (spelling), hold **Search** (or **Launcher**) and press the matching top-row key, or turn on *Treat top-row keys as function keys* in the keyboard settings. Press **Ctrl+/** in LibreWord for the full list.
-- Documents use Calibri by default; ChromeOS substitutes Carlito, which has the same letter widths, so line and page breaks closely match what Word shows.
-- Documents kept inside LibreWord live in Chrome's storage for the app. Clearing browsing data for the site (or ticking *Also clear data* when removing the app) deletes them, so save the ones you care about to files, or use **Back Up All Documents** (the ⋯ menu next to *Recent*) now and then.
-
-## Performance
-
-Pagination is incremental: after an edit LibreWord re-measures only from the changed block and stops as soon as the layout converges with the previous pass. On a 100-page document (`npm run bench`):
-
-| | |
-|---|---|
-| Load + full pagination | ~220 ms |
-| Pagination work per keystroke | ~0.3 ms |
-| Total transaction cost per keystroke | ~3 ms |
-
-Heavy code is loaded on demand: the `.docx` writer, `.docx` reader, Markdown parser and dialogs are separate chunks fetched only when used.
+Not supported yet: charts, SmartArt, video and audio, grouping, comments and real-time collaboration. When opening a `.pptx`, those parts are left out; animations from PowerPoint files aren't imported, and LibreSlides' animations aren't written to `.pptx`.
 
 ## Getting started
 
@@ -66,76 +39,67 @@ npm install
 npm run dev        # development server with hot reload
 npm run build      # production build in dist/
 npm run preview    # serve the production build locally
+npm test           # unit tests (Vitest)
 ```
+
+### Installing and using it offline
+
+Open the hosted app (or `npm run build && npm run preview`) and click **Install app** on the start screen, or **Help › Install LibreSlides** in the editor. Where the browser can install directly (Chrome, Edge, Android) this shows its install dialog; elsewhere it explains the steps (Safari on macOS: *File › Add to Dock*; iOS: *Share › Add to Home Screen*; Firefox on computers can't install web apps but still works offline in a tab). Installed, LibreSlides gets its own window and launcher icon, and from then on works without a connection: the app, its fonts and PowerPoint import/export are all cached on the first visit.
+
+### Saving to files on your device
+
+Every change is autosaved inside LibreSlides (IndexedDB), so nothing is lost if you don't save to a file. To work with files:
+
+- **Open** (Ctrl+O, the start screen, drag & drop, or *Open with → LibreSlides* in your file manager once installed) a `.pptx` or `.lslides` file.
+- In Chrome, Edge and other Chromium browsers the presentation stays **linked to that file**: **Save** (Ctrl+S, or the file name in the title bar) writes your changes back to it in its own format. After a restart the browser may ask once to allow LibreSlides to edit the file. Opening the same file again goes back to the same presentation.
+- **Save as** (Ctrl+Shift+S) saves to a new `.pptx` or `.lslides` file and links to it from then on.
+- `.lslides` keeps everything. `.pptx` opens in PowerPoint, Keynote, Google Slides and LibreOffice, but doesn't keep LibreSlides animations or theme switching.
+- Firefox and Safari can't write to files directly, so Save downloads a file instead.
+
+Presentations kept inside LibreSlides live in the browser's storage for the app. Clearing site data deletes them, so save the ones you care about to files, or use **Back up all presentations** (the ⋯ menu next to *Recent presentations*) now and then.
 
 ### Deploying
 
-`dist/` is plain static files with relative URLs, so it works from any host or sub-path — GitHub Pages, Netlify, Cloudflare Pages, S3, `python -m http.server`, or a USB stick.
+`dist/` is plain static files with relative URLs, so it works from any host or sub-path: GitHub Pages, Netlify, Cloudflare Pages, S3, `python -m http.server` or a USB stick. The service worker needs HTTPS (or `localhost`) to make the app installable and offline.
 
 The included workflow (`.github/workflows/deploy.yml`) runs the tests and publishes to **GitHub Pages** on every push to `main`. Enable it under *Settings → Pages → Build and deployment → Source: GitHub Actions*.
-
-## Testing
-
-```bash
-npm run test:all                     # everything below except the benchmark, in order (builds first)
-npm test                             # unit tests (Vitest): converters, file formats, paste, editing commands
-npm run test:watch                   # unit tests, re-run on change
-npm run build && npm run test:e2e    # end-to-end tests in Chromium
-npm run build && npm run test:files  # opening and saving files on the device (.docx, .odt, .rtf, .doc, text)
-npm run build && npm run test:a11y   # axe-core accessibility audit of every screen and ribbon menu
-npm run build && npm run bench       # editing benchmark on a large document
-```
-
-The end-to-end suite drives the real app: typing and formatting, the ribbon, undo/redo, pagination invariants (every rendered line must fall inside a page's content area, before and after edits), find & replace, persistence across reloads, the File backstage, conflicting saves from two tabs, export (the `.docx` is parsed back to verify it), import, paste from other apps and page setup. It uses `playwright-core`; set `CHROME_PATH` to point at a Chromium binary, or run `npx playwright-core install --no-shell chromium` first.
-
-Debugging a failing end-to-end test:
-
-```bash
-node tests/e2e/smoke.mjs --grep "paste"      # only tests whose name contains "paste" (after opening a blank document)
-node tests/e2e/files.mjs --bail              # stop at the first failure
-HEADED=1 SLOWMO=250 node tests/e2e/smoke.mjs --grep "comments"   # watch it in a visible browser
-npx vitest run tests/unit/paste.test.js      # one unit test file
-```
-
-A page error or console error fails the test it happens in. Each failing test leaves a screenshot, the page HTML and the document JSON in `test-results/<suite>/`; CI uploads that folder as an artifact. Tests that need LibreOffice (checking that it opens LibreWord's `.odt` and `.rtf`) run only when `soffice` is installed. In the app, `window.libreword` holds the open editor for poking around in devtools, and **File › Info › Copy details for a bug report** copies version, browser, storage and recent errors (no document text).
 
 ## Project structure
 
 ```
 index.html                 App shell
 src/
-  main.js                  Router (#/ start screen, #/doc/:id editor), file drop, PWA
+  main.js                  Router (#/ start, #/p/:id editor, #/show/:id audience window), file opening, PWA
+  model/
+    deck.js                Presentation model: slides, elements, layouts, pictures
+    themes.js              Themes and theme colours
+    shapes.js              Shape outlines (named after PowerPoint's preset shapes)
+    templates.js           Starter presentations
+    fonts.js               Font list
+  render/render.js         Draws slides to DOM — used by the editor, thumbnails, slideshow and print
   editor/
-    create-editor.js       TipTap/ProseMirror schema and extensions
-    pagination.js          Page layout engine (spacer decorations, incremental)
-    paragraph-format.js    Line/paragraph spacing, indents, named paragraph styles
-    page-break.js, toc.js  Page break node, live table of contents
-    search.js              Find & replace with highlighting
-    paste-formatting.js    Paste from other apps (pictures, empty-line styles) and copy out to them
-    word-commands.js       Change case, grow/shrink font, Word shortcuts
-    page-setup.js          Paper sizes, margins, units
+    editor-screen.js       The editor: state, undo/redo, autosave, commands, shortcuts
+    canvas.js              Selection, drag/resize/rotate, snapping, drawing, in-place text editing
+    filmstrip.js           Slide list
+    toolbar.js             Menu bar and contextual toolbar
+    sidepanel.js           Design, transition, animation and format panels
+    richtext.js, history.js
+  present/present.js       Slideshow player, presenter view, previews
   io/
-    docx.js                Native .docx writer (styles, numbering, tables, images, comments)
-    docx-import.js         Native .docx reader (OOXML → LibreWord HTML, settings, comments)
-    paste.js               Clean-up of HTML pasted from Word, Google Docs, LibreOffice, the web
-    import.js              Format registry, text decoding, .md / .html / .txt import, HTML sanitizing
-    odt.js                 OpenDocument Text reader and writer
-    rtf.js                 RTF reader and writer
-    doc-import.js          Word 97–2003 (.doc) reader
-    shared.js              Colour, image and XML helpers for the writers
-    markdown.js, export.js Markdown, HTML, text and print/PDF export
-  storage/db.js            IndexedDB (metadata + content stores, v1 migration)
-  ui/                      Ribbon, start screen, backstage, dialogs, panels, ruler
-  styles/                  App chrome and document styles
-tests/
-  unit/                    Vitest (converters, Word fixture files, search, parsing)
-  e2e/                     Playwright smoke tests and benchmark
-  fixtures/word/           Word-authored sample documents (from mammoth.js, BSD-2)
+    pptx-export.js         PowerPoint writer (pptxgenjs, plus transitions/skipped slides)
+    pptx-import.js         PowerPoint reader
+    file-access.js         Opening, saving back to and saving as files on the device
+    files.js, print.js, images.js, sanitize.js
+  storage/db.js            IndexedDB
+  ui/                      Start screen, dialogs, popovers, colour picker, icons, theme
+tests/unit/                Model, rich text, slideshow and .pptx round-trip tests
 ```
+
+In the app, `window.libreslides.screen` holds the open editor for poking around in devtools, and **Help › About** has details to copy into a bug report.
 
 ## Privacy
 
-Documents never leave your browser unless you export them. There is no backend, no analytics and no account.
+Presentations never leave your browser unless you download them. There is no backend, no analytics and no account.
 
 ## License
 

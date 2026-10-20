@@ -1,79 +1,65 @@
 /**
- * Saving back to files on the user's device.
+ * Working with files on the user's device.
  *
- * Where the File System Access API is available (Chromium browsers), a
- * document opened from disk keeps a handle to its file, and Save writes the
- * changes back to that file in its own format. Elsewhere, files are imported
- * as copies and "Save As" downloads a file instead.
+ * Where the File System Access API is available (Chrome, Edge, Opera, and
+ * installed apps on ChromeOS, Windows, macOS and Linux), a presentation opened
+ * from disk keeps a handle to its file: Save writes back to that file in its
+ * own format, and Save As links the presentation to the new file. Other
+ * browsers import files as copies, and saving downloads a file instead.
  */
-import { IMPORT_ACCEPT, OPEN_FORMATS, extOf } from './import.js';
 import { pickFileInput, safeFileName } from '../ui/dom.js';
+import { OPEN_ACCEPT, extOf } from './files.js';
 
 export const FILE_FORMATS = {
-  docx: {
-    label: 'Word Document',
-    mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    exts: ['.docx'],
-    lossless: true,
+  pptx: {
+    label: 'PowerPoint presentation',
+    mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    exts: ['.pptx'],
   },
-  odt: {
-    label: 'OpenDocument Text',
-    mime: 'application/vnd.oasis.opendocument.text',
-    exts: ['.odt'],
-    lossless: true,
+  lslides: {
+    label: 'LibreSlides presentation',
+    mime: 'application/vnd.libreslides+json',
+    exts: ['.lslides'],
   },
-  rtf: { label: 'Rich Text Format', mime: 'application/rtf', exts: ['.rtf'], lossless: false },
-  md: { label: 'Markdown', mime: 'text/markdown', exts: ['.md', '.markdown'], lossless: false },
-  html: { label: 'Web Page', mime: 'text/html', exts: ['.html', '.htm'], lossless: false },
-  txt: { label: 'Plain Text', mime: 'text/plain', exts: ['.txt'], lossless: false },
 };
 
-/** What a format can't keep, for the "some formatting will be lost" prompt. */
-export const LOSSY_NOTES = {
-  rtf: 'Rich Text keeps text formatting, headings, lists, tables and pictures, but not comments, headers and footers or a table of contents.',
-  md: 'Markdown keeps headings, lists, tables, links and basic text styles, but not fonts, colours, alignment, page setup or comments.',
-  html: 'A web page keeps most formatting, but not page setup, headers and footers or comments, and LibreWord reads it back with less detail than a Word document.',
-  txt: 'Plain text keeps only the words — all formatting, tables, pictures and comments are lost.',
+/** What saving to a format can't keep, shown the first time a deck is saved that way. */
+export const FORMAT_NOTES = {
+  pptx: 'PowerPoint files keep slides, text, shapes, pictures, tables, notes and transitions, but not LibreSlides animations or theme switching.',
 };
 
 export const canSaveToFiles = () => typeof window !== 'undefined' && typeof window.showSaveFilePicker === 'function';
 export const canOpenFileHandles = () => typeof window !== 'undefined' && typeof window.showOpenFilePicker === 'function';
 
-/** Writable format for a file name, or null for formats LibreWord can only read (.rtf…). */
+/** Writable format of a file name, or null. */
 export function formatOfName(name = '') {
-  const ext = `.${String(name).split('.').pop().toLowerCase()}`;
+  const ext = `.${extOf(name)}`;
   return Object.keys(FILE_FORMATS).find((id) => FILE_FORMATS[id].exts.includes(ext)) || null;
 }
 
-/** Swap a file name's extension for the format's own. */
+/** "Q3 review" → "Q3 review.pptx" (an existing presentation extension is replaced). */
 export function fileNameFor(title, format) {
-  // Only strip a document extension; "Q3 vs. Q4" must stay whole.
-  const raw = String(title || 'Untitled document');
-  const base = safeFileName(OPEN_FORMATS[extOf(raw)] ? raw.replace(/\.[^.]+$/, '') : raw);
-  return `${base}${FILE_FORMATS[format]?.exts[0] || '.docx'}`;
+  const raw = String(title || 'Untitled presentation');
+  const base = safeFileName(/\.(pptx|lslides|potx|ppsx)$/i.test(raw) ? raw.replace(/\.[^.]+$/, '') : raw);
+  return `${base}${FILE_FORMATS[format]?.exts[0] || '.pptx'}`;
 }
 
 const isAbort = (err) => err?.name === 'AbortError';
 
-/** { mime: [extensions] } for the open picker, from the formats LibreWord reads. */
-function openPickerAccept() {
-  const accept = {};
-  for (const [ext, f] of Object.entries(OPEN_FORMATS)) (accept[f.mime] ||= []).push(`.${ext}`);
-  return accept;
-}
-
-/**
- * Let the user pick a file to open. Resolves to { file, handle } (handle is
- * null when the browser can't give one) or null if they cancelled.
- */
+/** Let the user pick a file to open. Resolves to { file, handle } (handle null without the API) or null. */
 export async function pickFileToOpen() {
   if (canOpenFileHandles()) {
     try {
       const [handle] = await window.showOpenFilePicker({
-        id: 'libreword-open',
+        id: 'libreslides-open',
         multiple: false,
-        excludeAcceptAllOption: false,
-        types: [{ description: 'Documents', accept: openPickerAccept() }],
+        types: [{
+          description: 'Presentations',
+          accept: {
+            [FILE_FORMATS.pptx.mime]: ['.pptx'],
+            [FILE_FORMATS.lslides.mime]: ['.lslides'],
+          },
+        }],
       });
       return { file: await handle.getFile(), handle };
     } catch (err) {
@@ -81,16 +67,16 @@ export async function pickFileToOpen() {
       console.warn('showOpenFilePicker failed; using a file input instead', err);
     }
   }
-  const file = await pickFileInput(IMPORT_ACCEPT);
+  const file = await pickFileInput(OPEN_ACCEPT);
   return file ? { file, handle: null } : null;
 }
 
 /** Ask where to save. Resolves to a file handle, or null if cancelled. */
-export async function pickSaveLocation(suggestedName, preferredFormat = 'docx') {
-  const order = [preferredFormat, ...Object.keys(FILE_FORMATS).filter((f) => f !== preferredFormat)];
+export async function pickSaveLocation(suggestedName, preferred = 'pptx') {
+  const order = [preferred, ...Object.keys(FILE_FORMATS).filter((f) => f !== preferred)];
   try {
     return await window.showSaveFilePicker({
-      id: 'libreword-save',
+      id: 'libreslides-save',
       suggestedName,
       types: order.map((id) => ({ description: FILE_FORMATS[id].label, accept: { [FILE_FORMATS[id].mime]: FILE_FORMATS[id].exts } })),
     });
@@ -101,21 +87,22 @@ export async function pickSaveLocation(suggestedName, preferredFormat = 'docx') 
 }
 
 /**
- * Make sure we may write to the handle. Browsers forget the grant between
- * sessions; asking again needs a user gesture (the Save click / Ctrl+S).
+ * Make sure we may write to the file. Browsers forget the permission between
+ * sessions; asking again needs a user gesture (the Save click or Ctrl+S), so
+ * call this before any slow work.
  */
 export async function ensureWritePermission(handle) {
   if (!handle.queryPermission) return true;
   const opts = { mode: 'readwrite' };
-  if ((await handle.queryPermission(opts)) === 'granted') return true;
   try {
+    if ((await handle.queryPermission(opts)) === 'granted') return true;
     return (await handle.requestPermission(opts)) === 'granted';
   } catch {
     return false;
   }
 }
 
-/** Write a blob to the file and return the file's new lastModified time. */
+/** Write a blob to the file; returns the file's new lastModified time. */
 export async function writeToHandle(handle, blob) {
   const writable = await handle.createWritable();
   try {
@@ -132,14 +119,22 @@ export async function writeToHandle(handle, blob) {
   }
 }
 
+/** The file's current lastModified, or null if it can't be read (moved, deleted, no permission). */
+export async function fileModified(handle) {
+  try {
+    return (await handle.getFile()).lastModified;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Get the FileSystemFileHandle for `file` from a drag & drop (Chromium), if
- * possible. Only a handle with the same name is returned, so a multi-file drop
- * can never link (and later overwrite) a different file.
+ * The FileSystemFileHandle for a dropped file (Chromium). Must be called
+ * synchronously inside the drop event; only a handle with the same name as
+ * `file` is returned, so a multi-file drop can never link the wrong file.
  */
 export function handleFromDataTransfer(dataTransfer, file) {
   const items = [...(dataTransfer?.items || [])].filter((i) => i.kind === 'file' && i.getAsFileSystemHandle);
-  // Handles must be requested synchronously, during the drop event.
   const pending = items.map((i) => i.getAsFileSystemHandle().catch(() => null));
   if (!file || !pending.length) return Promise.resolve(null);
   return Promise.all(pending).then((handles) => handles.find((h) => h?.kind === 'file' && h.name === file.name) || null);

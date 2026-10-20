@@ -6,7 +6,7 @@ export function isDark() {
 
 /** Match the browser/PWA window bar to the title bar (see --chrome-bar in app.css). */
 export function syncThemeColor() {
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', isDark() ? '#1b2b45' : '#185abd');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', isDark() ? '#3a1d14' : '#c43e1c');
 }
 
 export function toggleTheme() {
@@ -14,7 +14,7 @@ export function toggleTheme() {
   document.documentElement.dataset.theme = next;
   syncThemeColor();
   try {
-    localStorage.setItem('lw:theme', next);
+    localStorage.setItem('ls:theme', next);
   } catch {
     /* private mode */
   }

@@ -1,352 +1,182 @@
 import { openDB } from 'idb';
+import { normalizeDeck, slideText, uid, pruneMedia } from '../model/deck.js';
 
 /**
- * Documents are split across two object stores:
- *   meta    – small records used by the document list (title, dates, preview…)
- *   content – the full editor JSON / HTML and per-document settings
- *   versions – periodic snapshots for version history
- * so the start screen never has to load every document body.
+ * Presentations are kept in IndexedDB in two stores:
+ *   meta    – small records for the presentation list (title, dates, cover slide)
+ *   content – the full deck
+ * so the start screen never loads every deck.
+ *
+ * Each save bumps `rev`; an editor that finds a newer rev than the one it
+ * loaded knows another tab changed the deck and stops autosaving over it.
  */
-const DB_NAME = 'libreword';
-const DB_VERSION = 3;
+const DB_NAME = 'libreslides';
+const DB_VERSION = 1;
 
-// Changes made here rather than by an open editor (renames from the document
-// list, restored backups) are announced to every open editor, in any tab, so
-// the editor doesn't write its stale copy back over them.
-const changes = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('libreword') : null;
-const announce = (msg) => changes?.postMessage({ tab: 'storage', ...msg });
-const MAX_VERSIONS = 40;
+const channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('libreslides-db') : null;
+const announce = (msg) => channel?.postMessage(msg);
 
-export const DEFAULT_SETTINGS = Object.freeze({
-  pageSize: 'letter',
-  orientation: 'portrait',
-  margins: { top: 96, right: 96, bottom: 96, left: 96 },
-  header: '',
-  footer: '',
-  pageNumbers: false,
-});
-
-export const newId = () =>
-  (crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
-
-const htmlToText = (html = '') => {
-  const doc = new DOMParser().parseFromString(String(html), 'text/html');
-  // Keep words apart where lines and blocks meet ("Name<br>Street" → "Name Street").
-  doc.body.querySelectorAll('br').forEach((br) => br.replaceWith(' '));
-  doc.body.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, td, th, div').forEach((el) => el.append(' '));
-  return (doc.body.textContent || '').replace(/\s+/g, ' ').trim();
-};
+/** Call `fn({type, id, rev})` when any tab changes stored presentations. Returns an unsubscribe function. */
+export function onStorageChange(fn) {
+  if (!channel) return () => {};
+  const handler = (e) => fn(e.data);
+  channel.addEventListener('message', handler);
+  return () => channel.removeEventListener('message', handler);
+}
 
 let dbPromise;
-
-const notify = (type) => globalThis.dispatchEvent?.(new CustomEvent(type));
-
 export const getDb = () => {
-  if (!dbPromise) {
-    const forget = () => {
-      if (dbPromise === opening) dbPromise = null;
-    };
-    const opening = openDB(DB_NAME, DB_VERSION, {
-      async upgrade(db, oldVersion, _newVersion, tx) {
-        if (!db.objectStoreNames.contains('meta')) {
-          const meta = db.createObjectStore('meta', { keyPath: 'id' });
-          meta.createIndex('updatedAt', 'updatedAt');
-        }
-        if (!db.objectStoreNames.contains('content')) {
-          db.createObjectStore('content', { keyPath: 'id' });
-        }
-        if (!db.objectStoreNames.contains('versions')) {
-          const versions = db.createObjectStore('versions', { keyPath: 'vid', autoIncrement: true });
-          versions.createIndex('docId', 'docId');
-        }
-
-        // v1 (the original Quill-based LibreWord) kept HTML in a single
-        // auto-increment "documents" store. Carry those documents over.
-        if (oldVersion >= 1 && db.objectStoreNames.contains('documents')) {
-          const legacy = tx.objectStore('documents');
-          const docs = await legacy.getAll();
-          for (const doc of docs) {
-            const id = `legacy-${doc.id}`;
-            const text = htmlToText(doc.content);
-            await tx.objectStore('meta').put({
-              id,
-              title: doc.title || 'Untitled document',
-              createdAt: doc.createdAt || Date.now(),
-              updatedAt: doc.updatedAt || Date.now(),
-              preview: text.slice(0, 280),
-              words: text ? text.split(/\s+/).length : 0,
-            });
-            await tx.objectStore('content').put({
-              id,
-              html: doc.content || '',
-              json: null,
-              settings: { ...DEFAULT_SETTINGS },
-            });
-          }
-          db.deleteObjectStore('documents');
-        }
-      },
-      blocked() {
-        // An older tab is holding the database open and won't let go.
-        notify('libreword:db-blocked');
-      },
-      blocking() {
-        // Another tab (a newer version) wants to upgrade; get out of its way.
-        // This tab can no longer reopen the database, so it needs a reload.
-        opening.then((db) => db.close()).catch(() => {});
-        forget();
-        notify('libreword:db-outdated');
-      },
-      terminated() {
-        // The browser closed the connection (e.g. site data cleared): reopen on next use.
-        forget();
-      },
-    });
-    dbPromise = opening;
-    // Never cache a failed open: let the next call retry.
-    opening.catch(forget);
-  }
+  dbPromise ||= openDB(DB_NAME, DB_VERSION, {
+    upgrade(db) {
+      if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'id' }).createIndex('updatedAt', 'updatedAt');
+      if (!db.objectStoreNames.contains('content')) db.createObjectStore('content', { keyPath: 'id' });
+    },
+    blocked: () => globalThis.dispatchEvent?.(new CustomEvent('libreslides:db-blocked')),
+    terminated: () => { dbPromise = null; },
+  }).catch((err) => {
+    dbPromise = null;
+    throw err;
+  });
   return dbPromise;
 };
 
-export async function listDocs() {
-  const db = await getDb();
-  const docs = await db.getAll('meta');
-  return docs.sort((a, b) => b.updatedAt - a.updatedAt);
-}
-
-export async function getDocMeta(id) {
-  const db = await getDb();
-  return db.get('meta', id);
-}
-
-export async function getDoc(id) {
-  const db = await getDb();
-  const tx = db.transaction(['meta', 'content'], 'readonly');
-  const [meta, content] = await Promise.all([tx.objectStore('meta').get(id), tx.objectStore('content').get(id)]);
-  await tx.done;
-  if (!meta) return null;
+/** The list record for a deck: enough to draw its cover thumbnail. */
+function metaOf(deck) {
+  const cover = deck.slides.find((s) => !s.hidden) || deck.slides[0];
+  const media = {};
+  if (cover) {
+    if (cover.background?.media) media[cover.background.media] = deck.media?.[cover.background.media];
+    for (const el of cover.elements) if (el.media && deck.media?.[el.media]) media[el.media] = deck.media[el.media];
+  }
   return {
-    ...meta,
-    json: content?.json ?? null,
-    html: content?.html ?? '',
-    settings: { ...DEFAULT_SETTINGS, ...(content?.settings || {}), margins: { ...DEFAULT_SETTINGS.margins, ...(content?.settings?.margins || {}) } },
-    comments: content?.comments || {},
-    // Link to a file on the user's device: { handle, name, format, lastModified }.
-    file: content?.file?.handle ? content.file : null,
+    id: deck.id,
+    title: deck.title,
+    createdAt: deck.createdAt,
+    updatedAt: deck.updatedAt,
+    rev: deck.rev || 0,
+    slideCount: deck.slides.length,
+    preview: deck.slides.slice(0, 3).map(slideText).join(' · ').slice(0, 200),
+    // The file on this device the deck saves to (a FileSystemFileHandle survives in IndexedDB).
+    file: deck.file ? { handle: deck.file.handle, name: deck.file.name, format: deck.file.format, dirty: !!deck.file.dirty } : null,
+    cover: cover ? { slide: cover, themeId: deck.themeId, size: deck.size, media } : null,
   };
 }
 
-/** Create a document from HTML (templates, imports) or editor JSON. */
-export async function createDoc({ title = 'Untitled document', html = '', json = null, settings = {}, comments = {}, file = null } = {}) {
+export async function listDecks() {
   const db = await getDb();
-  const id = newId();
-  const now = Date.now();
-  const text = json ? '' : htmlToText(html);
-  const tx = db.transaction(['meta', 'content'], 'readwrite');
-  await Promise.all([
-    tx.objectStore('meta').put({
-      id,
-      title,
-      createdAt: now,
-      updatedAt: now,
-      preview: text.slice(0, 280),
-      words: text ? text.split(/\s+/).length : 0,
-      fileName: file?.name || null,
-    }),
-    tx.objectStore('content').put({ id, json, html, settings: { ...DEFAULT_SETTINGS, ...settings }, comments, file }),
-  ]);
-  await tx.done;
-  return id;
+  const all = await db.getAll('meta');
+  return all.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+export async function getMeta(id) {
+  return (await getDb()).get('meta', id);
+}
+
+export async function getDeck(id) {
+  const db = await getDb();
+  const row = await db.get('content', id);
+  if (!row) return null;
+  const deck = normalizeDeck(row.deck);
+  // Nothing can undo back to pictures that were deleted before this session.
+  pruneMedia(deck);
+  return deck;
 }
 
 /**
- * Persist a document. Any of `title`, `json`, `settings`, `comments`, `file`, `preview`, `words`
- * may be omitted to leave the stored value untouched.
+ * Store a deck. With `expectRev`, refuses (returns {conflict: true, rev}) if
+ * another tab saved a newer version since. Returns {rev} on success.
  */
-export async function saveDoc(id, { title, json, html, settings, comments, file, preview, words } = {}) {
+export async function saveDeck(deck, { expectRev = null, touch = true } = {}) {
   const db = await getDb();
   const tx = db.transaction(['meta', 'content'], 'readwrite');
-  const metaStore = tx.objectStore('meta');
-  const contentStore = tx.objectStore('content');
-  const [meta, content] = await Promise.all([metaStore.get(id), contentStore.get(id)]);
-  if (!meta) {
-    // Deleted (perhaps in another tab). Nothing was written, so just let the transaction finish.
+  const current = await tx.objectStore('meta').get(deck.id);
+  if (expectRev != null && current && (current.rev || 0) !== expectRev) {
     await tx.done;
-    return false;
+    return { conflict: true, rev: current.rev || 0 };
   }
-  if (title !== undefined) meta.title = title;
-  if (preview !== undefined) meta.preview = preview;
-  if (words !== undefined) meta.words = words;
-  meta.updatedAt = Date.now();
-
-  const nextContent = content || { id, json: null, html: '', settings: { ...DEFAULT_SETTINGS } };
-  if (json !== undefined) {
-    nextContent.json = json;
-    nextContent.html = '';
-  }
-  if (html !== undefined) {
-    // Replace the body with freshly imported HTML (parsed when next opened).
-    nextContent.html = html;
-    nextContent.json = null;
-  }
-  if (settings !== undefined) nextContent.settings = settings;
-  if (comments !== undefined) nextContent.comments = comments;
-  if (file !== undefined) {
-    nextContent.file = file; // null unlinks
-    meta.fileName = file?.name || null;
-  }
-
-  await Promise.all([metaStore.put(meta), contentStore.put(nextContent)]);
+  deck.rev = (current?.rev || 0) + 1;
+  if (touch) deck.updatedAt = Date.now();
+  await tx.objectStore('content').put({ id: deck.id, deck });
+  await tx.objectStore('meta').put(metaOf(deck));
   await tx.done;
-  return true;
+  announce({ type: 'saved', id: deck.id, rev: deck.rev });
+  return { rev: deck.rev };
 }
 
-export async function renameDoc(id, title) {
-  const stored = await saveDoc(id, { title });
-  if (stored) announce({ type: 'renamed', id, title });
-  return stored;
+export async function createDeck(deck) {
+  deck.id ||= uid();
+  deck.createdAt = deck.updatedAt = Date.now();
+  deck.rev = 0;
+  await saveDeck(deck);
+  return deck.id;
 }
 
-export async function deleteDoc(id) {
-  const db = await getDb();
-  const tx = db.transaction(['meta', 'content', 'versions'], 'readwrite');
-  const versionKeys = await tx.objectStore('versions').index('docId').getAllKeys(id);
-  await Promise.all([
-    tx.objectStore('meta').delete(id),
-    tx.objectStore('content').delete(id),
-    ...versionKeys.map((k) => tx.objectStore('versions').delete(k)),
-  ]);
-  await tx.done;
+export async function renameDeck(id, title) {
+  const deck = await getDeck(id);
+  if (!deck) return;
+  deck.title = title;
+  await saveDeck(deck);
 }
 
-// ---------------------------------------------------------------------------
-// Backup & restore
-// ---------------------------------------------------------------------------
-
-export const BACKUP_FORMAT = 'libreword-backup';
-
-/** Every document (metadata + content) as one JSON-serialisable object. */
-export async function exportBackup() {
-  const db = await getDb();
-  const tx = db.transaction(['meta', 'content'], 'readonly');
-  const [metas, contents] = await Promise.all([tx.objectStore('meta').getAll(), tx.objectStore('content').getAll()]);
-  const byId = new Map(contents.map((c) => [c.id, c]));
-  return {
-    format: BACKUP_FORMAT,
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    // File handles only make sense on this device, so backups leave them out.
-    documents: metas.map((m) => {
-      const { file: _file, ...content } = byId.get(m.id) || { id: m.id, json: null, html: '' };
-      return { meta: { ...m, fileName: null }, content };
-    }),
-  };
+export async function duplicateDeck(id) {
+  const deck = await getDeck(id);
+  if (!deck) return null;
+  const { file: _linked, ...rest } = deck;
+  const copy = JSON.parse(JSON.stringify(rest));
+  copy.id = uid();
+  copy.title = `Copy of ${deck.title}`;
+  return createDeck(copy);
 }
 
-/**
- * Restore documents from a backup. Documents whose id already exists are
- * kept unless the backup copy is newer. Returns { added, updated, skipped }.
- */
-export async function importBackup(data) {
-  if (!data || data.format !== BACKUP_FORMAT || !Array.isArray(data.documents)) {
-    throw new Error('This file is not a LibreWord backup.');
-  }
-  const db = await getDb();
-  const tx = db.transaction(['meta', 'content'], 'readwrite');
-  const meta = tx.objectStore('meta');
-  const content = tx.objectStore('content');
-  const result = { added: 0, updated: 0, skipped: 0 };
-  const replaced = [];
-  for (const doc of data.documents) {
-    // Ids are strings everywhere else (routes, lookups); a hand-edited backup may have numbers.
-    const m = doc?.meta && (typeof doc.meta.id === 'number' ? { ...doc.meta, id: String(doc.meta.id) } : doc.meta);
-    if (!m?.id || typeof m.id !== 'string' || typeof m.title !== 'string') {
-      result.skipped++;
-      continue;
-    }
-    const updatedAt = Number.isFinite(m.updatedAt) ? m.updatedAt : Date.parse(m.updatedAt) || 0;
-    const createdAt = Number.isFinite(m.createdAt) ? m.createdAt : Date.parse(m.createdAt) || updatedAt || Date.now();
-    const existing = await meta.get(m.id);
-    if (existing && existing.updatedAt >= updatedAt) {
-      result.skipped++;
-      continue;
-    }
-    await meta.put({ ...m, updatedAt: updatedAt || Date.now(), createdAt });
-    await content.put({ id: m.id, json: doc.content?.json ?? null, html: doc.content?.html ?? '', settings: doc.content?.settings, comments: doc.content?.comments || {} });
-    result[existing ? 'updated' : 'added']++;
-    if (existing) replaced.push(m.id);
-  }
-  await tx.done;
-  for (const id of replaced) announce({ type: 'saved', id, reason: 'backup' });
-  return result;
-}
-
-/** The document already linked to this file on disk, if any. */
-export async function findDocByFile(handle) {
+/** The deck linked to the same file as `handle` (opening a file again finds it). */
+export async function findDeckByFile(handle) {
   if (!handle?.isSameEntry) return null;
-  const db = await getDb();
-  // Only documents linked to a file of the same name can match; check those.
-  const candidates = (await db.getAll('meta')).filter((m) => m.fileName === handle.name).sort((a, b) => b.updatedAt - a.updatedAt);
-  for (const m of candidates) {
-    const c = await db.get('content', m.id);
+  for (const m of await listDecks()) {
     try {
-      if (c?.file?.handle && (await c.file.handle.isSameEntry(handle))) return { id: c.id, title: m.title, file: c.file };
-    } catch {
-      /* stale handle */
-    }
+      if (m.file?.handle && (await m.file.handle.isSameEntry(handle))) return m;
+    } catch { /* a stale handle */ }
   }
   return null;
 }
 
-/** The stored file link of a document (fresh from the database). */
-export async function getDocFile(id) {
+export async function deleteDeck(id) {
   const db = await getDb();
-  return (await db.get('content', id))?.file || null;
-}
-
-// ---------------------------------------------------------------------------
-// Version history
-// ---------------------------------------------------------------------------
-
-/** Store a snapshot; keeps the newest MAX_VERSIONS per document. */
-export async function addVersion(docId, { title, json, html = '', settings, comments, words = 0, createdAt = Date.now(), reason = 'auto' }) {
-  const db = await getDb();
-  const tx = db.transaction('versions', 'readwrite');
-  const store = tx.objectStore('versions');
-  await store.add({ docId, title, json, html, settings, comments, words, createdAt, reason });
-  const keys = await store.index('docId').getAllKeys(docId);
-  if (keys.length > MAX_VERSIONS) {
-    keys.sort((a, b) => a - b);
-    for (const k of keys.slice(0, keys.length - MAX_VERSIONS)) await store.delete(k);
-  }
+  const tx = db.transaction(['meta', 'content'], 'readwrite');
+  await tx.objectStore('meta').delete(id);
+  await tx.objectStore('content').delete(id);
   await tx.done;
+  announce({ type: 'deleted', id });
 }
 
-/** Version summaries, newest first (without the document bodies). */
-export async function listVersions(docId) {
+/** Every deck in one object, for "Back up all presentations". */
+export async function exportBackup() {
   const db = await getDb();
-  const all = await db.getAllFromIndex('versions', 'docId', docId);
-  return all
-    .map(({ vid, title, words, createdAt, reason }) => ({ vid, title, words, createdAt, reason }))
-    .sort((a, b) => b.createdAt - a.createdAt);
+  const rows = await db.getAll('content');
+  const decks = rows.map(({ deck: { file: _linked, ...rest } }) => rest);
+  return { app: 'LibreSlides', version: 1, exportedAt: new Date().toISOString(), decks };
 }
 
-export async function getVersion(vid) {
-  const db = await getDb();
-  return db.get('versions', vid);
-}
-
-export async function duplicateDoc(id) {
-  const doc = await getDoc(id);
-  if (!doc) return null;
-  const newDocId = await createDoc({
-    title: `${doc.title} (copy)`,
-    html: doc.html,
-    json: doc.json,
-    settings: doc.settings,
-    comments: doc.comments,
-  });
-  await saveDoc(newDocId, { preview: doc.preview, words: doc.words });
-  return newDocId;
+/** Restore a backup: adds new decks, replaces older copies, keeps newer ones. */
+export async function importBackup(data, sanitize = (d) => d) {
+  if (!data || !Array.isArray(data.decks)) throw new Error('That file isn’t a LibreSlides backup.');
+  let added = 0;
+  let updated = 0;
+  let skipped = 0;
+  for (const raw of data.decks) {
+    if (!raw?.id) continue;
+    const deck = normalizeDeck(sanitize(raw));
+    const existing = await getMeta(deck.id);
+    // A restored copy keeps the link to its file if this device already had it.
+    delete deck.file;
+    if (existing?.file) deck.file = { ...existing.file, dirty: true };
+    if (existing && existing.updatedAt >= deck.updatedAt) {
+      skipped++;
+      continue;
+    }
+    await saveDeck(deck, { touch: false });
+    if (existing) updated++;
+    else added++;
+  }
+  announce({ type: 'restored' });
+  return { added, updated, skipped };
 }

@@ -1,8 +1,9 @@
 /**
  * Details for bug reports: version, browser, storage and the last errors,
- * copied from File › Info. Nothing from the document's text is included.
+ * copied from Help › About. Nothing from the presentation's text is included.
  */
 /* global __APP_VERSION__, __BUILD_COMMIT__, __BUILD_DATE__ */
+import { installState } from './ui/install.js';
 export const VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev';
 export const BUILD = typeof __BUILD_COMMIT__ !== 'undefined' ? `${__BUILD_COMMIT__} (${__BUILD_DATE__})` : 'dev';
 
@@ -16,7 +17,7 @@ export function noteError(err, where = '') {
   if (recent.length > MAX) recent.shift();
 }
 
-/** Collect uncaught errors and rejections from LibreWord's own code. */
+/** Collect uncaught errors and rejections from LibreSlides' own code. */
 export function watchErrors() {
   window.addEventListener('error', (e) => {
     // Extensions and cross-origin scripts report as "Script error." with no file: not ours.
@@ -26,27 +27,25 @@ export function watchErrors() {
   window.addEventListener('unhandledrejection', (e) => noteError(e.reason, 'unhandled promise'));
 }
 
-/** Plain-text report about the app, the browser and (optionally) the open document. */
+/** Plain-text report about the app, the browser and (optionally) the open presentation. */
 export async function diagnostics(app = null) {
-  const lines = [`LibreWord ${VERSION}, build ${BUILD}`];
+  const lines = [`LibreSlides ${VERSION}, build ${BUILD}`];
   lines.push(`Browser: ${navigator.userAgent}`);
   const installed = ['standalone', 'window-controls-overlay', 'minimal-ui'].some((m) => matchMedia(`(display-mode: ${m})`).matches);
   lines.push(`Window: ${installed ? 'installed app' : 'browser tab'}, ${innerWidth}×${innerHeight} at ${devicePixelRatio}x, ${navigator.onLine ? 'online' : 'offline'}`);
-  lines.push(`Saving to files: ${typeof window.showSaveFilePicker === 'function' ? 'available' : 'not available (downloads instead)'}`);
   try {
     const est = await navigator.storage?.estimate?.();
     const persisted = await navigator.storage?.persisted?.();
     if (est) lines.push(`Storage: ${(est.usage / 1048576).toFixed(1)} MB used of ${(est.quota / 1048576).toFixed(0)} MB${persisted ? ', persistent' : ''}`);
   } catch { /* not available */ }
   lines.push(`Service worker: ${navigator.serviceWorker?.controller ? 'active (works offline)' : 'not active'}`);
-  if (app?.editor) {
+  lines.push(`Install: ${installState()}; saving to files: ${typeof window.showSaveFilePicker === 'function' ? 'saves back to linked files' : 'downloads'}`);
+  if (app?.deck) {
     const counts = {};
-    app.editor.state.doc.descendants((n) => { if (!n.isText) counts[n.type.name] = (counts[n.type.name] || 0) + 1; });
-    lines.push(`Document: ${app.words ?? '?'} words, ${app.pageCount} pages (${app.view.layout} layout), ${app.settings.pageSize} ${app.settings.orientation}, zoom ${Math.round(app.view.zoom * 100)}%`);
-    lines.push(`Content: ${Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(', ')}`);
-    lines.push(`Linked file: ${app.file ? `${app.file.format}${app.fileDirty ? ', unsaved changes' : ''}` : 'none'}; autosave: ${app.saveState}`);
-    const pg = app.editor.storage.pagination;
-    if (pg?.lastLayoutMs != null) lines.push(`Last layout pass: ${pg.lastLayoutMs.toFixed(1)} ms`);
+    for (const s of app.deck.slides) for (const el of s.elements) counts[el.type] = (counts[el.type] || 0) + 1;
+    lines.push(`Presentation: ${app.deck.slides.length} slides, ${app.deck.size}, theme ${app.deck.themeId}, ${Object.keys(app.deck.media || {}).length} pictures`);
+    lines.push(`Content: ${Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(', ') || 'empty'}`);
+    lines.push(`Autosave: ${app.saveState}; linked file: ${app.deck.file ? `${app.deck.file.format}${app.deck.file.dirty ? ', unsaved changes' : ', saved'}` : 'none'}`);
   }
   lines.push(recent.length ? `Recent errors:\n  ${recent.join('\n  ')}` : 'Recent errors: none');
   return lines.join('\n');

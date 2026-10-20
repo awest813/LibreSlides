@@ -1,0 +1,302 @@
+import { h } from '../ui/dom.js';
+import { icon } from '../ui/icons.js';
+import { openColorPicker } from '../ui/color-picker.js';
+import { THEMES, resolveColor, backgroundBaseColor } from '../model/themes.js';
+import { SIZES, LAYOUTS, TRANSITIONS, ANIMATIONS, newSlide, fillPlaceholders, canHoldText, slideText } from '../model/deck.js';
+import { renderThumb, textStyle } from '../render/render.js';
+
+const TITLES = { design: 'Design', transition: 'Transition', animate: 'Animate', format: 'Format options' };
+const TAB_LABELS = { design: 'Design', transition: 'Transition', animate: 'Animate', format: 'Format' };
+
+const field = (label, control, hint = null) => h('label', { class: 'pf' }, h('span', { class: 'pf-label' }, label), control, hint ? h('small', { class: 'pf-hint' }, hint) : null);
+const section = (title, ...children) => h('section', { class: 'panel-section' }, h('h3', {}, title), ...children);
+
+function numberInput(value, onValue, { step = 1, min = null, max = null, suffix = '' } = {}) {
+  const input = h('input', { type: 'number', step, min, max, value: Number.isFinite(value) ? String(Math.round(value * 10) / 10) : '' });
+  const fire = () => {
+    const n = parseFloat(input.value);
+    if (Number.isFinite(n)) onValue(min != null ? Math.max(min, max != null ? Math.min(max, n) : n) : n);
+  };
+  input.addEventListener('change', fire);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') fire(); });
+  return suffix ? h('span', { class: 'pf-num' }, input, h('span', { class: 'pf-suffix' }, suffix)) : input;
+}
+
+function select(options, value, onValue) {
+  const s = h('select', {}, ...options.map(([v, label]) => h('option', { value: v, selected: String(v) === String(value) || null }, label)));
+  s.addEventListener('change', () => onValue(s.value));
+  return s;
+}
+
+function checkbox(label, checked, onValue) {
+  const input = h('input', { type: 'checkbox', checked: checked || null });
+  input.addEventListener('change', () => onValue(input.checked));
+  return h('label', { class: 'pf-check' }, input, label);
+}
+
+function colorButton(label, value, theme, onPick, opts = {}) {
+  const sw = h('span', { class: 'pf-swatch', style: { background: resolveColor(value, theme, 'transparent') } });
+  const b = h('button', { type: 'button', class: 'btn pf-color', 'aria-label': label, 'aria-haspopup': 'true' }, sw, h('span', {}, label));
+  b.addEventListener('click', () => openColorPicker(b, { theme, current: value, onPick, ...opts }));
+  return b;
+}
+
+/**
+ * The right-hand panel: themes and backgrounds, transitions, animations and
+ * the detailed format options for the selection.
+ */
+export class SidePanel {
+  constructor(app) {
+    this.app = app;
+    this.current = null;
+    this.key = '';
+    this.title = h('h2', {});
+    this.body = h('div', { class: 'panel-body' });
+    this.tabs = h('div', { class: 'panel-tabs', role: 'tablist' }, ...Object.entries(TAB_LABELS).map(([id, name]) => {
+      const t = h('button', { type: 'button', role: 'tab', class: 'panel-tab', dataset: { tab: id }, onclick: () => this.open(id) }, name);
+      return t;
+    }));
+    this.el = h('aside', { class: 'sidepanel', hidden: true, 'aria-label': 'Side panel' },
+      h('header', { class: 'panel-header' }, this.title, h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close panel', html: icon('close'), onclick: () => this.close() })),
+      this.tabs, this.body);
+  }
+
+  open(name) {
+    this.current = name;
+    this.el.hidden = false;
+    this.key = '';
+    this.update(true);
+    this.app.canvas.layout();
+  }
+
+  close() {
+    this.current = null;
+    this.el.hidden = true;
+    this.app.canvas.layout();
+    this.app.focusCanvas();
+  }
+
+  update(force = false) {
+    if (!this.current) return;
+    const app = this.app;
+    const key = `${this.current}|${app.slide.id}|${app.selection.join(',')}`;
+    // Don't rebuild under the user's fingers while they type or drag a slider here.
+    const typing = this.el.contains(document.activeElement) && document.activeElement.matches('input, textarea, select');
+    if (!force && key === this.key && typing) return;
+    this.key = key;
+    this.title.textContent = TITLES[this.current];
+    for (const t of this.tabs.children) {
+      t.setAttribute('aria-selected', String(t.dataset.tab === this.current));
+      t.classList.toggle('is-active', t.dataset.tab === this.current);
+    }
+    // Keyboard focus stays on the same control across the rebuild.
+    const controls = () => [...this.body.querySelectorAll('button, input, select, textarea')];
+    const focusAt = controls().indexOf(document.activeElement);
+    const scroll = this.body.scrollTop;
+    this.body.replaceChildren(...this[this.current]());
+    this.body.scrollTop = scroll;
+    if (focusAt >= 0) controls()[focusAt]?.focus({ preventScroll: true });
+  }
+
+  // ---------------------------------------------------------------- design
+
+  design() {
+    const app = this.app;
+    const { deck, slide, theme } = app;
+    const themes = h('div', { class: 'theme-grid' });
+    for (const t of THEMES) {
+      const sample = { themeId: t.id, size: deck.size, media: {} };
+      const s = fillPlaceholders(newSlide('title', sample), { title: t.name, subtitle: 'Aa' });
+      const b = h('button', { type: 'button', class: `theme-card${t.id === deck.themeId ? ' is-active' : ''}`, 'aria-label': `Theme: ${t.name}`, 'aria-pressed': String(t.id === deck.themeId), onclick: () => app.setTheme(t.id) },
+        renderThumb(s, sample, 112));
+      themes.append(b);
+    }
+
+    const bg = slide.background;
+    const bgType = bg?.type || 'theme';
+    const bgControls = h('div', { class: 'pf-stack' });
+    bgControls.append(field('Fill', select([['theme', 'Theme default'], ['solid', 'Solid colour'], ['gradient', 'Gradient'], ['image', 'Picture']], bgType, (v) => {
+      if (v === 'theme') app.setBackground(null);
+      else if (v === 'solid') app.setBackground({ type: 'solid', color: backgroundBaseColor(theme.background) });
+      else if (v === 'gradient') app.setBackground({ type: 'gradient', from: 'theme:accent1', to: 'theme:accent2', angle: 135 });
+      else app.pickBackgroundImage();
+    })));
+    if (bgType === 'solid') bgControls.append(colorButton('Colour', bg.color, theme, (v) => app.setBackground({ type: 'solid', color: v })));
+    if (bgType === 'gradient') {
+      bgControls.append(
+        h('div', { class: 'pf-row' },
+          colorButton('From', bg.from, theme, (v) => app.setBackground({ ...bg, from: v })),
+          colorButton('To', bg.to, theme, (v) => app.setBackground({ ...bg, to: v }))),
+        field('Angle', select([[0, 'Bottom to top'], [90, 'Left to right'], [135, 'Diagonal'], [180, 'Top to bottom'], [225, 'Diagonal (reverse)']], bg.angle ?? 180, (v) => app.setBackground({ ...bg, angle: +v }))),
+      );
+    }
+    if (bgType === 'image') bgControls.append(h('button', { type: 'button', class: 'btn', onclick: () => app.pickBackgroundImage() }, 'Choose another picture…'));
+    bgControls.append(
+      checkbox('Show theme graphics', !slide.hideDecor, (v) => app.changeSlide((s) => { s.hideDecor = !v; })),
+      h('div', { class: 'pf-row' },
+        h('button', { type: 'button', class: 'btn', onclick: () => app.setBackground(slide.background, { all: true }) }, 'Apply to all slides'),
+        h('button', { type: 'button', class: 'btn btn-ghost', disabled: !slide.background || null, onclick: () => app.setBackground(null) }, 'Reset')),
+    );
+
+    const layouts = h('div', { class: 'layout-grid' });
+    for (const l of LAYOUTS) {
+      const sample = { themeId: deck.themeId, size: deck.size, media: {} };
+      const s = newSlide(l.id, sample);
+      for (const el of s.elements) el.text = el.ph === 'title' ? '<p>Title</p>' : el.bullets ? '<ul><li>Text</li><li>Text</li></ul>' : '<p>Text</p>';
+      layouts.append(h('button', { type: 'button', class: `layout-card${slide.layout === l.id ? ' is-active' : ''}`, title: l.name, 'aria-label': `Layout: ${l.name}`, onclick: () => app.applyLayout(l.id) },
+        renderThumb(s, sample, 72), h('span', {}, l.name)));
+    }
+
+    return [
+      section('Theme', themes),
+      section('Background (this slide)', bgControls),
+      section('Layout (this slide)', layouts),
+      section('Slide size', select(Object.entries(SIZES).map(([id, s]) => [id, s.label]), deck.size, (v) => app.setSize(v)),
+        h('p', { class: 'pf-hint' }, 'Changing the size scales everything on every slide.')),
+    ];
+  }
+
+  // ---------------------------------------------------------------- transitions
+
+  transition() {
+    const app = this.app;
+    const t = app.slide.transition || { type: 'none', duration: 0.6 };
+    const list = h('div', { class: 'choice-list', role: 'radiogroup', 'aria-label': 'Transition' });
+    for (const tr of TRANSITIONS) {
+      list.append(h('button', { type: 'button', role: 'radio', 'aria-checked': String(t.type === tr.id), class: `choice${t.type === tr.id ? ' is-active' : ''}`, onclick: () => app.setTransition({ ...t, type: tr.id }) }, tr.name));
+    }
+    const dur = h('input', { type: 'range', min: '0.2', max: '2', step: '0.1', value: String(t.duration ?? 0.6) });
+    const out = h('output', {}, `${t.duration ?? 0.6} s`);
+    dur.addEventListener('input', () => {
+      out.textContent = `${dur.value} s`;
+      app.setTransition({ ...app.slide.transition, duration: +dur.value }, { coalesce: 'transition-duration' });
+    });
+    return [
+      section(`Slide ${app.slideIndex + 1}`, list, field('Duration', h('div', { class: 'pf-row' }, dur, out))),
+      h('div', { class: 'pf-row' },
+        h('button', { type: 'button', class: 'btn', onclick: () => app.setTransition(app.slide.transition, { all: true }) }, 'Apply to all slides'),
+        h('button', { type: 'button', class: 'btn btn-primary', disabled: t.type === 'none' || null, html: `${icon('play')}<span>Preview</span>`, onclick: () => app.previewTransition() })),
+    ];
+  }
+
+  // ---------------------------------------------------------------- animations
+
+  animate() {
+    const app = this.app;
+    const els = app.selectedElements();
+    const out = [];
+    if (els.length) {
+      const a = els[0].anim || { effect: 'none', duration: 0.5 };
+      out.push(section(els.length > 1 ? `${els.length} objects` : 'Selected object',
+        field('Effect', select(ANIMATIONS.map((x) => [x.id, x.name]), a.effect, (v) => app.setAnimation({ effect: v }))),
+        field('Duration', select([[0.3, 'Fast (0.3 s)'], [0.5, 'Medium (0.5 s)'], [0.8, 'Slow (0.8 s)'], [1.2, 'Very slow (1.2 s)']], a.duration ?? 0.5, (v) => app.setAnimation({ duration: +v }))),
+        field('Start', select([['click', 'On click'], ['with', 'With previous'], ['after', 'After previous']], a.start || 'click', (v) => app.setAnimation({ start: v })))));
+    } else {
+      out.push(h('p', { class: 'pf-hint' }, 'Select an object on the slide to animate it.'));
+    }
+    const animated = app.slide.elements.filter((e) => e.anim && e.anim.effect !== 'none').sort((x, y) => (x.anim.order || 0) - (y.anim.order || 0));
+    const list = h('ol', { class: 'anim-list' });
+    animated.forEach((el, i) => {
+      const name = (canHoldText(el) && slideText({ elements: [el] })) || ({ image: 'Picture', line: 'Line', table: 'Table', shape: 'Shape', text: 'Text box' }[el.type]);
+      const effect = ANIMATIONS.find((x) => x.id === el.anim.effect)?.name;
+      list.append(h('li', { class: `anim-item${app.selection.includes(el.id) ? ' is-selected' : ''}` },
+        h('button', { type: 'button', class: 'anim-name', onclick: () => app.setSelection([el.id]) }, h('b', {}, name.slice(0, 40)), h('small', {}, `${effect}${el.anim.start && el.anim.start !== 'click' ? ` · ${el.anim.start} previous` : ''}`)),
+        h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Move earlier', disabled: i === 0 || null, html: icon('up'), onclick: () => app.reorderAnimation(el.id, -1) }),
+        h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Move later', disabled: i === animated.length - 1 || null, html: icon('down'), onclick: () => app.reorderAnimation(el.id, 1) }),
+        h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Remove animation', html: icon('close'), onclick: () => app.setAnimation({ effect: 'none' }, [el.id]) })));
+    });
+    out.push(section('Order on this slide', animated.length ? list : h('p', { class: 'pf-hint' }, 'Nothing on this slide is animated yet.')));
+    if (animated.length) out.push(h('button', { type: 'button', class: 'btn btn-primary', html: `${icon('play')}<span>Preview</span>`, onclick: () => app.previewAnimations() }));
+    return out;
+  }
+
+  // ---------------------------------------------------------------- format options
+
+  format() {
+    const app = this.app;
+    const els = app.selectedElements();
+    if (!els.length) return [h('p', { class: 'pf-hint' }, 'Select something on the slide to see its format options.')];
+    const el = els[0];
+    const theme = app.theme;
+    const single = els.length === 1;
+    const out = [];
+    const upd = (fn, coalesce) => app.updateSelected(fn, { coalesce });
+
+    if (single && el.type === 'line') {
+      out.push(section('Position',
+        h('div', { class: 'pf-grid' },
+          field('Start X', numberInput(el.x1, (v) => upd((e) => { e.x1 = v; }))), field('Start Y', numberInput(el.y1, (v) => upd((e) => { e.y1 = v; }))),
+          field('End X', numberInput(el.x2, (v) => upd((e) => { e.x2 = v; }))), field('End Y', numberInput(el.y2, (v) => upd((e) => { e.y2 = v; }))))));
+      out.push(section('Line',
+        colorButton('Colour', el.stroke?.color, theme, (v) => app.setStroke({ color: v })),
+        field('Weight', numberInput(el.stroke?.width || 2, (v) => app.setStroke({ width: v }), { min: 0.5, max: 50, step: 0.5, suffix: 'pt' })),
+        checkbox('Arrow at start', el.arrowStart, (v) => upd((e) => { e.arrowStart = v; })),
+        checkbox('Arrow at end', el.arrowEnd, (v) => upd((e) => { e.arrowEnd = v; }))));
+    } else if (single) {
+      const ratio = el.w / el.h;
+      out.push(section('Size & rotation',
+        h('div', { class: 'pf-grid' },
+          field('Width', numberInput(el.w, (v) => upd((e) => { if (e.lockRatio) e.h = v / ratio; e.w = v; }), { min: 4, suffix: 'pt' })),
+          field('Height', numberInput(el.h, (v) => upd((e) => { if (e.lockRatio) e.w = v * ratio; e.h = v; }), { min: 4, suffix: 'pt' })),
+          field('Rotation', numberInput(el.rot || 0, (v) => upd((e) => { e.rot = ((v % 360) + 360) % 360; }), { suffix: '°' }))),
+        checkbox('Lock aspect ratio', el.lockRatio, (v) => upd((e) => { e.lockRatio = v; }))));
+      out.push(section('Position',
+        h('div', { class: 'pf-grid' },
+          field('X', numberInput(el.x, (v) => upd((e) => { e.x = v; }), { suffix: 'pt' })),
+          field('Y', numberInput(el.y, (v) => upd((e) => { e.y = v; }), { suffix: 'pt' }))),
+        h('div', { class: 'pf-row' },
+          h('button', { type: 'button', class: 'btn', onclick: () => app.align('center', { toSlide: true }) }, 'Center horizontally'),
+          h('button', { type: 'button', class: 'btn', onclick: () => app.align('middle', { toSlide: true }) }, 'Center vertically'))));
+    }
+
+    if (els.every((e) => e.type !== 'line')) {
+      const fillable = els.some((e) => e.type === 'shape' || e.type === 'text' || e.type === 'table');
+      const look = h('div', { class: 'pf-stack' });
+      if (fillable) look.append(colorButton(el.type === 'table' ? 'Header colour' : 'Fill', el.fill, theme, (v) => app.setElementProp('fill', v), { allowNone: true }));
+      look.append(
+        colorButton('Border', el.stroke?.width ? el.stroke.color : 'none', theme, (v) => app.setStroke({ color: v, width: Math.max(1, el.stroke?.width || 2) }), { allowNone: true, noneLabel: 'No border' }),
+        field('Border weight', numberInput(el.stroke?.width || 0, (v) => app.setStroke({ width: v }), { min: 0, max: 50, step: 0.5, suffix: 'pt' })),
+      );
+      const op = h('input', { type: 'range', min: '0', max: '100', value: String(Math.round((el.opacity ?? 1) * 100)) });
+      const opOut = h('output', {}, `${op.value}%`);
+      op.addEventListener('input', () => {
+        opOut.textContent = `${op.value}%`;
+        upd((e) => { e.opacity = +op.value / 100; }, 'opacity');
+      });
+      look.append(field('Opacity', h('div', { class: 'pf-row' }, op, opOut)), checkbox('Drop shadow', el.shadow, (v) => upd((e) => { e.shadow = v; })));
+      out.push(section('Appearance', look));
+    }
+
+    if (els.some((e) => canHoldText(e) || e.type === 'table')) {
+      const t = textStyle(el, theme);
+      out.push(section('Text',
+        field('Vertical alignment', select([['top', 'Top'], ['middle', 'Middle'], ['bottom', 'Bottom']], t.valign, (v) => app.setTextProp('valign', v))),
+        field('Line spacing', select([[1, 'Single'], [1.15, '1.15'], [1.25, '1.25'], [1.5, '1.5'], [2, 'Double']], t.lineHeight, (v) => app.setTextProp('lineHeight', +v))),
+        field('Space between paragraphs', select([[0, 'None'], [0.35, 'Small'], [0.8, 'Medium'], [1.4, 'Large']], t.spacing, (v) => app.setTextProp('spacing', +v)))));
+    }
+
+    if (single && el.type === 'image') {
+      const alt = h('textarea', { rows: 2, placeholder: 'Describe the picture for people who can’t see it' });
+      alt.value = el.alt || '';
+      alt.addEventListener('change', () => upd((e) => { e.alt = alt.value; }));
+      out.push(section('Picture',
+        field('Fit', select([['fill', 'Stretch to box'], ['cover', 'Fill box (crop)'], ['contain', 'Fit inside box']], el.fit || 'fill', (v) => upd((e) => { e.fit = v; }))),
+        field('Corner radius', numberInput(el.radius || 0, (v) => upd((e) => { e.radius = v; }), { min: 0, suffix: 'pt' })),
+        h('div', { class: 'pf-row' },
+          h('button', { type: 'button', class: 'btn', onclick: () => app.flip('h') }, 'Flip horizontally'),
+          h('button', { type: 'button', class: 'btn', onclick: () => app.flip('v') }, 'Flip vertically')),
+        h('button', { type: 'button', class: 'btn', onclick: () => app.resetImageSize() }, 'Reset size'),
+        field('Alt text', alt)));
+    }
+
+    if (single && el.type === 'table') {
+      out.push(section('Table',
+        checkbox('Header row', el.header, (v) => upd((e) => { e.header = v; })),
+        checkbox('Banded rows', el.banded, (v) => upd((e) => { e.banded = v; })),
+        h('p', { class: 'pf-hint' }, `${el.cells.length} rows × ${el.cells[0]?.length || 0} columns. Double-click the table to type in it; Tab moves between cells.`)));
+    }
+
+    out.push(section('Arrange', checkbox('Lock position', els.every((e) => e.locked), (v) => upd((e) => { e.locked = v; }))));
+    return out;
+  }
+}

@@ -1,182 +1,209 @@
 import './styles/app.css';
-import { createDoc, findDocByFile, saveDoc, getDoc, addVersion } from './storage/db.js';
-import { importFile, extOf } from './io/import.js';
+import { createDeck, getDeck, duplicateDeck, saveDeck, findDeckByFile } from './storage/db.js';
+import { importFile, extOf } from './io/files.js';
 import { pickFileToOpen, formatOfName, handleFromDataTransfer } from './io/file-access.js';
 import { renderStartScreen } from './ui/start.js';
-import { toast, h } from './ui/dom.js';
+import { TEMPLATES } from './model/templates.js';
+import { toast, h, shortcutLabel } from './ui/dom.js';
 import { toggleTheme, syncThemeColor } from './ui/theme.js';
-import { initInstall, isChromeOS } from './ui/install.js';
+import { initInstall } from './ui/install.js';
 import { watchErrors, noteError } from './diagnostics.js';
 
 watchErrors();
 const root = document.getElementById('app');
-let screen = null; // current EditorScreen
+let screen = null; // the open EditorScreen
+let startScreen = null; // its listeners stop when the editor opens
 let routing = Promise.resolve();
-
 
 const go = (hash) => {
   if (location.hash === hash) route();
   else location.hash = hash;
 };
+const openDeck = (id) => go(`#/p/${encodeURIComponent(id)}`);
 
 async function newFromTemplate(t) {
-  const id = await createDoc({ title: t.title, html: t.html(), settings: t.settings || {} });
-  go(`#/doc/${encodeURIComponent(id)}`);
+  const deck = t.build();
+  openDeck(await createDeck(deck));
 }
 
 /**
- * Open a file from the device. With a file handle (Chromium), the document
- * stays linked to the file so Save writes back to it. With `show: false` the
- * file is added to the document list without switching to it. Resolves to the
- * document id, or null if the file couldn't be read.
+ * Open a file from the device. With a file handle (Chrome, Edge, installed
+ * app), the presentation stays linked to the file so Save writes back to it;
+ * otherwise it's opened as a copy. Opening a file that's already linked to a
+ * presentation goes back to that presentation. Resolves to the deck id or null.
  */
 async function importAndOpen(file, handle = null, { show = true } = {}) {
-  let dropped = false;
   const open = (id) => {
-    if (show) go(`#/doc/${encodeURIComponent(id)}`);
-    else if (dropped) route(); // the document on screen was reloaded behind it: show it again
+    if (show) openDeck(id);
     return id;
   };
   try {
     const format = handle ? formatOfName(file.name) : null;
-    let existing = handle && format ? await findDocByFile(handle) : null;
-    if (existing && screen?.docId === existing.id) {
-      // It's open here: store the editor's pending edits first, so `unsaved` is current.
-      await screen.flush();
-      existing = await findDocByFile(handle);
-    }
-    if (existing && Math.abs((existing.file.lastModified || 0) - file.lastModified) < 1000) {
-      // Re-opening a file we already have, unchanged on disk: reuse that
-      // document (it keeps comments, history and anything the file format
-      // can't store, plus any edits not yet saved to the file).
-      return open(existing.id);
-    }
-    const { title, html, settings, comments } = await importFile(file);
-    const link = handle && format ? { handle, name: file.name, format, lastModified: file.lastModified, unsaved: false } : null;
-    if (existing && !existing.file.unsaved) {
-      // The file changed on disk and we have nothing newer: refresh the same
-      // document from it (the previous state goes to version history).
-      const old = await getDoc(existing.id);
-      await addVersion(existing.id, { title: old.title, json: old.json, html: old.html, settings: old.settings, comments: old.comments, words: old.words, reason: 'before-reload' });
-      await saveDoc(existing.id, { html, settings: { ...old.settings, ...settings }, comments: comments || {}, file: link });
-      dropped = await dropOpenCopy(existing.id);
-      toast(`Reloaded “${file.name}”, which changed on disk`, { type: 'success' });
-      return open(existing.id);
-    }
+    const link = format ? { handle, name: file.name, format, lastModified: file.lastModified, dirty: false } : null;
+    const existing = link ? await findDeckByFile(handle) : null;
     if (existing) {
-      // Both changed: keep our unsaved version as its own document, and link the file to a fresh import.
-      await saveDoc(existing.id, { file: null, title: `${existing.title} (unsaved changes)` });
-      dropped = await dropOpenCopy(existing.id);
-      toast(`“${file.name}” changed on disk. Your unsaved version was kept as “${existing.title} (unsaved changes)”.`, { timeout: 7000 });
+      if (screen?.deckId === existing.id) await screen.flush();
+      const deck = await getDeck(existing.id);
+      // Unchanged on disk: reuse the presentation (it keeps everything the file format can't, and unsaved edits).
+      if (deck.file && Math.abs((deck.file.lastModified || 0) - file.lastModified) < 1000) return open(deck.id);
+      if (!deck.file?.dirty) {
+        // Changed on disk and nothing newer here: reload the same presentation from the file.
+        const fresh = await importFile(file);
+        Object.assign(deck, { slides: fresh.slides, media: fresh.media, size: fresh.size, themeId: fresh.themeId, file: link });
+        await saveDeck(deck);
+        await dropOpenCopy(deck.id);
+        toast(`Reloaded “${file.name}”, which changed on disk`, { type: 'success' });
+        return open(deck.id);
+      }
+      // Both changed: keep the unsaved version as its own presentation and open the file fresh.
+      deck.file = null;
+      deck.title = `${deck.title} (unsaved changes)`;
+      await saveDeck(deck);
+      await dropOpenCopy(deck.id);
+      toast(`“${file.name}” changed on disk. Your unsaved version was kept as “${deck.title}”.`, { timeout: 8000 });
     }
-    const id = await createDoc({ title, html, settings: settings || {}, comments: comments || {}, file: link });
-    if (show) toast(openedMessage(file.name, link, handle), { type: 'success', timeout: link ? 4000 : 7000 });
+    const deck = await importFile(file);
+    if (link) {
+      deck.file = link;
+      deck.title = file.name.replace(/\.[^.]+$/, '');
+    }
+    const id = await createDeck(deck);
+    if (show) {
+      toast(link
+        ? `Opened “${file.name}”. Save (${shortcutLabel('Mod-S')}) writes your changes back to it.`
+        : `Opened a copy of “${file.name}”. Use File › Save as to save it to a file.`, { type: 'success', timeout: 6000 });
+    }
     return open(id);
   } catch (err) {
-    // Readers mark the problems they explain (wrong or damaged file) with a code; anything else is a bug.
     if (err?.code) console.warn(err);
     else console.error(err);
     noteError(err, `opening ${extOf(file.name) || 'file'}`);
-    toast(`${file.name}: ${err.message || 'Could not open that file.'}`, { type: 'error', timeout: 6000 });
+    toast(`${file.name}: ${err.message || 'Couldn’t open that file.'}`, { type: 'error', timeout: 7000 });
     return null;
   }
 }
 
-/**
- * After changing a document in storage behind the open editor's back, close
- * that editor without saving its stale copy over the change (opening the
- * document again then shows what was stored).
- */
+/** After changing a deck in storage behind the open editor, close it without saving its stale copy. */
 async function dropOpenCopy(id) {
-  if (screen?.docId !== id) return false;
+  if (screen?.deckId !== id) return false;
   const stale = screen;
   screen = null;
-  window.libreword = null;
+  window.libreslides = null;
   await stale.destroy({ save: false });
+  route();
   return true;
 }
 
-/** What opening a file did: linked to it, or opened as a copy (and why). */
-function openedMessage(name, link, handle) {
-  if (link) return `Opened “${name}” — Save writes your changes back to it`;
-  const ext = extOf(name);
-  if (/^(dotx|dotm|ott|dot)$/.test(ext)) return `New document from the template “${name}”`;
-  if (handle && /^(doc|docm|fodt)$/.test(ext)) {
-    return `Opened “${name}”. LibreWord can’t save .${ext} files, so Save As saves it as a Word document (.docx) or OpenDocument (.odt).`;
-  }
-  return `Opened a copy of “${name}”`;
-}
-
-async function openFromDevice() {
+async function openFromDevice(file = null, handle = null) {
+  if (file) return importAndOpen(file, handle);
   const picked = await pickFileToOpen();
-  if (picked) importAndOpen(picked.file, picked.handle);
+  return picked ? importAndOpen(picked.file, picked.handle) : null;
 }
 
-const prefetchEditor = () => import('./ui/editor-screen.js').catch(() => {});
+async function downloadPptx(id) {
+  const deck = await getDeck(id);
+  if (!deck) return;
+  const { exportPptx } = await import('./io/pptx-export.js');
+  exportPptx(deck).catch((err) => toast(`Couldn’t create the PowerPoint file: ${err.message}`, { type: 'error' }));
+}
 
-async function showStart() {
-  document.title = 'LibreWord';
-  // Warm the editor chunk while the user browses, so opening a document is instant.
+const prefetchEditor = () => import('./editor/editor-screen.js').catch(() => {});
+
+function showStart() {
+  document.title = 'LibreSlides';
   (window.requestIdleCallback || ((fn) => setTimeout(fn, 1500)))(prefetchEditor);
-  renderStartScreen(root, {
-    onOpen: (id) => go(`#/doc/${encodeURIComponent(id)}`),
+  startScreen = renderStartScreen(root, {
+    onOpen: openDeck,
     onTemplate: newFromTemplate,
-    onImport: openFromDevice,
+    onImport: () => openFromDevice(),
     onToggleTheme: toggleTheme,
+    onDownload: downloadPptx,
   });
 }
 
 async function showEditor(id) {
-  const { EditorScreen } = await import('./ui/editor-screen.js');
+  const { EditorScreen } = await import('./editor/editor-screen.js');
   const s = new EditorScreen(root, {
-    docId: id,
+    deckId: id,
     onHome: () => go('#/'),
-    onOpenDoc: (docId, { force } = {}) => {
-      // Reload from storage without saving the stale copy over it.
-      if (force && docId === screen?.docId) dropOpenCopy(docId).then(route);
-      else go(`#/doc/${encodeURIComponent(docId)}`);
+    onOpenFile: (file, handle) => openFromDevice(file, handle),
+    onNewDeck: () => newFromTemplate(TEMPLATES[0]),
+    onCopyDeck: async (deckId) => {
+      const copy = await duplicateDeck(deckId);
+      if (copy) {
+        toast('Opened a copy');
+        openDeck(copy);
+      }
     },
-    onNewDoc: newFromTemplate,
-    onImport: importAndOpen,
   });
   const ok = await s.mount();
   if (!ok) {
-    toast('That document no longer exists.', { type: 'error' });
+    toast('That presentation no longer exists.', { type: 'error' });
     go('#/');
     return;
   }
   screen = s;
-  // Handy for automation and power users poking around in devtools.
-  window.libreword = { screen: s, editor: s.editor };
+  document.title = `${s.deck.title} – LibreSlides`;
+  window.libreslides = { screen: s };
+}
+
+/** The audience window of presenter view. */
+async function showAudience(id) {
+  const deck = await getDeck(id);
+  if (!deck) {
+    root.replaceChildren(h('p', { class: 'empty-state' }, 'That presentation isn’t available.'));
+    return;
+  }
+  document.title = `${deck.title} – Slideshow`;
+  root.replaceChildren();
+  const { runAudience } = await import('./present/present.js');
+  runAudience(deck);
 }
 
 function route() {
   routing = routing.then(async () => {
-    const m = /^#\/doc\/(.+)$/.exec(location.hash);
+    const m = /^#\/(p|show)\/(.+)$/.exec(location.hash);
     let id = null;
     try {
-      id = m ? decodeURIComponent(m[1]) : null;
+      id = m ? decodeURIComponent(m[2]) : null;
     } catch {
-      id = ''; // malformed: not a document we have
+      id = '';
     }
-    if (screen && screen.docId === id) return;
-    // Back button, links, launch handlers…: offer to save to the linked file first.
+    // The "New presentation" app shortcut.
+    if (location.hash === '#/new') {
+      if (screen && !(await screen.confirmLeave())) {
+        history.replaceState(null, '', `#/p/${encodeURIComponent(screen.deckId)}`);
+        return;
+      }
+      const id = await createDeck(TEMPLATES[0].build());
+      history.replaceState(null, '', `#/p/${encodeURIComponent(id)}`);
+      return route();
+    }
+    if (m?.[1] === 'show') {
+      root.removeAttribute('aria-busy');
+      await showAudience(id);
+      return;
+    }
+    if (screen && screen.deckId === id) return;
+    // Back button, links, file launches…: offer to save to the linked file first.
     if (screen && !(await screen.confirmLeave())) {
-      location.hash = `#/doc/${encodeURIComponent(screen.docId)}`;
+      history.replaceState(null, '', `#/p/${encodeURIComponent(screen.deckId)}`);
       return;
     }
     if (screen) {
       await screen.destroy();
       screen = null;
-      window.libreword = null;
+      window.libreslides = null;
     }
     root.removeAttribute('aria-busy');
     if (m && !id) {
       history.replaceState(null, '', '#/');
-      toast('That document link isn’t valid.', { type: 'error' });
+      toast('That presentation link isn’t valid.', { type: 'error' });
     }
+    startScreen?.destroy();
+    startScreen = null;
     if (id) await showEditor(id);
-    else await showStart();
+    else showStart();
   }).catch((err) => {
     console.error(err);
     noteError(err, 'route');
@@ -185,97 +212,69 @@ function route() {
   return routing;
 }
 
-// Storage events from db.js: a newer LibreWord in another tab upgraded the database,
-// or this tab's upgrade is waiting for older tabs to close.
-window.addEventListener('libreword:db-outdated', () => {
-  toast('LibreWord was updated in another tab. Reload this tab to keep saving.', {
-    type: 'error', timeout: 60000, action: { label: 'Reload', run: () => location.reload() },
-  });
-});
-window.addEventListener('libreword:db-blocked', () => {
-  toast('Close other LibreWord tabs to finish updating.', { timeout: 10000 });
-});
+window.addEventListener('libreslides:db-blocked', () => toast('Close other LibreSlides tabs to finish updating.', { timeout: 10000 }));
 
 syncThemeColor();
-matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
-  syncThemeColor();
-  screen?.ruler.render(); // drawn on a canvas, in the theme's colours
-});
-
+matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', syncThemeColor);
 window.addEventListener('hashchange', route);
 route();
 
-// Opening files via drag & drop anywhere on the start screen.
+// Drop a .pptx or .lslides file anywhere on the start screen to open it.
 let dragDepth = 0;
 let overlay = null;
+const clearOverlay = () => {
+  dragDepth = 0;
+  overlay?.remove();
+  overlay = null;
+};
 window.addEventListener('dragenter', (e) => {
   if (screen || !e.dataTransfer?.types?.includes('Files')) return;
   dragDepth++;
   if (!overlay) {
-    overlay = h('div', { class: 'drop-overlay' }, 'Drop to open in LibreWord');
+    overlay = h('div', { class: 'drop-overlay' }, 'Drop to open in LibreSlides');
     document.body.append(overlay);
   }
 });
 window.addEventListener('dragleave', () => {
-  if (--dragDepth <= 0) {
-    dragDepth = 0;
-    overlay?.remove();
-    overlay = null;
-  }
+  if (--dragDepth <= 0) clearOverlay();
 });
-// In the editor, the document handles drops on itself; a file dropped anywhere
-// else (the grey canvas, the ribbon) would make the browser navigate away to it.
-const outsideDocument = (e) => screen && !screen.editorEl?.contains(e.target) && e.dataTransfer?.types?.includes('Files');
 window.addEventListener('dragover', (e) => {
-  if (!screen || outsideDocument(e)) e.preventDefault();
+  if (e.dataTransfer?.types?.includes('Files')) e.preventDefault();
 });
 window.addEventListener('drop', (e) => {
-  dragDepth = 0;
-  overlay?.remove();
-  overlay = null;
-  if (screen) {
-    if (!outsideDocument(e)) return;
-    e.preventDefault();
-    // As if dropped at the cursor: pictures are inserted there, documents opened.
-    if (!screen.handleFiles(e.dataTransfer.files, screen.editor.state.selection.head, e.dataTransfer)) {
-      toast('LibreWord opens Word, OpenDocument, RTF, Markdown, HTML and text files, and inserts pictures.', { type: 'error' });
-    }
-    return;
-  }
-  e.preventDefault();
-  const file = e.dataTransfer?.files?.[0];
+  clearOverlay();
+  if (!e.dataTransfer?.files?.length) return;
+  e.preventDefault(); // never navigate away to the dropped file
+  if (screen) return; // the editor handles drops on its slide
+  const file = e.dataTransfer.files[0];
   // The handle must be requested synchronously, during the drop event.
-  const handlePromise = handleFromDataTransfer(e.dataTransfer, file);
-  if (file) handlePromise.then((handle) => importAndOpen(file, handle?.kind === 'file' ? handle : null));
+  handleFromDataTransfer(e.dataTransfer, file).then((handle) => openFromDevice(file, handle));
 });
 
-// Files opened through the installed app's file handler: "Open with LibreWord"
-// in the Chromebook Files app, or double-clicking a file once LibreWord is the
-// default app for it. Several files at once open the first and add the rest to
-// the document list.
+// "Open with LibreSlides" from the file manager once installed. Several files
+// at once open the first and add the rest to the presentation list.
 if ('launchQueue' in window) {
   window.launchQueue.setConsumer(async (params) => {
-    const handles = (params.files || []).filter((f) => f.kind === 'file');
     let shown = false;
     let added = 0;
-    for (const handle of handles) {
+    for (const handle of params.files || []) {
+      if (handle.kind !== 'file') continue;
       let file;
       try {
         file = await handle.getFile();
       } catch (err) {
-        toast(`Couldn't read “${handle.name}”: ${err.message || err}`, { type: 'error', timeout: 6000 });
+        toast(`Couldn’t read “${handle.name}”: ${err.message || err}`, { type: 'error', timeout: 6000 });
         continue;
       }
       const id = await importAndOpen(file, handle, { show: !shown });
       if (id && shown) added++;
       if (id) shown = true;
     }
-    if (added) toast(`${added} more file${added === 1 ? ' was' : 's were'} added to your Recent documents.`, { timeout: 6000 });
+    if (added) toast(`${added} more presentation${added === 1 ? ' was' : 's were'} added to your list.`, { timeout: 6000 });
   });
 }
 
-// Ctrl+O on the start screen (the editor handles its own shortcuts). Without
-// this, an installed app window would hand Ctrl+O to the browser instead.
+// Ctrl+O on the start screen (the editor has its own shortcuts).
 window.addEventListener('keydown', (e) => {
   if (screen || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== 'o') return;
   if (document.querySelector('dialog[open]')) return;
@@ -284,30 +283,24 @@ window.addEventListener('keydown', (e) => {
 });
 
 initInstall({
-  onInstalled: () => toast(
-    isChromeOS()
-      ? 'LibreWord is installed. Open it from the Launcher, or right-click a document in the Files app and choose Open with → LibreWord.'
-      : 'LibreWord is installed. You can open it from your apps, and open documents with it from your file manager.',
-    { type: 'success', timeout: 9000 },
-  ),
+  onInstalled: () => toast('LibreSlides is installed. Open it from your apps — it works offline, and can open .pptx files from your file manager.', { type: 'success', timeout: 9000 }),
 });
 
-// Service worker: offline support once installed. Registered after load so it
-// never competes with the first paint.
+// Service worker: offline support. Registered after load so it never competes with the first paint.
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
   window.addEventListener('load', () => {
     import('virtual:pwa-register').then(({ registerSW }) => {
       const updateSW = registerSW({
         immediate: true,
-        onNeedRefresh: () => toast('A new version of LibreWord is ready.', {
+        onNeedRefresh: () => toast('A new version of LibreSlides is ready.', {
           timeout: 60000, action: { label: 'Update', run: () => updateSW() },
         }),
-        // The new version has taken over: save, then reload onto it.
         onNeedReload: () => (screen ? screen.flush() : Promise.resolve()).catch(() => {}).finally(() => location.reload()),
+        onOfflineReady: () => toast('LibreSlides is ready to work offline.', { type: 'success' }),
       });
     }).catch(() => {});
   });
 }
 
-// Ask the browser to keep our IndexedDB data even under storage pressure.
+// Ask the browser to keep our data even under storage pressure.
 navigator.storage?.persist?.().catch(() => {});
