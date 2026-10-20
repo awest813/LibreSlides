@@ -1,0 +1,151 @@
+/** Serialize editor JSON to GitHub-flavoured Markdown. */
+
+const escapeText = (s) => s
+  .replace(/([\\`*_~[\]#<>|])/g, '\\$1')
+  .replace(/&(?=#?\w+;)/g, '\\&') // "&lt;" typed as text must not turn into "<"
+  // Text that would start a list, rule or setext heading: "3. Results", "1) first", "-", "---".
+  .replace(/^(\s*)(\d+)([.)])(?=\s|$)/, '$1$2\\$3')
+  .replace(/^(\s*)([-+])(?=\s|$|-+\s*$)/, '$1\\$2')
+  .replace(/^(\s*)=(?==*\s*$)/, '$1\\=');
+
+/** Link and image destinations with spaces or brackets go in <…>. */
+const destination = (url = '') => (/[\s()<>]/.test(url) ? `<${url.replace(/[<>]/g, encodeURIComponent)}>` : url);
+
+/** A backtick fence longer than any run of backticks inside `text`. */
+const fenceFor = (text, min = 1) => '`'.repeat(Math.max(min, ...(text.match(/`+/g) || []).map((r) => r.length + 1)));
+
+/** Inline code span; backslashes don't escape inside code, so widen the fence instead. */
+function codeSpan(text) {
+  const fence = fenceFor(text);
+  const pad = /^`|`$/.test(text) ? ' ' : '';
+  return `${fence}${pad}${text}${pad}${fence}`;
+}
+
+function inline(nodes = []) {
+  let out = '';
+  for (const n of nodes) {
+    if (n.type === 'hardBreak') {
+      out += '  \n';
+      continue;
+    }
+    if (n.type === 'image') {
+      out += `![${(n.attrs?.alt || '').replace(/([\\[\]])/g, '\\$1')}](${destination(n.attrs?.src || '')})`;
+      continue;
+    }
+    if (n.type !== 'text') continue;
+    const marks = n.marks || [];
+    const has = (t) => marks.some((m) => m.type === t);
+    const code = has('code');
+    let t = code ? codeSpan(n.text) : escapeText(n.text);
+    if (!code) {
+      // Keep surrounding whitespace outside of the emphasis markers.
+      const [, lead, core, trail] = /^(\s*)([\s\S]*?)(\s*)$/.exec(t);
+      let c = core;
+      if (c) {
+        if (has('strike')) c = `~~${c}~~`;
+        if (has('italic')) c = `*${c}*`;
+        if (has('bold')) c = `**${c}**`;
+        if (has('underline')) c = `<u>${c}</u>`;
+        if (has('subscript')) c = `<sub>${c}</sub>`;
+        if (has('superscript')) c = `<sup>${c}</sup>`;
+        if (has('highlight')) c = `<mark>${c}</mark>`;
+      }
+      t = lead + c + trail;
+    }
+    const link = marks.find((m) => m.type === 'link');
+    if (link) {
+      t = `[${t}](${destination(link.attrs.href)})`;
+      // "Wow!" before a link would make it an image: "![…](…)".
+      if (out.endsWith('!')) out = `${out.slice(0, -1)}\\!`;
+    }
+    out += t;
+  }
+  return out;
+}
+
+const textOf = (node) => (node.content || []).map((c) => (c.type === 'text' ? c.text : textOf(c))).join('');
+
+function table(node) {
+  const rows = (node.content || []).map((row) =>
+    (row.content || []).map((cell) => (cell.content || [])
+      // A cell is one line: line breaks and nested blocks (lists) become <br>,
+      // and every "|" is escaped, even inside code spans, or it would split the cell.
+      .map((child) => (child.type === 'paragraph' ? inline(child.content).replace(/ {2}\n/g, '<br>') : block(child, {}).replace(/\n/g, '<br>')))
+      .join('<br>')
+      .replace(/(?<!\\)\|/g, '\\|')),
+  );
+  if (!rows.length) return '';
+  const width = Math.max(...rows.map((r) => r.length));
+  const pad = (r) => [...r, ...Array(width - r.length).fill('')];
+  const lines = [`| ${pad(rows[0]).join(' | ')} |`, `| ${Array(width).fill('---').join(' | ')} |`];
+  for (const r of rows.slice(1)) lines.push(`| ${pad(r).join(' | ')} |`);
+  return lines.join('\n');
+}
+
+function block(node, ctx) {
+  switch (node.type) {
+    case 'paragraph':
+      // Leading spaces as entities: four of them would start a code block.
+      return inline(node.content).replace(/^[ \t]+/, (ws) => ws.replace(/ /g, '&#32;').replace(/\t/g, '&#9;'));
+    case 'heading':
+      return `${'#'.repeat(node.attrs?.level || 1)} ${inline(node.content)}`;
+    case 'blockquote':
+      return blocks(node.content, ctx).split('\n').map((l) => (l ? `> ${l}` : '>')).join('\n');
+    case 'codeBlock': {
+      const lang = node.attrs?.language || '';
+      const text = textOf(node);
+      const fence = fenceFor(text, 3);
+      return `${fence}${lang}\n${text}\n${fence}`;
+    }
+    case 'horizontalRule':
+      return '---';
+    case 'pageBreak':
+      return '<div data-page-break style="page-break-after: always"></div>';
+    case 'bulletList':
+    case 'orderedList':
+    case 'taskList': {
+      let n = node.attrs?.start ?? 1;
+      return (node.content || [])
+        .map((item) => {
+          let marker = '-';
+          if (node.type === 'orderedList') marker = `${n++}.`;
+          if (node.type === 'taskList') marker = `- [${item.attrs?.checked ? 'x' : ' '}]`;
+          const body = blocks(item.content, ctx);
+          // Task items continue under the text after "- ", not after "[ ]" (that would be a code block).
+          const indent = ' '.repeat(node.type === 'taskList' ? 2 : marker.length + 1);
+          return `${marker} ${body.split('\n').map((l, i) => (i === 0 || !l ? l : indent + l)).join('\n')}`;
+        })
+        .join('\n');
+    }
+    case 'table':
+      return table(node);
+    case 'tableOfContents':
+      return ctx.headings
+        .map((h) => `${'  '.repeat(h.level - ctx.minLevel)}- ${escapeText(h.text)}`)
+        .join('\n');
+    default:
+      return node.content ? blocks(node.content, ctx) : '';
+  }
+}
+
+function blocks(nodes = [], ctx) {
+  const out = [];
+  nodes.forEach((n, i) => {
+    const s = block(n, ctx);
+    // Lists items inside one list are tight; everything else is separated by blank lines.
+    out.push(s);
+    if (i < nodes.length - 1) out.push('');
+  });
+  return out.join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
+export function jsonToMarkdown(doc) {
+  const headings = [];
+  const walk = (n) => {
+    if (n.type === 'heading') headings.push({ level: n.attrs?.level || 1, text: textOf(n) });
+    else (n.content || []).forEach(walk);
+  };
+  walk(doc);
+  const ctx = { headings, minLevel: Math.min(6, ...headings.map((h) => h.level)) };
+  return `${blocks(doc.content || [], ctx).trim()}\n`;
+}
