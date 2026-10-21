@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
 import { newDeck, newTable } from '../../src/model/deck.js';
-import { normalizeTable, anchorOf, insertRow, insertCol, deleteRow, deleteCol, mergeCells, unmergeCell } from '../../src/model/tables.js';
+import { normalizeTable, anchorOf, insertRow, insertCol, deleteRow, deleteCol, mergeCells, unmergeCell, setBorders, setMargins, cellBorder, blockRange, CELL_MARGIN } from '../../src/model/tables.js';
 import { renderElement } from '../../src/render/render.js';
 import { themeById } from '../../src/model/themes.js';
 import { buildPptx } from '../../src/io/pptx-export.js';
@@ -70,6 +70,56 @@ describe('merged table cells', () => {
   });
 });
 
+describe('cell borders and margins', () => {
+  const red = { color: '#ff0000', width: 2, dash: 'solid' };
+  /** Which sides of each cell have a border of their own ("trbl", '-' for none of its own). */
+  const sides = (t) => t.cells.map((row) => row.map((c) => ['t', 'r', 'b', 'l'].filter((s) => c.borders?.[s]).join('') || '-').join(' '));
+
+  it('draws outside borders round a range, with the cells across each edge in step', () => {
+    const t = grid(3, 3);
+    setBorders(t, { r0: 1, c0: 1, r1: 1, c1: 1 }, 'outside', red);
+    expect(sides(t)).toEqual(['- b -', 'r trbl l', '- t -']);
+    expect(cellBorder(t, t.cells[0][1], 'b')).toEqual(red);
+    expect(cellBorder(t, t.cells[0][0], 'b')).toEqual(t.stroke); // the table's border
+  });
+
+  it('draws inside borders, one side, or none, and takes in whole merged blocks', () => {
+    const t = grid(2, 3);
+    setBorders(t, { r0: 0, c0: 0, r1: 1, c1: 2 }, 'inside', red);
+    expect(sides(t)).toEqual(['rb rbl bl', 'tr trl tl']);
+    setBorders(t, { r0: 0, c0: 0, r1: 1, c1: 2 }, 'none');
+    expect(t.cells.flat().every((c) => ['t', 'r', 'b', 'l'].every((s) => c.borders[s].color === 'none'))).toBe(true);
+    const u = grid(3, 3);
+    mergeCells(u, 0, 0, 'down');
+    expect(blockRange(u, 1, 1, 1, 0)).toEqual({ r0: 0, c0: 0, r1: 1, c1: 1 });
+    setBorders(u, { r0: 1, c0: 0, r1: 1, c1: 0 }, 'bottom', red); // the bottom of the merged block
+    expect(u.cells[0][0].borders.b).toEqual(red);
+    expect(u.cells[2][0].borders.t).toEqual(red);
+  });
+
+  it('sets margins, dropping them when they are back to the defaults', () => {
+    const t = grid(2, 2);
+    setMargins(t, { r0: 0, c0: 0, r1: 0, c1: 1 }, { l: 20 });
+    expect(t.cells[0][1].margin).toEqual({ ...CELL_MARGIN, l: 20 });
+    expect(t.cells[1][0].margin).toBeUndefined();
+    setMargins(t, { r0: 0, c0: 0, r1: 0, c1: 1 }, { l: CELL_MARGIN.l });
+    expect(t.cells[0][1].margin).toBeUndefined();
+  });
+
+  it('draws each cell\'s own borders and margins', () => {
+    const t = grid(1, 2);
+    t.stroke = { color: '#0000ff', width: 1, dash: 'solid' };
+    t.cells[0][0].borders = { r: { color: '#ff0000', width: 3, dash: 'dot' }, b: { color: 'none', width: 0, dash: 'solid' } };
+    t.cells[0][0].margin = { t: 1, r: 2, b: 3, l: 4 };
+    const deck = newDeck();
+    const td = renderElement(t, { theme: themeById(deck.themeId), deck }).querySelector('td');
+    expect(td.style.borderRight).toBe('3px dotted rgb(255, 0, 0)');
+    expect(td.style.borderBottomStyle).toBe('none');
+    expect(td.style.borderTop).toBe('1px solid rgb(0, 0, 255)');
+    expect(td.style.padding).toBe('1px 2px 3px 4px');
+  });
+});
+
 describe('tables in PowerPoint files', () => {
   const toBuffer = (blob) => blob.arrayBuffer();
   const deckWith = (el) => {
@@ -95,6 +145,61 @@ describe('tables in PowerPoint files', () => {
     expect(show(back).map((r) => r.replace(/<\/?p>/g, ''))).toEqual(['0,00,1+1x2 | · | 0,2', '1,0 | 1,1 | 1,22,2+2x1', '2,0 | 2,1 | ·']);
     expect(back.cells[1][0].valign).toBe('bottom');
     expect(back.rowHeights.map((v) => Math.round(v * 10) / 10)).toEqual([0.2, 0.3, 0.5]);
+  });
+
+  it('keeps cell borders and margins', async () => {
+    const t = grid(3, 3);
+    t.header = false;
+    t.stroke = { color: '#999999', width: 1, dash: 'solid' };
+    mergeCells(t, 1, 1, 'right');
+    setBorders(t, { r0: 0, c0: 0, r1: 0, c1: 2 }, 'bottom', { color: '#ff0000', width: 3, dash: 'solid' });
+    setBorders(t, { r0: 1, c0: 1, r1: 1, c1: 2 }, 'outside', { color: '#00aa00', width: 1.5, dash: 'dot' });
+    setBorders(t, { r0: 2, c0: 0, r1: 2, c1: 0 }, 'none');
+    setMargins(t, { r0: 0, c0: 0, r1: 0, c1: 0 }, { l: 20, t: 0 });
+    setMargins(t, { r0: 2, c0: 2, r1: 2, c1: 2 }, { r: 12.5 });
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deckWith(t))));
+    const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+    expect(xml).toContain('marL="254000" marR="91440" marT="0" marB="45720"');
+    expect(xml).toContain('<a:prstDash val="sysDot"/>');
+    expect(xml).not.toContain('sysDash');
+    const back = (await importPptx(await zip.generateAsync({ type: 'arraybuffer' }))).slides[0].elements[0];
+    expect(back.stroke).toEqual(t.stroke);
+    const view = (x) => x.cells.map((row) => row.map((c) => (c.merged ? null : { borders: c.borders, margin: c.margin })));
+    expect(view(back)).toEqual(JSON.parse(JSON.stringify(view(t))));
+  });
+
+  it('reads borders cell by cell and side by side from PowerPoint tables and their styles', async () => {
+    const t = grid(3, 2);
+    t.header = false;
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deckWith(t))));
+    let xml = await zip.file('ppt/slides/slide1.xml').async('string');
+    // As PowerPoint writes it: a style with lines between the rows and a thick one under the header,
+    // a cell with no top border, one with a blue dashed right border, and a cell with margins of its own.
+    const ln = (tag, inner) => `<a:${tag} w="25400"><a:solidFill><a:srgbClr val="0000FF"/></a:solidFill>${inner}</a:${tag}>`;
+    const cellPr = [
+      '<a:tcPr/>', `<a:tcPr marL="0" marR="182880">${ln('lnR', '<a:prstDash val="dash"/>')}</a:tcPr>`,
+      '<a:tcPr><a:lnT w="12700"><a:noFill/></a:lnT></a:tcPr>', '<a:tcPr/>',
+      '<a:tcPr/>', '<a:tcPr/>',
+    ];
+    let i = 0;
+    xml = xml.replace(/<a:tcPr[^>]*>[\s\S]*?<\/a:tcPr>|<a:tcPr[^>]*\/>/g, () => cellPr[i++] || '<a:tcPr/>');
+    xml = xml.replace(/<a:tblPr[^>]*\/>|<a:tblPr[^>]*>[\s\S]*?<\/a:tblPr>/, '<a:tblPr firstRow="1"><a:tableStyleId>{TEST-STYLE}</a:tableStyleId></a:tblPr>');
+    zip.file('ppt/slides/slide1.xml', xml);
+    const line = (w, color) => `<a:ln w="${w}"><a:solidFill><a:srgbClr val="${color}"/></a:solidFill></a:ln>`;
+    zip.file('ppt/tableStyles.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><a:tblStyleLst xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" def="{TEST-STYLE}"><a:tblStyle styleId="{TEST-STYLE}" styleName="Test">
+<a:wholeTbl><a:tcStyle><a:tcBdr><a:left><a:ln><a:noFill/></a:ln></a:left><a:right><a:ln><a:noFill/></a:ln></a:right><a:top>${line(12700, '000000')}</a:top><a:bottom>${line(12700, '000000')}</a:bottom><a:insideH>${line(12700, '000000')}</a:insideH><a:insideV><a:ln><a:noFill/></a:ln></a:insideV></a:tcBdr></a:tcStyle></a:wholeTbl>
+<a:firstRow><a:tcStyle><a:tcBdr><a:bottom>${line(38100, '000000')}</a:bottom></a:tcBdr></a:tcStyle></a:firstRow></a:tblStyle></a:tblStyleLst>`);
+    const back = (await importPptx(await zip.generateAsync({ type: 'arraybuffer' }))).slides[0].elements[0];
+    const thin = { color: '#000000', width: 1, dash: 'solid' };
+    const none = { color: 'none', width: 0, dash: 'solid' };
+    expect(back.stroke).toEqual(none); // most sides: the style's blank verticals
+    const b = back.cells.map((row) => row.map((c) => c.borders));
+    expect(b[0][0]).toEqual({ t: thin, b: { ...thin, width: 3 } });
+    expect(b[0][1]).toEqual({ t: thin, r: { color: '#0000ff', width: 2, dash: 'dash' }, b: { ...thin, width: 3 } });
+    expect(b[1][0]).toEqual({ b: thin }); // its top: none of its own
+    expect(b[2][1]).toEqual({ t: thin, b: thin });
+    expect(back.cells[0][1].margin).toEqual({ t: 3.6, r: 14.4, b: 3.6, l: 0 });
+    expect(back.cells[0][0].margin).toBeUndefined();
   });
 
   it('paints the cells the way PowerPoint\'s table style does', async () => {

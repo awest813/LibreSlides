@@ -1,6 +1,7 @@
 import PptxGenJS from 'pptxgenjs';
 import JSZip from 'jszip';
 import { slideSize, boxOf, htmlToText, ANIM_KINDS, motionPath, FIELD, fieldText } from '../model/deck.js';
+import { cellBorder, cellMargin } from '../model/tables.js';
 import { themeById, resolveColor, backgroundBaseColor } from '../model/themes.js';
 import { textStyle, themeDecor } from '../render/render.js';
 import { safeFileName } from '../ui/dom.js';
@@ -43,6 +44,16 @@ const DASH = { solid: 'solid', dash: 'dash', dot: 'sysDot', dashDot: 'dashDot', 
 function lineOpts(stroke, theme) {
   if (!stroke || !stroke.width || !stroke.color || stroke.color === 'none') return { type: 'none' };
   return { color: toHex(resolveColor(stroke.color, theme)) || '000000', width: stroke.width, dashType: DASH[stroke.dash] || 'solid' };
+}
+
+/**
+ * A table cell's margins for pptxgenjs, [top, right, bottom, left]. It reads
+ * them as points when the top one is at least 1, else as inches.
+ */
+function cellMargins(cell) {
+  const m = cellMargin(cell);
+  const list = [m.t, m.r, m.b, m.l];
+  return m.t >= 1 ? list : list.map((v) => v / IN);
 }
 
 function fillOpts(fill, theme, opacity = 1) {
@@ -460,8 +471,11 @@ async function addElement(pptx, s, el, deck, theme, marks) {
     const t = textStyle({ ...el, type: 'text' }, theme);
     const base = { fontFace: t.font, fontSize: t.size, color: toHex(resolveColor(t.color, theme)) || '000000' };
     const header = toHex(resolveColor(el.fill || 'theme:accent1', theme));
+    const cols = el.cells[0].length;
+    const dashes = []; // borders pptxgenjs can only write solid or dashed: { index (of the cell in the grid), side, dash }
     // Cells covered by a merged one are left out; pptxgenjs works out the rest from the spans.
-    const rows = el.cells.map((row, r) => row.filter((cell) => !cell.merged).map((cell) => {
+    const rows = el.cells.map((row, r) => row.map((cell, c) => {
+      if (cell.merged) return null;
       const options = {};
       if (cell.rowSpan > 1) options.rowspan = cell.rowSpan;
       if (cell.colSpan > 1) options.colspan = cell.colSpan;
@@ -472,15 +486,23 @@ async function addElement(pptx, s, el, deck, theme, marks) {
         options.color = 'FFFFFF';
         options.bold = true;
       } else if (el.banded && r % 2 === 0) options.fill = { color: 'EFEFEF' };
+      // Each side's border, pptxgenjs's way round (top, right, bottom, left); dotted and other dashes are set afterwards.
+      options.border = ['t', 'r', 'b', 'l'].map((side) => {
+        const line = lineOpts(cellBorder(el, cell, side), theme);
+        if (line.type === 'none') return { type: 'none' };
+        if (line.dashType !== 'solid') dashes.push({ index: r * cols + c, side, dash: line.dashType });
+        return { type: line.dashType === 'solid' ? 'solid' : 'dash', pt: line.width, color: line.color };
+      });
+      if (cell.margin) options.margin = cellMargins(cell);
       const runs = htmlToRuns(withFields(cell.text, marks.number), {}, marks.links);
       return { text: runs.length ? runs : '', options };
-    }));
-    const border = lineOpts(el.stroke, theme);
+    }).filter(Boolean));
+    const name = objectName || (dashes.length ? `LibreSlides shape ${++marks.count}` : undefined);
+    if (dashes.length) marks.tableDashes.set(name, dashes);
     s.addTable(rows, {
       x: g.x, y: g.y, w: g.w, colW: (el.colWidths || []).map((f) => f * g.w),
       rowH: el.rowHeights?.length === el.cells.length ? el.rowHeights.map((f) => f * g.h) : g.h / el.cells.length,
-      ...base, valign: 'middle', margin: 4, objectName,
-      border: border.type === 'none' ? { type: 'none' } : { type: 'solid', pt: border.width, color: border.color },
+      ...base, valign: 'middle', margin: cellMargins({}), objectName: name,
     });
     return;
   }
@@ -774,6 +796,25 @@ export function applyGroups(xml, members) {
   return xml;
 }
 
+const BORDER_TAG = { t: 'lnT', r: 'lnR', b: 'lnB', l: 'lnL' };
+
+/** Table borders' dashes, which pptxgenjs writes as solid or "sysDash" only (cells in grid order, merged ones too). */
+export function applyTableDashes(xml, tables) {
+  for (const [name, dashes] of tables || []) {
+    xml = editShape(xml, name, (frame) => {
+      const cells = frame.split(/(?=<a:tc[ >])/);
+      for (const { index, side, dash } of dashes) {
+        const i = index + 1; // before the first cell: the frame and grid
+        if (!cells[i]) continue;
+        const tag = BORDER_TAG[side];
+        cells[i] = cells[i].replace(new RegExp(`(<a:${tag} [^>]*>[\\s\\S]*?<a:prstDash val=")[^"]*(")`), `$1${dash}$2`);
+      }
+      return cells.join('');
+    });
+  }
+  return xml;
+}
+
 /** Give shapes that pptxgenjs numbered the same (tables, media) ids of their own, so animations find the right one. */
 function uniqueShapeIds(xml) {
   const ids = (xml.match(/<p:cNvPr id="\d+"/g) || []).map((m) => +m.match(/\d+/)[0]);
@@ -816,6 +857,7 @@ async function postProcess(buffer, deck, allMarks) {
     if (!file) continue;
     let xml = applyPictureLooks(applyGradients(fixParagraphs(await file.async('string')), allMarks[i]), allMarks[i].pictureLooks);
     xml = applyPlaceholders(xml, allMarks[i].placeholders);
+    xml = applyTableDashes(xml, allMarks[i].tableDashes);
     xml = await applyPictureFills(zip, i + 1, xml, allMarks[i]);
     const t = slide.transition;
     if (t && TRANSITION_XML[t.type]) {
@@ -858,7 +900,7 @@ export async function buildPptx(deck) {
       const n = { next: index + 2, prev: index, first: 1, last: deck.slides.length }[to] ?? deck.slides.findIndex((x) => x.id === to) + 1;
       return to && n >= 1 && n <= deck.slides.length ? { slide: n } : null;
     };
-    const marks = { number: allMarks.length + 1, links, count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), pictureLooks: new Map(), placeholders: new Map(), timeline: [], groups: [], background: null };
+    const marks = { number: allMarks.length + 1, links, count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), pictureLooks: new Map(), placeholders: new Map(), tableDashes: new Map(), timeline: [], groups: [], background: null };
     marks.groupSizes = slide.elements.reduce((m, e) => (e.groupId ? m.set(e.groupId, (m.get(e.groupId) || 0) + 1) : m), new Map());
     allMarks.push(marks);
     const bg = slide.background || theme.background;

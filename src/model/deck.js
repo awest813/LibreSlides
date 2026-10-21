@@ -37,7 +37,11 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  * (centre, fractions of the box), stops: [{ pos 0–1, color, opacity? }] }`,
  * with `fill` holding its first colour, or a picture fill, `fillImage:
  * { media, crop? }`. Tables are cells[row][col] of { text, fill?, valign?,
- * rowSpan?, colSpan?, merged? } (see tables.js).
+ * rowSpan?, colSpan?, merged?, borders?, margin? } (see tables.js). A cell's
+ * `borders: { t?, r?, b?, l? }` are strokes { color, width, dash } (colour
+ * 'none': no border) for its sides, the table's `stroke` standing in for a
+ * side it doesn't set; `margin: { t, r, b, l }` is the space around its text
+ * in points (CELL_MARGIN when there's none).
  *
  * Pictures, videos and sounds live in deck.media (as data URLs) and are
  * referenced by id, so undo snapshots of the slides stay small however many

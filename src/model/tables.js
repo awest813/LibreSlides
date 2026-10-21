@@ -4,6 +4,7 @@
  * `rowSpan` and/or `colSpan`; the cells it covers stay in the grid (so every
  * row has a cell for every column) with `merged: true`, and draw nothing.
  * `colWidths` and the optional `rowHeights` are fractions of the table's size.
+ * Cells may also have borders and margins of their own (see setBorders).
  */
 
 const blank = () => ({ text: '' });
@@ -178,3 +179,115 @@ export const isMerged = (el, r, c) => {
   const { cell } = anchorOf(el, r, c);
   return (cell.rowSpan || 1) > 1 || (cell.colSpan || 1) > 1;
 };
+
+// ------------------------------------------------------------------ borders and margins
+
+/*
+ * A cell's `borders` ({ t?, r?, b?, l? }, strokes) stand in for the table's
+ * `stroke` side by side. An edge two cells share is kept on both, as
+ * PowerPoint keeps it, so setting one side sets the facing side across it.
+ * `margin` ({ t, r, b, l }, points) is the space around the cell's text.
+ */
+
+// PowerPoint's default cell margins: 0.1 in left and right, 0.05 in above and below.
+export const CELL_MARGIN = { t: 3.6, r: 7.2, b: 3.6, l: 7.2 };
+export const NO_BORDER = { color: 'none', width: 0, dash: 'solid' };
+export const SIDES = ['t', 'r', 'b', 'l'];
+const OPPOSITE = { t: 'b', r: 'l', b: 't', l: 'r' };
+
+/** A cell's margins, the defaults standing in for any it doesn't set. */
+export const cellMargin = (cell) => ({ ...CELL_MARGIN, ...(cell?.margin || {}) });
+
+/** The stroke on one side ('t', 'r', 'b' or 'l') of a cell: its own, else the table's. */
+export const cellBorder = (el, cell, side) => cell?.borders?.[side] || el.stroke || NO_BORDER;
+
+/** Rows r0–r1 and columns c0–c1 (either way round), grown to take in whole merged blocks. */
+export function blockRange(el, r0, c0, r1, c1) {
+  let range = { r0: Math.min(r0, r1), c0: Math.min(c0, c1), r1: Math.max(r0, r1), c1: Math.max(c0, c1) };
+  for (let grown = true; grown;) {
+    grown = false;
+    for (let r = range.r0; r <= range.r1; r++) {
+      for (let c = range.c0; c <= range.c1; c++) {
+        const a = anchorOf(el, r, c);
+        const next = {
+          r0: Math.min(range.r0, a.r), c0: Math.min(range.c0, a.c),
+          r1: Math.max(range.r1, a.r + (a.cell.rowSpan || 1) - 1), c1: Math.max(range.c1, a.c + (a.cell.colSpan || 1) - 1),
+        };
+        if (next.r0 !== range.r0 || next.c0 !== range.c0 || next.r1 !== range.r1 || next.c1 !== range.c1) {
+          range = next;
+          grown = true;
+        }
+      }
+    }
+  }
+  return range;
+}
+
+/** The blocks (merged or single cells) of a range: { r, c, rs, cs, cell }. */
+function blocksIn(el, range) {
+  const out = [];
+  for (let r = range.r0; r <= range.r1; r++) {
+    for (let c = range.c0; c <= range.c1; c++) {
+      const cell = el.cells[r][c];
+      if (!cell.merged) out.push({ r, c, rs: cell.rowSpan || 1, cs: cell.colSpan || 1, cell });
+    }
+  }
+  return out;
+}
+
+/** Set one side of a block, and the facing side of each block across that edge. */
+function setSide(el, block, side, stroke) {
+  const set = (cell, s) => { cell.borders = { ...(cell.borders || {}), [s]: { ...stroke } }; };
+  set(block.cell, side);
+  const { r, c, rs, cs } = block;
+  const rows = el.cells.length;
+  const cols = el.cells[0].length;
+  const across = [];
+  if (side === 't' && r > 0) for (let j = c; j < c + cs; j++) across.push([r - 1, j]);
+  if (side === 'b' && r + rs < rows) for (let j = c; j < c + cs; j++) across.push([r + rs, j]);
+  if (side === 'l' && c > 0) for (let i = r; i < r + rs; i++) across.push([i, c - 1]);
+  if (side === 'r' && c + cs < cols) for (let i = r; i < r + rs; i++) across.push([i, c + cs]);
+  const done = new Set();
+  for (const [i, j] of across) {
+    const { cell } = anchorOf(el, i, j);
+    if (done.has(cell)) continue;
+    done.add(cell);
+    set(cell, OPPOSITE[side]);
+  }
+}
+
+// What PowerPoint's Borders menu offers.
+export const BORDER_PRESETS = [
+  ['all', 'All borders'], ['outside', 'Outside borders'], ['inside', 'Inside borders'], ['none', 'No borders'],
+  ['top', 'Top border'], ['bottom', 'Bottom border'], ['left', 'Left border'], ['right', 'Right border'],
+];
+
+/**
+ * Draw `preset` borders (see BORDER_PRESETS) with `stroke` around and
+ * between the cells of a range ({ r0, c0, r1, c1 }).
+ */
+export function setBorders(el, range, preset, stroke) {
+  const R = blockRange(el, range.r0, range.c0, range.r1, range.c1);
+  const pen = preset === 'none' || !stroke?.width || !stroke.color || stroke.color === 'none' ? NO_BORDER
+    : { color: stroke.color, width: stroke.width, dash: stroke.dash || 'solid' };
+  const one = { top: 't', bottom: 'b', left: 'l', right: 'r' }[preset];
+  for (const block of blocksIn(el, R)) {
+    const edge = { t: block.r === R.r0, b: block.r + block.rs - 1 === R.r1, l: block.c === R.c0, r: block.c + block.cs - 1 === R.c1 };
+    for (const side of SIDES) {
+      const on = preset === 'all' || preset === 'none' || (preset === 'outside' && edge[side]) || (preset === 'inside' && !edge[side]) || (one === side && edge[side]);
+      if (on) setSide(el, block, side, pen);
+    }
+  }
+  return el;
+}
+
+/** Change some of the margins ({ t?, r?, b?, l? }, points) of the cells in a range. */
+export function setMargins(el, range, margin) {
+  const R = blockRange(el, range.r0, range.c0, range.r1, range.c1);
+  for (const { cell } of blocksIn(el, R)) {
+    const m = { ...cellMargin(cell), ...margin };
+    if (SIDES.every((s) => m[s] === CELL_MARGIN[s])) delete cell.margin;
+    else cell.margin = m;
+  }
+  return el;
+}

@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 import { uid, newDeck, SIZES, customSize, slideSize, FIELD } from '../model/deck.js';
 import { SHAPES } from '../model/shapes.js';
-import { normalizeTable } from '../model/tables.js';
+import { normalizeTable, NO_BORDER, CELL_MARGIN, SIDES } from '../model/tables.js';
 import { evaluateGeometry, definitionFromXml } from '../model/geometry.js';
 import PRESETS from '../model/preset-shapes.js';
 import { isDarkColor } from '../model/themes.js';
@@ -461,19 +461,30 @@ function cropOf(blipFill) {
 
 // PowerPoint's default table style ("Medium Style 2 – Accent 1"), for files that use it without including it.
 const DEFAULT_TABLE_STYLE = `<a:tblStyle xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" styleId="{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}">
-<a:wholeTbl><a:tcTxStyle><a:schemeClr val="dk1"/></a:tcTxStyle><a:tcStyle><a:tcBdr><a:insideH><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:insideH></a:tcBdr>
+<a:wholeTbl><a:tcTxStyle><a:schemeClr val="dk1"/></a:tcTxStyle><a:tcStyle><a:tcBdr><a:left><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:left><a:right><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:right><a:top><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:top><a:bottom><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:bottom><a:insideH><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:insideH><a:insideV><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:insideV></a:tcBdr>
 <a:fill><a:solidFill><a:schemeClr val="accent1"><a:tint val="20000"/></a:schemeClr></a:solidFill></a:fill></a:tcStyle></a:wholeTbl>
 <a:band1H><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"><a:tint val="40000"/></a:schemeClr></a:solidFill></a:fill></a:tcStyle></a:band1H>
 <a:band1V><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"><a:tint val="40000"/></a:schemeClr></a:solidFill></a:fill></a:tcStyle></a:band1V>
 <a:lastCol><a:tcTxStyle b="on"><a:schemeClr val="lt1"/></a:tcTxStyle><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:fill></a:tcStyle></a:lastCol>
 <a:firstCol><a:tcTxStyle b="on"><a:schemeClr val="lt1"/></a:tcTxStyle><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:fill></a:tcStyle></a:firstCol>
-<a:lastRow><a:tcTxStyle b="on"><a:schemeClr val="lt1"/></a:tcTxStyle><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:fill></a:tcStyle></a:lastRow>
-<a:firstRow><a:tcTxStyle b="on"><a:schemeClr val="lt1"/></a:tcTxStyle><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:fill></a:tcStyle></a:firstRow>
+<a:lastRow><a:tcTxStyle b="on"><a:schemeClr val="lt1"/></a:tcTxStyle><a:tcStyle><a:tcBdr><a:top><a:ln w="38100"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:top></a:tcBdr><a:fill><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:fill></a:tcStyle></a:lastRow>
+<a:firstRow><a:tcTxStyle b="on"><a:schemeClr val="lt1"/></a:tcTxStyle><a:tcStyle><a:tcBdr><a:bottom><a:ln w="38100"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:bottom></a:tcBdr><a:fill><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:fill></a:tcStyle></a:firstRow>
 </a:tblStyle>`;
 
 /**
- * How a table style colours each cell: { cell(r, c) → { fill, color, bold }, border },
- * or null when the table has no style LibreSlides can find.
+ * A cell border (an a:ln of a cell or a table style): a stroke, NO_BORDER for
+ * none, undefined when it doesn't say (another part of the table style does).
+ */
+function borderOf(ln, ctx) {
+  if (!ln) return undefined;
+  if (kid(ln, 'noFill')) return NO_BORDER;
+  return lineOf(ln, ctx.scheme, ctx.k) || undefined;
+}
+
+/**
+ * How a table style colours each cell: { cell(r, c, rs, cs) → { fill, color,
+ * bold, borders: { t?, r?, b?, l? } } } (rs and cs: the cell's spans), or
+ * null when the table has no style LibreSlides can find.
  */
 function tableLook(tblPr, ctx, rows, cols) {
   const id = path(tblPr, 'tableStyleId')?.textContent.trim();
@@ -486,37 +497,83 @@ function tableLook(tblPr, ctx, rows, cols) {
     if (!p) return null;
     const tx = kid(p, 'tcTxStyle');
     const fill = path(p, 'tcStyle', 'fill');
+    const bdr = path(p, 'tcStyle', 'tcBdr');
     return {
+      // The part's borders: around it (left, right, top, bottom) and between its cells (insideH, insideV).
+      borders: Object.fromEntries(['left', 'right', 'top', 'bottom', 'insideH', 'insideV'].map((n) => [n, borderOf(kid(kid(bdr, n), 'ln'), ctx)])),
       fill: fill && (kid(fill, 'noFill') ? 'none' : colorOf(kid(fill, 'solidFill'), ctx.scheme)),
       color: colorOf(tx, ctx.scheme) || colorOf(kid(tx, 'fontRef'), ctx.scheme),
       bold: attr(tx, 'b') === 'on' ? true : attr(tx, 'b') === 'off' ? false : undefined,
     };
   };
   const looks = Object.fromEntries(['wholeTbl', 'band1H', 'band2H', 'band1V', 'band2V', 'lastCol', 'firstCol', 'lastRow', 'firstRow'].map((n) => [n, partLook(n)]));
-  const ln = path(style, 'wholeTbl', 'tcStyle', 'tcBdr', 'insideH', 'ln') || path(style, 'wholeTbl', 'tcStyle', 'tcBdr', 'bottom', 'ln');
   return {
-    border: ln ? lineOf(ln, ctx.scheme, ctx.k) || { color: 'none', width: 1, dash: 'solid' } : { color: 'none', width: 1, dash: 'solid' },
-    cell(r, c) {
+    cell(r, c, rs = 1, cs = 1) {
       const head = on('firstRow') ? 1 : 0;
-      const parts = ['wholeTbl'];
-      // Later parts win, in PowerPoint's order.
-      if (on('bandRow') && r >= head && !(on('lastRow') && r === rows - 1)) parts.push((r - head) % 2 ? 'band2H' : 'band1H');
-      if (on('bandCol')) parts.push((c - (on('firstCol') ? 1 : 0)) % 2 ? 'band2V' : 'band1V');
-      if (on('lastCol') && c === cols - 1) parts.push('lastCol');
-      if (on('firstCol') && c === 0) parts.push('firstCol');
-      if (on('lastRow') && r === rows - 1) parts.push('lastRow');
-      if (on('firstRow') && r === 0) parts.push('firstRow');
-      const out = {};
-      for (const p of parts) {
+      const all = [0, Infinity];
+      // Each part that applies, with the rows and columns it covers. Later parts win, in PowerPoint's order.
+      const parts = [['wholeTbl', all, all]];
+      if (on('bandRow') && r >= head && !(on('lastRow') && r === rows - 1)) parts.push([(r - head) % 2 ? 'band2H' : 'band1H', [r, r], all]);
+      if (on('bandCol')) parts.push([(c - (on('firstCol') ? 1 : 0)) % 2 ? 'band2V' : 'band1V', all, [c, c]]);
+      if (on('lastCol') && c + cs === cols) parts.push(['lastCol', all, [cols - 1, cols - 1]]);
+      if (on('firstCol') && c === 0) parts.push(['firstCol', all, [0, 0]]);
+      if (on('lastRow') && r + rs === rows) parts.push(['lastRow', [rows - 1, rows - 1], all]);
+      if (on('firstRow') && r === 0) parts.push(['firstRow', [0, 0], all]);
+      const out = { borders: {} };
+      for (const [p, [r0, r1], [c0, c1]] of parts) {
         const l = looks[p];
         if (!l) continue;
         if (l.fill) out.fill = l.fill === 'none' ? null : l.fill;
         if (l.color) out.color = l.color;
         if (l.bold !== undefined) out.bold = l.bold;
+        // A side on the edge of the part takes its outer border, else the one between its cells.
+        const sides = {
+          t: r === r0 ? 'top' : 'insideH', b: r + rs - 1 >= Math.min(r1, rows - 1) ? 'bottom' : 'insideH',
+          l: c === c0 ? 'left' : 'insideV', r: c + cs - 1 >= Math.min(c1, cols - 1) ? 'right' : 'insideV',
+        };
+        for (const [side, name] of Object.entries(sides)) if (l.borders[name]) out.borders[side] = l.borders[name];
       }
       return out;
     },
   };
+}
+
+/**
+ * The table's border: the one most of its cells' sides have. Sides that have
+ * it are left to it; sides nothing gives a border have none. A table without
+ * a single border anywhere (and no style) gets a light grid to edit by.
+ */
+function tableBorders(cells, look) {
+  const anchors = cells.flat().filter((cell) => !cell.merged);
+  const key = (s) => JSON.stringify([s.color, s.width, s.dash]);
+  if (!anchors.some((cell) => Object.keys(cell.borders || {}).length)) {
+    for (const cell of anchors) delete cell.borders;
+    return look ? { ...NO_BORDER } : { color: '#94a3b8', width: 1, dash: 'solid' };
+  }
+  const counts = new Map();
+  for (const cell of anchors) {
+    for (const side of SIDES) {
+      const s = cell.borders?.[side] || NO_BORDER;
+      const hit = counts.get(key(s)) || { stroke: s, n: 0 };
+      hit.n++;
+      counts.set(key(s), hit);
+    }
+  }
+  const stroke = [...counts.values()].sort((a, b) => b.n - a.n)[0].stroke;
+  for (const cell of cells.flat()) {
+    if (cell.merged) {
+      delete cell.borders;
+      continue;
+    }
+    const own = {};
+    for (const side of SIDES) {
+      const s = cell.borders?.[side] || NO_BORDER;
+      if (key(s) !== key(stroke)) own[side] = { ...s };
+    }
+    if (Object.keys(own).length) cell.borders = own;
+    else delete cell.borders;
+  }
+  return { ...stroke };
 }
 
 /** A line end's type (a:headEnd / a:tailEnd) as LibreSlides': true (a triangle), a style name, or false. */
@@ -901,7 +958,9 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         const cells = rows.map((tr, r) => kids(tr, 'tc').map((tc, c) => {
           const body = kid(tc, 'txBody');
           const tcPr = kid(tc, 'tcPr');
-          const part = look?.cell(r, c) || {};
+          const rs = Math.max(1, +attr(tc, 'rowSpan') || 1);
+          const cs = Math.max(1, +attr(tc, 'gridSpan') || 1);
+          const part = look?.cell(r, c, rs, cs) || {};
           // Formatting is relative to the table's, so a header's white bold text is kept.
           const defaults = { ...tableStyle, ...(part.color && { color: part.color }), ...(part.bold && { bold: true }) };
           const t = body ? textBody(body, { ...tctx, fontScale: 1 }, { defaults, base: tableStyle }) : { html: '' };
@@ -913,11 +972,21 @@ async function readSlide(pkg, slidePath, ctx, deck) {
           if (isTrue(attr(tc, 'hMerge')) || isTrue(attr(tc, 'vMerge'))) cell.merged = true;
           const anchor = attr(tcPr, 'anchor');
           if (anchor === 'ctr' || anchor === 'b' || anchor === 't') cell.valign = { ctr: 'middle', b: 'bottom', t: 'top' }[anchor];
+          // Its borders: its own, else the table style's (sorted out against the table's border below).
+          const own = { t: 'lnT', r: 'lnR', b: 'lnB', l: 'lnL' };
+          cell.borders = Object.fromEntries(SIDES.map((side) => [side, borderOf(kid(tcPr, own[side]), ctx) || part.borders?.[side]]).filter(([, v]) => v));
+          // Margins, in EMU (PowerPoint's defaults when left out).
+          const margin = Object.fromEntries(SIDES.map((side) => {
+            const v = attr(tcPr, `mar${side.toUpperCase()}`);
+            return [side, v != null && Number.isFinite(+v) ? Math.round((+v / EMU_PER_PT) * k * 10) / 10 : CELL_MARGIN[side]];
+          }));
+          if (SIDES.some((side) => Math.abs(margin[side] - CELL_MARGIN[side]) > 0.05)) cell.margin = margin;
           return cell;
         }));
         if (!cells.length) continue;
         const width = Math.max(...cells.map((r) => r.length));
         for (const row of cells) while (row.length < width) row.push({ text: '' });
+        const stroke = tableBorders(cells, look);
         const heights = rows.map((tr) => +attr(tr, 'h') || 0);
         const allHeights = heights.reduce((s, v) => s + v, 0);
         const table = {
@@ -925,7 +994,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
           header: !look && attr(tblPr, 'firstRow') === '1' && !cells[0].some((c) => c.fill),
           banded: (!look && attr(tblPr, 'bandRow') === '1') || undefined,
           cells, colWidths: cols.length === width ? cols.map((w) => w / total) : Array.from({ length: width }, () => 1 / width),
-          fill: `#${(ctx.scheme.accent1 || '4472c4').toLowerCase()}`, stroke: look?.border || { color: '#94a3b8', width: 1, dash: 'solid' },
+          fill: `#${(ctx.scheme.accent1 || '4472c4').toLowerCase()}`, stroke,
           style: { size: tableStyle.size, color: tableStyle.color, font: tableStyle.font },
         };
         if (allHeights && heights.every((v) => v > 0)) table.rowHeights = heights.map((v) => v / allHeights);

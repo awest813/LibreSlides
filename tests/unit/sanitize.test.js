@@ -24,6 +24,18 @@ describe('untrusted presentations', () => {
     expect(deck.slides[0].elements[1].style.font).toBe('Inter xurly');
   });
 
+  it('keeps only safe table cell borders and sensible margins', () => {
+    const deck = sanitizeDeck({ slides: [{ elements: [{ type: 'table', cells: [[
+      { text: '', borders: { t: { color: 'url(https://t/x)', width: 2 }, b: { color: '#f00', width: 999, dash: 'wavy' }, l: 'x' }, margin: { t: -4, l: 'x', r: 9 } },
+      { text: '', borders: 'x', margin: 7 },
+    ]] }] }] });
+    const [a, b] = deck.slides[0].elements[0].cells[0];
+    expect(a.borders).toEqual({ b: { color: '#f00', width: 50, dash: 'solid' } });
+    expect(a.margin).toEqual({ t: 0, r: 9, b: 3.6, l: 7.2 });
+    expect(b.borders).toBeUndefined();
+    expect(b.margin).toBeUndefined();
+  });
+
   it('copes with damaged structure instead of crashing', () => {
     const deck = sanitizeDeck({ title: 7, media: 'abc', slides: [null, { elements: [null, { type: 'table', cells: [null, [null, { text: '<b>x</b>' }]] }, { type: 'image', media: 'm', crop: { l: 'x', t: 2 } }] }] });
     expect(deck.title).toBe('');

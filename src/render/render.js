@@ -1,6 +1,7 @@
 import { themeById, resolveColor, backgroundCss } from '../model/themes.js';
 import { slideSize, isTitleLayout, PLACEHOLDER_HINTS, canHoldText, FIELD, fieldText } from '../model/deck.js';
 import { shapePath, customPath, textInset } from '../model/shapes.js';
+import { cellBorder, cellMargin } from '../model/tables.js';
 import { renderChart } from './chart.js';
 import { renderMedia } from './media.js';
 import { fontStack } from '../model/fonts.js';
@@ -356,7 +357,10 @@ function renderTable(el, ctx) {
   const table = document.createElement('table');
   table.className = 'el-table-grid';
   applyTextStyle(table, { ...el, type: 'text' }, theme);
-  const border = el.stroke && el.stroke.color !== 'none' ? `${el.stroke.width || 1}px solid ${resolveColor(el.stroke.color, theme)}` : 'none';
+  // Each side of a cell: its own border, else the table's (where two cells disagree, the table's border-collapse picks one).
+  const border = (s) => (s && s.color !== 'none' && s.width !== 0
+    ? `${+s.width || 1}px ${s.dash === 'dot' ? 'dotted' : s.dash && s.dash !== 'solid' ? 'dashed' : 'solid'} ${resolveColor(s.color, theme)}`
+    : 'none');
   const colgroup = document.createElement('colgroup');
   for (const w of el.colWidths || []) {
     const col = document.createElement('col');
@@ -374,7 +378,14 @@ function renderTable(el, ctx) {
       if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan;
       if (cell.colSpan > 1) td.colSpan = cell.colSpan;
       if (cell.valign) td.style.verticalAlign = cell.valign === 'bottom' ? 'bottom' : cell.valign === 'top' ? 'top' : 'middle';
-      td.style.border = border;
+      td.style.borderTop = border(cellBorder(el, cell, 't'));
+      td.style.borderRight = border(cellBorder(el, cell, 'r'));
+      td.style.borderBottom = border(cellBorder(el, cell, 'b'));
+      td.style.borderLeft = border(cellBorder(el, cell, 'l'));
+      if (cell.margin) {
+        const m = cellMargin(cell);
+        td.style.padding = `${m.t}px ${m.r}px ${m.b}px ${m.l}px`;
+      }
       td.dataset.r = r;
       td.dataset.c = c;
       if (cell.fill) td.style.background = resolveColor(cell.fill, theme);

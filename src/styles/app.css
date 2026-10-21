@@ -38,7 +38,7 @@ audio.el-media-player { display: none; }
 .el-media-toggle:focus-visible { outline: 2px solid #fff; }
 .el-media-toggle.is-playing { box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.7); }
 .el-table-grid { width: 100%; height: 100%; border-collapse: collapse; table-layout: fixed; }
-.el-table-grid td { padding: 4px 7px; vertical-align: middle; overflow-wrap: anywhere; white-space: pre-wrap; }
+.el-table-grid td { padding: 3.6px 7.2px; vertical-align: middle; overflow-wrap: anywhere; white-space: pre-wrap; }
 .cell-body { outline: none; min-height: 1em; }
 .slide-thumb { position: relative; overflow: hidden; flex: none; }
 .slide-thumb > .slide { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
