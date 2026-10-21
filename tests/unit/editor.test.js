@@ -232,3 +232,43 @@ describe('editor: charts', () => {
     expect(chart().chart.series[0].values[1]).toBe(9);
   });
 });
+
+describe('editor: groups', () => {
+  it('groups objects together in the stacking order, and copies get groups of their own', () => {
+    const [a, b, c] = [newShape('rect', 0, 0), newShape('ellipse', 200, 0), newShape('rect', 400, 0)];
+    const ed = openEditor(deckWith(a, b, c));
+    ed.setSelection([a.id, c.id]);
+    key(ed.canvas.wrap, { key: 'g', ctrlKey: true });
+    // The group sits where its topmost member was: b, then a and c.
+    expect(ed.slide.elements.map((e) => e.id)).toEqual([b.id, a.id, c.id]);
+    expect(a.groupId).toBeTruthy();
+    expect(c.groupId).toBe(a.groupId);
+    ed.duplicateSelection();
+    const copies = ed.slide.elements.slice(3);
+    expect(copies).toHaveLength(2);
+    expect(copies[0].groupId).toBe(copies[1].groupId);
+    expect(copies[0].groupId).not.toBe(a.groupId);
+    ed.setSelection([a.id, c.id]);
+    key(ed.canvas.wrap, { key: 'G', ctrlKey: true, shiftKey: true });
+    expect(a.groupId).toBeUndefined();
+    ed.undo();
+    expect(ed.slide.elements.find((e) => e.id === a.id).groupId).toBeTruthy();
+  });
+
+  it('selects a whole group with a click, and one of its objects with another', () => {
+    const [a, b] = [newShape('rect', 0, 0), newShape('ellipse', 200, 0)];
+    a.groupId = 'g1';
+    b.groupId = 'g1';
+    const ed = openEditor(deckWith(a, b));
+    const click = () => {
+      const node = ed.canvas.slideEl.querySelector(`[data-id="${a.id}"]`);
+      node.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: 10, clientY: 10, pointerId: 1 }));
+      window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, clientX: 10, clientY: 10, pointerId: 1 }));
+      document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, clientX: 10, clientY: 10, pointerId: 1 }));
+    };
+    click();
+    expect([...ed.selection].sort()).toEqual([a.id, b.id].sort());
+    click();
+    expect(ed.selection).toEqual([a.id]);
+  });
+});

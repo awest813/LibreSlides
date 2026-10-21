@@ -384,6 +384,13 @@ function tableLook(tblPr, ctx, rows, cols) {
   };
 }
 
+/** Make elements read from one PowerPoint group (or SmartArt diagram) a LibreSlides group. */
+function groupElements(els) {
+  if (els.length < 2) return;
+  const groupId = uid();
+  for (const el of els) el.groupId = groupId;
+}
+
 /**
  * A shape's outline when LibreSlides doesn't draw it itself: a custom
  * geometry, a preset it has no drawing of, or a preset with adjust values of
@@ -527,20 +534,34 @@ async function readSlide(pkg, slidePath, ctx, deck) {
           const chh = +attr(chExt, 'cy') / EMU_PER_PT || 1;
           const inner = { sx: gx.w / cw, sy: gx.h / chh, ox: gx.x - (+attr(chOff, 'x') / EMU_PER_PT) * (gx.w / cw), oy: gx.y - (+attr(chOff, 'y') / EMU_PER_PT) * (gx.h / chh) };
           g = group ? { sx: group.sx * inner.sx, sy: group.sy * inner.sy, ox: group.ox + inner.ox * group.sx, oy: group.oy + inner.oy * group.sy } : inner;
+          // A turned group turns its members about its centre (inner groups' turns first).
+          const cx = gx.x + gx.w / 2;
+          const cy = gx.y + gx.h / 2;
+          const turn = gx.rot ? [{ rot: gx.rot, cx: group ? group.ox + cx * group.sx : cx, cy: group ? group.oy + cy * group.sy : cy }] : [];
+          g.rots = [...turn, ...(group?.rots || [])];
         }
+        const from = slide.elements.length;
         await walk(node, g, part);
+        if (!group) groupElements(slide.elements.slice(from));
         continue;
       }
       const place = (b) => {
         if (!b) return null;
-        let { x, y, w, h: hh } = b;
+        let { x, y, w, h: hh, rot } = b;
         if (group) {
           x = group.ox + x * group.sx;
           y = group.oy + y * group.sy;
           w *= group.sx;
           hh *= group.sy;
+          for (const t of group.rots || []) {
+            const a = (t.rot * Math.PI) / 180;
+            const [dx, dy] = [x + w / 2 - t.cx, y + hh / 2 - t.cy];
+            x = t.cx + dx * Math.cos(a) - dy * Math.sin(a) - w / 2;
+            y = t.cy + dx * Math.sin(a) + dy * Math.cos(a) - hh / 2;
+            rot = (rot + t.rot) % 360;
+          }
         }
-        return { ...b, x: x * k + ctx.ox, y: y * k + ctx.oy, w: w * k, h: hh * k };
+        return { ...b, rot, x: x * k + ctx.ox, y: y * k + ctx.oy, w: w * k, h: hh * k };
       };
       if (!part.isSlide && (name === 'sp' || name === 'pic') && phOf(node)) continue;
 
@@ -769,7 +790,9 @@ async function readSlide(pkg, slidePath, ctx, deck) {
     if (tree && (kids(tree, 'sp').length || kids(tree, 'grpSp').length)) {
       const inFrame = { sx: 1, sy: 1, ox: frame.x, oy: frame.y };
       const g = group ? { sx: group.sx, sy: group.sy, ox: group.ox + frame.x * group.sx, oy: group.oy + frame.y * group.sy } : inFrame;
+      const from = slide.elements.length;
       await walk(tree, g, { rels: await pkg.rels(drawingRel.path), isSlide: true, inner: true });
+      if (!group) groupElements(slide.elements.slice(from));
       return;
     }
     // The text of the diagram's points, in order, as a bulleted list over the frame.

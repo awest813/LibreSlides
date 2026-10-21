@@ -234,10 +234,13 @@ async function imageSize(dataUrl) {
 async function addElement(pptx, s, el, deck, theme, marks) {
   const opacity = el.opacity ?? 1;
   const shadow = el.shadow ? { type: 'outer', blur: 8, offset: 4, angle: 90, color: '000000', opacity: 0.3 } : undefined;
-  // Animated elements, and media that plays by itself, are named so the slide's timeline can point at them.
+  // Animated elements, media that plays by itself and group members are named so the
+  // slide's timeline and groups can find them.
   const timed = (el.anim?.effect && el.anim.effect !== 'none') || (el.type === 'media' && (el.autoplay || el.loop));
-  const objectName = timed ? `LibreSlides shape ${++marks.count}` : undefined;
+  const grouped = el.groupId && marks.groupSizes.get(el.groupId) > 1;
+  const objectName = timed || grouped ? `LibreSlides shape ${++marks.count}` : undefined;
   if (timed) marks.timeline.push({ name: objectName, el });
+  if (grouped) marks.groups.push({ name: objectName, groupId: el.groupId, box: boxOf(el) });
   if (el.type === 'line') {
     let { x1, y1, x2, y2, arrowStart, arrowEnd } = el;
     if (x1 > x2) {
@@ -507,6 +510,44 @@ async function applyPictureFills(zip, slideNo, xml, marks) {
   return xml;
 }
 
+/**
+ * pptxgenjs has no groups: gather each group's shapes (found by name, in their
+ * stacking order) into a <p:grpSp> where the first of them was.
+ */
+export function applyGroups(xml, members) {
+  const byGroup = new Map();
+  for (const m of members || []) byGroup.set(m.groupId, [...(byGroup.get(m.groupId) || []), m]);
+  let next = Math.max(0, ...(xml.match(/<p:cNvPr id="\d+"/g) || []).map((s) => +s.match(/\d+/)[0])) + 1;
+  for (const list of byGroup.values()) {
+    const blocks = [];
+    for (const { name } of list) {
+      const at = xml.indexOf(`name="${name}"`);
+      if (at < 0) continue;
+      // The shape is the closest <p:sp>, <p:pic> or <p:graphicFrame> opened before its name.
+      const open = ['<p:sp>', '<p:pic>', '<p:graphicFrame>'].map((t) => [t, xml.lastIndexOf(t, at)]).sort((a, b) => b[1] - a[1])[0];
+      const close = `</${open[0].slice(1)}`;
+      const end = xml.indexOf(close, at) + close.length;
+      if (open[1] < 0 || end < close.length) continue;
+      blocks.push({ start: open[1], end, xml: xml.slice(open[1], end) });
+    }
+    if (blocks.length < 2) continue;
+    blocks.sort((a, b) => a.start - b.start);
+    const emu = (v) => Math.round(v * 12700);
+    const boxes = list.map((m) => m.box);
+    const x = Math.min(...boxes.map((b) => b.x));
+    const y = Math.min(...boxes.map((b) => b.y));
+    const w = Math.max(...boxes.map((b) => b.x + b.w)) - x;
+    const h = Math.max(...boxes.map((b) => b.y + b.h)) - y;
+    const frame = `<a:off x="${emu(x)}" y="${emu(y)}"/><a:ext cx="${emu(w)}" cy="${emu(h)}"/><a:chOff x="${emu(x)}" y="${emu(y)}"/><a:chExt cx="${emu(w)}" cy="${emu(h)}"/>`;
+    const id = next++;
+    const group = `<p:grpSp><p:nvGrpSpPr><p:cNvPr id="${id}" name="Group ${id}"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm>${frame}</a:xfrm></p:grpSpPr>${blocks.map((b) => b.xml).join('')}</p:grpSp>`;
+    // Take the shapes out (last first, so earlier positions hold), then put the group where the first was.
+    for (const b of [...blocks].reverse()) xml = xml.slice(0, b.start) + xml.slice(b.end);
+    xml = xml.slice(0, blocks[0].start) + group + xml.slice(blocks[0].start);
+  }
+  return xml;
+}
+
 /** Give shapes that pptxgenjs numbered the same (tables, media) ids of their own, so animations find the right one. */
 function uniqueShapeIds(xml) {
   const ids = (xml.match(/<p:cNvPr id="\d+"/g) || []).map((m) => +m.match(/\d+/)[0]);
@@ -555,7 +596,7 @@ async function postProcess(buffer, deck, allMarks) {
       xml = xml.includes('</p:clrMapOvr>') ? xml.replace('</p:clrMapOvr>', `</p:clrMapOvr>${tr}`) : xml.replace('</p:sld>', `${tr}</p:sld>`);
     }
     if (slide.hidden) xml = xml.replace(/<p:sld(\s)/, '<p:sld show="0"$1');
-    xml = uniqueShapeIds(xml);
+    xml = applyGroups(uniqueShapeIds(xml), allMarks[i].groups);
     xml = insertTiming(xml, timingXml(timelineOf(xml, allMarks[i].timeline)));
     zip.file(path, xml);
   }
@@ -578,7 +619,8 @@ export async function buildPptx(deck) {
   const allMarks = [];
   for (const slide of deck.slides) {
     const s = pptx.addSlide();
-    const marks = { count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), timeline: [], background: null };
+    const marks = { count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), timeline: [], groups: [], background: null };
+    marks.groupSizes = slide.elements.reduce((m, e) => (e.groupId ? m.set(e.groupId, (m.get(e.groupId) || 0) + 1) : m), new Map());
     allMarks.push(marks);
     const bg = slide.background || theme.background;
     if (bg.type === 'image' && deck.media?.[bg.media]) {

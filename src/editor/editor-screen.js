@@ -11,7 +11,7 @@ import { showInstallHelp } from '../ui/install.js';
 import { getDeck, saveDeck, onStorageChange } from '../storage/db.js';
 import {
   slideSize, newSlide, layoutElements, cloneSlide, cloneElement, canHoldText, boxOf, moveElement, addMedia, newImage, newTable, newChart,
-  htmlToText, SIZES, uid, mediaSlots, newMedia,
+  htmlToText, SIZES, uid, mediaSlots, newMedia, regroup,
 } from '../model/deck.js';
 import { anchorOf, insertRow, insertCol, deleteRow, deleteCol, mergeCells, unmergeCell } from '../model/tables.js';
 import { themeById, resolveColor } from '../model/themes.js';
@@ -618,13 +618,34 @@ export class EditorScreen {
   duplicateSelection() {
     const els = this.selectedElements();
     if (!els.length) return;
-    const copies = els.map((e) => {
+    const copies = regroup(els.map((e) => {
       const c = cloneElement(e);
       moveElement(c, 16, 16);
       if (c.anim) c.anim.order = this.nextAnimOrder() + (e.anim.order || 0);
       return c;
-    });
+    }));
     this.addElements(copies);
+  }
+
+  /** Make the selected objects a group: they stay together, where the topmost one was in the stacking order. */
+  groupSelection() {
+    const ids = new Set(this.selection);
+    if (ids.size < 2) return;
+    const groupId = uid();
+    this.change(() => {
+      const list = this.slide.elements;
+      const top = Math.max(...list.map((e, i) => (ids.has(e.id) ? i : -1)));
+      const members = list.filter((e) => ids.has(e.id));
+      const rest = list.filter((e) => !ids.has(e.id));
+      rest.splice(rest.filter((e) => list.indexOf(e) < top).length, 0, ...members);
+      list.splice(0, list.length, ...rest);
+      for (const e of members) e.groupId = groupId;
+    });
+  }
+
+  ungroupSelection() {
+    if (!this.selectedElements().some((e) => e.groupId)) return;
+    this.change(() => { for (const e of this.selectedElements()) delete e.groupId; });
   }
 
   selectAll() {
@@ -660,7 +681,7 @@ export class EditorScreen {
 
   pasteElements(payload) {
     const { w, h: H } = this.size;
-    const copies = payload.elements.map((e) => cloneElement(e));
+    const copies = regroup(payload.elements.map((e) => cloneElement(e)));
     // Pasting onto the same spot again steps each copy down and right.
     const sameSpot = copies.some((c) => this.slide.elements.some((e) => {
       const a = boxOf(e);
@@ -1336,6 +1357,8 @@ export class EditorScreen {
       'separator',
       { label: 'Bring to front', icon: 'toFront', shortcut: 'Mod-Shift-Up', run: () => this.order('front') },
       { label: 'Send to back', icon: 'toBack', shortcut: 'Mod-Shift-Down', run: () => this.order('back') },
+      this.selection.length > 1 ? { label: 'Group', shortcut: 'Mod-G', run: () => this.groupSelection() } : null,
+      this.selectedElements().some((e) => e.groupId) ? { label: 'Ungroup', shortcut: 'Mod-Shift-G', run: () => this.ungroupSelection() } : null,
       'separator',
       { label: 'Animate…', icon: 'animate', run: () => this.openPanel('animate') },
       { label: 'Format options…', icon: 'format', run: () => this.openPanel('format') },
@@ -1410,6 +1433,7 @@ export class EditorScreen {
     if (e.key === 'Delete' || e.key === 'Backspace') return run(() => this.deleteSelection());
     if (mod && k === 'a') return run(() => this.selectAll());
     if (mod && k === 'd') return run(() => this.duplicateSelection());
+    if (mod && k === 'g') return run(() => (e.shiftKey ? this.ungroupSelection() : this.groupSelection()));
     if (e.key === 'Tab') {
       const list = this.slide.elements;
       const i = list.findIndex((x) => x.id === this.selection[this.selection.length - 1]) + (e.shiftKey ? -1 : 1);
@@ -1677,6 +1701,7 @@ export class EditorScreen {
       ['Present from this slide / from the beginning', 'Mod-Enter', 'F5'],
       ['New slide', 'Mod-M'],
       ['Duplicate', 'Mod-D'],
+      ['Group / Ungroup', 'Mod-G', 'Mod-Shift-G'],
       ['Undo / Redo', 'Mod-Z', 'Mod-Y'],
       ['Cut / Copy / Paste', 'Mod-X', 'Mod-C', 'Mod-V'],
       ['Select all', 'Mod-A'],

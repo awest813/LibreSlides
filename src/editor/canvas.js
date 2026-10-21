@@ -1,6 +1,6 @@
 import { h } from '../ui/dom.js';
 import { renderSlide, renderElement } from '../render/render.js';
-import { slideSize, boxOf, moveElement, canHoldText, newTextBox, newShape, newLine } from '../model/deck.js';
+import { slideSize, boxOf, moveElement, canHoldText, newTextBox, newShape, newLine, groupOf } from '../model/deck.js';
 import { themeById } from '../model/themes.js';
 import { sanitizeHtml } from '../io/sanitize.js';
 import { tidyHtml, normalizeFontTags, exec } from './richtext.js';
@@ -316,16 +316,23 @@ export class SlideCanvas {
     const el = this.find(id);
     const additive = e.shiftKey || e.ctrlKey || e.metaKey;
     const wasSelected = this.app.selection.includes(id);
+    // A click selects the whole group an object is in; a second click, just that object.
+    const group = groupOf(this.slide, el).map((m) => m.id);
+    const groupSelected = group.length > 1 && this.app.selection.length === group.length && group.every((m) => this.app.selection.includes(m));
     if (additive) {
       e.preventDefault();
-      this.app.setSelection(wasSelected ? this.app.selection.filter((x) => x !== id) : [...this.app.selection, id]);
+      this.app.setSelection(wasSelected ? this.app.selection.filter((x) => !group.includes(x)) : [...new Set([...this.app.selection, ...group])]);
       return;
     }
-    if (!wasSelected) this.app.setSelection([id]);
+    if (!wasSelected) this.app.setSelection(group);
     if (e.button !== 0) return;
     e.preventDefault();
     if (el.locked) return;
     this.startMove(e, () => {
+      if (groupSelected) {
+        this.app.setSelection([id]);
+        return;
+      }
       // A click (no drag) on a text box that was already selected starts typing in it.
       if (wasSelected && this.app.selection.length === 1 && (canHoldText(el) || el.type === 'table')) this.startEdit(id, { point: e });
     });
@@ -547,10 +554,11 @@ export class SlideCanvas {
         const p = this.toSlide(ev);
         this.marquee = { x: Math.min(p0.x, p.x), y: Math.min(p0.y, p.y), w: Math.abs(p.x - p0.x), h: Math.abs(p.y - p0.y) };
         const m = this.marquee;
+        // Objects inside the box, with the rest of their groups.
         const hit = this.slide.elements.filter((el) => {
           const b = aabb(el);
           return b.x >= m.x && b.y >= m.y && b.x + b.w <= m.x + m.w && b.y + b.h <= m.y + m.h;
-        }).map((el) => el.id);
+        }).flatMap((el) => groupOf(this.slide, el)).map((el) => el.id);
         this.app.setSelection([...new Set([...base, ...hit])], { quiet: true });
         this.drawOverlay();
       },

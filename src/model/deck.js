@@ -21,6 +21,9 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  * categories are its X values. `style` { size, color, font } sets its text,
  * and `fill` and `stroke` the chart area's background and border.
  *
+ * Elements sharing a `groupId` are a group: selected, moved and saved
+ * together, next to each other in the stacking order.
+ *
  * Shapes and text boxes may also have a gradient fill, `gradient: { type:
  * 'linear'|'radial', angle (CSS degrees: 90 runs left to right) | cx, cy
  * (centre, fractions of the box), stops: [{ pos 0–1, color, opacity? }] }`,
@@ -235,6 +238,24 @@ export function moveElement(el, dx, dy) {
 export const canHoldText = (el) => el.type === 'text' || el.type === 'shape';
 
 const deepCopy = (v) => JSON.parse(JSON.stringify(v));
+
+/** The elements grouped with `el` on its slide (itself alone when it isn't in a group of two or more). */
+export function groupOf(slide, el) {
+  if (!el?.groupId) return [el];
+  const members = slide.elements.filter((e) => e.groupId === el.groupId);
+  return members.length > 1 ? members : [el];
+}
+
+/** Give copied elements groups of their own, so they don't join the groups they were copied from. */
+export function regroup(els) {
+  const ids = new Map();
+  for (const el of els) {
+    if (!el.groupId) continue;
+    if (!ids.has(el.groupId)) ids.set(el.groupId, uid());
+    el.groupId = ids.get(el.groupId);
+  }
+  return els;
+}
 
 export function cloneElement(el) {
   return { ...deepCopy(el), id: uid() };

@@ -228,6 +228,42 @@ describe('PowerPoint pictures in shapes and SmartArt', () => {
   });
 });
 
+describe('PowerPoint groups', () => {
+  it('writes groups as groups and reads them back', async () => {
+    const [a, b, c] = [newShape('rect', 100, 100, 100, 50), newTextBox(300, 200, 100, 50), newShape('ellipse', 600, 100)];
+    b.text = '<p>Label</p>';
+    a.groupId = 'g';
+    b.groupId = 'g';
+    const xml = await slideXml(deckWith(a, b, c));
+    const group = xml.match(/<p:grpSp>[\s\S]*?<\/p:grpSp>/)[0];
+    expect(group.match(/<p:sp>/g)).toHaveLength(2);
+    // The group's frame is its members' box, in EMU.
+    expect(group).toContain(`<a:off x="${100 * 12700}" y="${100 * 12700}"/><a:ext cx="${300 * 12700}" cy="${150 * 12700}"/>`);
+    expect(xml.indexOf('<p:grpSp>')).toBeLessThan(xml.lastIndexOf('<p:sp>'));
+    const els = (await roundTrip(deckWith(a, b, c))).slides[0].elements;
+    expect(els.map((e) => e.type)).toEqual(['shape', 'text', 'shape']);
+    expect(els[0].groupId).toBeTruthy();
+    expect(els[1].groupId).toBe(els[0].groupId);
+    expect(els[2].groupId).toBeUndefined();
+    expect([els[1].x, els[1].y].map(Math.round)).toEqual([300, 200]);
+  });
+
+  it('turns the members of a turned group about its centre', async () => {
+    const [a, b] = [newShape('rect', 0, 100, 100, 100), newShape('rect', 200, 100, 100, 100)];
+    a.groupId = 'g';
+    b.groupId = 'g';
+    const back = await roundTrip(deckWith(a, b), async (zip) => {
+      const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+      // Turn the group (0–300 × 100–200, centre 150, 150) a quarter turn.
+      zip.file('ppt/slides/slide1.xml', xml.replace(/(<p:grpSp>[\s\S]*?<p:grpSpPr><a:xfrm)>/, '$1 rot="5400000">'));
+    });
+    const [ta, tb] = back.slides[0].elements;
+    // The left square ends up above the centre, the right one below, both turned.
+    expect([ta.x, ta.y, ta.rot].map(Math.round)).toEqual([100, 0, 90]);
+    expect([tb.x, tb.y, tb.rot].map(Math.round)).toEqual([100, 200, 90]);
+  });
+});
+
 describe('PowerPoint freeform shapes', () => {
   /** Export one shape, swap its preset outline for `geometry` (or another preset), and read it back. */
   const withGeometry = async (geometry) => {
