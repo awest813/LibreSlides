@@ -1,5 +1,5 @@
 import { slideSections, hasSections, DEFAULT_SECTION } from '../model/deck.js';
-import { desc, attr } from './ooxml.js';
+import { desc, attr, xmlText } from './ooxml.js';
 
 /**
  * Slide sections in .pptx files. PowerPoint 2010 and later list them in an
@@ -43,8 +43,6 @@ export function readSections(pres, slides, sldIds) {
 
 // ------------------------------------------------------------------ writing
 
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-
 /** A GUID as Office writes them: {8-4-4-4-12}, upper-case hex. */
 export function guid() {
   const random = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
@@ -70,7 +68,7 @@ export function addPresentationExt(presXml, ext) {
 export function sectionsXml(slides, sldIds) {
   const sections = slideSections(slides).map((g) => {
     const ids = sldIds.slice(g.start, g.end).map((id) => `<p14:sldId id="${id}"/>`).join('');
-    return `<p14:section name="${esc(g.name || DEFAULT_SECTION)}" id="${guid()}"><p14:sldIdLst>${ids}</p14:sldIdLst></p14:section>`;
+    return `<p14:section name="${xmlText(g.name || DEFAULT_SECTION)}" id="${guid()}"><p14:sldIdLst>${ids}</p14:sldIdLst></p14:section>`;
   });
   return `<p:ext uri="${SECTIONS_EXT}"><p14:sectionLst xmlns:p14="${P14}">${sections.join('')}</p14:sectionLst></p:ext>`;
 }

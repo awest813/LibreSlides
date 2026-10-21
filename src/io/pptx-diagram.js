@@ -1,5 +1,4 @@
-import { kids, kid, desc, attr, rid, addMediaTo } from './ooxml.js';
-import { xmlText } from './pptx-comments.js';
+import { kids, kid, desc, attr, rid, addMediaTo, xmlText } from './ooxml.js';
 import { normalizeLevels } from '../model/diagram-outline.js';
 import { xmlDataUrl, xmlOfDataUrl, DIAGRAM_PARTS } from '../model/deck.js';
 import { diagramChildren } from '../model/diagram-layout.js';
