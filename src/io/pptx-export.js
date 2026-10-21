@@ -492,6 +492,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
       if (cell.rowSpan > 1) options.rowspan = cell.rowSpan;
       if (cell.colSpan > 1) options.colspan = cell.colSpan;
       if (cell.valign) options.valign = cell.valign;
+      if (cell.vertical) options.textDirection = cell.vertical;
       if (cell.fill) options.fill = { color: toHex(resolveColor(cell.fill, theme)) };
       else if (el.header && r === 0 && header) {
         options.fill = { color: header };

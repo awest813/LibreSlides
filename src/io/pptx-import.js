@@ -15,6 +15,7 @@ import { readSections } from './pptx-sections.js';
 import { readDiagram } from './pptx-diagram.js';
 import { EMU_PER_PT, kids, kid, path, desc, attr, rid, SCHEME_ALIAS, colorOf, alphaOf, blend, Package, addMediaTo, contentOf } from './ooxml.js';
 import { oleObjectOf, olePreview } from './pptx-ole.js';
+import { builtInTableStyle } from './pptx-table-styles.js';
 
 /**
  * PowerPoint (.pptx) reader. Brings in what LibreSlides can edit: text boxes
@@ -489,20 +490,6 @@ function cropOf(blipFill) {
 
 // ------------------------------------------------------------------ table styles
 
-// PowerPoint's default table style ("Medium Style 2 – Accent 1"), for files that use it without including it (parsed when first needed).
-const DEFAULT_TABLE_STYLE_ID = '{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}';
-let defaultTableStyle = null;
-const DEFAULT_TABLE_STYLE = `<a:tblStyle xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" styleId="${DEFAULT_TABLE_STYLE_ID}">
-<a:wholeTbl><a:tcTxStyle><a:schemeClr val="dk1"/></a:tcTxStyle><a:tcStyle><a:tcBdr><a:left><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:left><a:right><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:right><a:top><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:top><a:bottom><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:bottom><a:insideH><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:insideH><a:insideV><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:insideV></a:tcBdr>
-<a:fill><a:solidFill><a:schemeClr val="accent1"><a:tint val="20000"/></a:schemeClr></a:solidFill></a:fill></a:tcStyle></a:wholeTbl>
-<a:band1H><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"><a:tint val="40000"/></a:schemeClr></a:solidFill></a:fill></a:tcStyle></a:band1H>
-<a:band1V><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"><a:tint val="40000"/></a:schemeClr></a:solidFill></a:fill></a:tcStyle></a:band1V>
-<a:lastCol><a:tcTxStyle b="on"><a:schemeClr val="lt1"/></a:tcTxStyle><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:fill></a:tcStyle></a:lastCol>
-<a:firstCol><a:tcTxStyle b="on"><a:schemeClr val="lt1"/></a:tcTxStyle><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:fill></a:tcStyle></a:firstCol>
-<a:lastRow><a:tcTxStyle b="on"><a:schemeClr val="lt1"/></a:tcTxStyle><a:tcStyle><a:tcBdr><a:top><a:ln w="38100"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:top></a:tcBdr><a:fill><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:fill></a:tcStyle></a:lastRow>
-<a:firstRow><a:tcTxStyle b="on"><a:schemeClr val="lt1"/></a:tcTxStyle><a:tcStyle><a:tcBdr><a:bottom><a:ln w="38100"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:bottom></a:tcBdr><a:fill><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:fill></a:tcStyle></a:firstRow>
-</a:tblStyle>`;
-
 /**
  * A cell border (an a:ln of a cell or a table style): a stroke, NO_BORDER for
  * none, undefined when it doesn't say (another part of the table style does).
@@ -513,6 +500,29 @@ function borderOf(ln, ctx) {
   return lineOf(ln, ctx.scheme, ctx.k) || undefined;
 }
 
+/** A table style's border for one side (a:left…): its a:ln, or the theme line it refers to (a:lnRef, taken as 1pt in its colour). */
+function styleBorderOf(side, ctx) {
+  const ref = kid(side, 'lnRef');
+  if (!kid(side, 'ln') && ref) {
+    const color = colorOf(ref, ctx.scheme);
+    return color && +attr(ref, 'idx') > 0 ? { color, width: Math.round(ctx.k * 10) / 10, dash: 'solid' } : NO_BORDER;
+  }
+  return borderOf(kid(side, 'ln'), ctx);
+}
+
+/** A table style part's fill: its own (a see-through one as it shows over white), the theme fill it refers to, 'none', or null. */
+function styleFillOf(tcStyle, ctx) {
+  const fill = kid(tcStyle, 'fill');
+  if (fill) {
+    if (kid(fill, 'noFill')) return 'none';
+    const solid = kid(fill, 'solidFill');
+    const color = colorOf(solid, ctx.scheme);
+    const alpha = alphaOf(solid);
+    return color && alpha < 1 ? blend(color, '#ffffff', alpha) : color;
+  }
+  return colorOf(kid(tcStyle, 'fillRef'), ctx.scheme);
+}
+
 /**
  * How a table style colours each cell: { cell(r, c, rs, cs) → { fill, color,
  * bold, borders: { t?, r?, b?, l? } } } (rs and cs: the cell's spans), or
@@ -520,20 +530,19 @@ function borderOf(ln, ctx) {
  */
 function tableLook(tblPr, ctx, rows, cols) {
   const id = path(tblPr, 'tableStyleId')?.textContent.trim();
-  let style = id && ctx.tableStyles?.get(id);
-  if (!style && id === DEFAULT_TABLE_STYLE_ID) style = (defaultTableStyle ||= new DOMParser().parseFromString(DEFAULT_TABLE_STYLE, 'application/xml').documentElement);
+  // The deck's own definition, else PowerPoint's built-in style of that id (see pptx-table-styles.js).
+  const style = id && (ctx.tableStyles?.get(id) || builtInTableStyle(id));
   if (!style) return null;
   const on = (name) => isTrue(attr(tblPr, name));
   const partLook = (name) => {
     const p = kid(style, name);
     if (!p) return null;
     const tx = kid(p, 'tcTxStyle');
-    const fill = path(p, 'tcStyle', 'fill');
     const bdr = path(p, 'tcStyle', 'tcBdr');
     return {
       // The part's borders: around it (left, right, top, bottom) and between its cells (insideH, insideV).
-      borders: Object.fromEntries(['left', 'right', 'top', 'bottom', 'insideH', 'insideV'].map((n) => [n, borderOf(kid(kid(bdr, n), 'ln'), ctx)])),
-      fill: fill && (kid(fill, 'noFill') ? 'none' : colorOf(kid(fill, 'solidFill'), ctx.scheme)),
+      borders: Object.fromEntries(['left', 'right', 'top', 'bottom', 'insideH', 'insideV'].map((n) => [n, kid(bdr, n) ? styleBorderOf(kid(bdr, n), ctx) : undefined])),
+      fill: styleFillOf(kid(p, 'tcStyle'), ctx),
       color: colorOf(tx, ctx.scheme) || colorOf(kid(tx, 'fontRef'), ctx.scheme),
       bold: attr(tx, 'b') === 'on' ? true : attr(tx, 'b') === 'off' ? false : undefined,
     };
@@ -1035,6 +1044,10 @@ async function readSlide(pkg, slidePath, ctx, deck) {
           if (+attr(tc, 'gridSpan') > 1) cell.colSpan = +attr(tc, 'gridSpan');
           if (+attr(tc, 'rowSpan') > 1) cell.rowSpan = +attr(tc, 'rowSpan');
           if (isTrue(attr(tc, 'hMerge')) || isTrue(attr(tc, 'vMerge'))) cell.merged = true;
+          // Text turned a quarter either way, or stacked (East Asian and WordArt vertical text).
+          const vert = attr(tcPr, 'vert');
+          if (vert === 'vert' || vert === 'vert270' || vert === 'eaVert') cell.vertical = vert;
+          else if (vert === 'wordArtVert' || vert === 'mongolianVert' || vert === 'wordArtVertRtl') cell.vertical = 'eaVert';
           const anchor = attr(tcPr, 'anchor');
           // PowerPoint puts cell text at the top unless told otherwise; LibreSlides' tables default to the middle.
           cell.valign = { ctr: 'middle', b: 'bottom' }[anchor] || 'top';

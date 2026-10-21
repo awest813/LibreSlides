@@ -4,6 +4,7 @@ import { buildPptx } from '../../src/io/pptx-export.js';
 import { importPptx } from '../../src/io/pptx-import.js';
 import { chooseAlternate, xml } from '../../src/io/ooxml.js';
 import { vmlImageId } from '../../src/io/pptx-ole.js';
+import { builtInTableStyleXml, BUILT_IN_TABLE_STYLES } from '../../src/io/pptx-table-styles.js';
 import { newDeck, newTextBox } from '../../src/model/deck.js';
 
 const toBuffer = (blob) => (blob.arrayBuffer ? blob.arrayBuffer() : new Response(blob).arrayBuffer());
@@ -102,5 +103,63 @@ describe('OLE objects', () => {
     expect(vmlImageId('<v:shape id=\'a\'><v:imagedata r:id="rId4"/></v:shape>', 'a')).toBe('rId4');
     expect(vmlImageId('<v:shape id="a"><v:imagedata o:relid="rId4"/></v:shape>', 'b')).toBeNull();
     expect(vmlImageId('<v:shape id="a">', 'a')).toBeNull();
+  });
+});
+
+describe('tables', () => {
+  /** A 2 × 3 table in style `styleId` (header row and banded rows on), the cells' tcPr given by `tcPr`. */
+  const table = (styleId, tcPr = () => '<a:tcPr/>') => {
+    const cell = (r, c) => `<a:tc><a:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="en-US"/><a:t>${r}${c}</a:t></a:r></a:p></a:txBody>${tcPr(r, c)}</a:tc>`;
+    const rows = [0, 1, 2].map((r) => `<a:tr h="370840">${cell(r, 0)}${cell(r, 1)}</a:tr>`).join('');
+    return `<p:graphicFrame ${NS}><p:nvGraphicFramePr><p:cNvPr id="70" name="Table"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr>${xfrm('p:xfrm', 635000, 635000, 4064000, 1112520)}<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table"><a:tbl><a:tblPr firstRow="1" bandRow="1"><a:tableStyleId>${styleId}</a:tableStyleId></a:tblPr><a:tblGrid><a:gridCol w="2032000"/><a:gridCol w="2032000"/></a:tblGrid>${rows}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>`;
+  };
+  let accent1;
+  const read = (shapes) => withShapes(shapes, async (zip) => {
+    zip.file('ppt/tableStyles.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><a:tblStyleLst xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" def="{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}"/>');
+    const theme = await zip.file(Object.keys(zip.files).find((f) => /^ppt\/theme\/theme\d+\.xml$/.test(f))).async('string');
+    accent1 = `#${/<a:accent1>\s*<a:srgbClr val="([0-9A-Fa-f]{6})"/.exec(theme)[1].toLowerCase()}`;
+  }).then((deck) => deck.slides[0].elements.find((e) => e.type === 'table'));
+
+  it('knows all 74 of PowerPoint\'s built-in styles, as well-formed style XML', () => {
+    expect(BUILT_IN_TABLE_STYLES).toBe(74);
+    const doc = xml(builtInTableStyleXml('{69012ecd-51fc-41f1-aa8d-1b2483cd663e}'));
+    expect(doc.querySelector('parsererror')).toBeNull();
+    expect(builtInTableStyleXml('{00000000-0000-0000-0000-000000000000}')).toBeNull();
+  });
+
+  it('draws a built-in style the file doesn\'t include as that style, not the default blue', async () => {
+    // Light Style 2 – Accent 1: an accent header with light bold text, no body fill, accent lines round the table.
+    const t = await read(table('{69012ECD-51FC-41F1-AA8D-1B2483CD663E}'));
+    expect(t.cells[0][0].fill).toBe(accent1);
+    expect(t.cells[0][0].text).toMatch(/font-weight: 700/);
+    expect(t.cells[1][0].fill).toBeUndefined();
+    expect(t.cells[2][1].fill).toBeUndefined();
+    expect(t.stroke.color === accent1 || Object.values(t.cells[1][0].borders || {}).some((b) => b.color === accent1)).toBe(true);
+    // Medium Style 4 (plain): light grey bands in a grey-filled table.
+    const m = await read(table('{D7AC3CCA-C797-4891-BE02-D94E43425B78}'));
+    expect(m.cells[1][0].fill).not.toBe(m.cells[2][0].fill);
+    expect(m.cells[1][0].fill).toMatch(/^#[0-9a-f]{6}$/);
+  });
+
+  it('reads style borders and fills that refer to the theme (lnRef, fillRef)', async () => {
+    const style = '<a:tblStyleLst xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" def="x"><a:tblStyle styleId="{11111111-2222-3333-4444-555555555555}" styleName="Mine"><a:wholeTbl><a:tcStyle><a:tcBdr><a:top><a:lnRef idx="1"><a:schemeClr val="accent1"/></a:lnRef></a:top></a:tcBdr></a:tcStyle></a:wholeTbl><a:firstRow><a:tcStyle><a:fillRef idx="1"><a:schemeClr val="accent1"/></a:fillRef></a:tcStyle></a:firstRow></a:tblStyle></a:tblStyleLst>';
+    const deck = await withShapes(table('{11111111-2222-3333-4444-555555555555}'), async (zip) => {
+      zip.file('ppt/tableStyles.xml', style);
+      const theme = await zip.file(Object.keys(zip.files).find((f) => /^ppt\/theme\/theme\d+\.xml$/.test(f))).async('string');
+      accent1 = `#${/<a:accent1>\s*<a:srgbClr val="([0-9A-Fa-f]{6})"/.exec(theme)[1].toLowerCase()}`;
+    });
+    const t = deck.slides[0].elements.find((e) => e.type === 'table');
+    expect(t.cells[0][0].fill).toBe(accent1);
+    const top = t.cells[0][0].borders?.t || t.stroke;
+    expect(top.color).toBe(accent1);
+  });
+
+  it('keeps vertical text in cells, and writes it back', async () => {
+    const vert = ['vert', 'vert270', 'eaVert', 'wordArtVert'];
+    const t = await read(table('{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}', (r, c) => (r === 0 ? `<a:tcPr vert="${vert[c]}"/>` : r === 1 ? `<a:tcPr vert="${vert[c + 2]}"/>` : '<a:tcPr/>')));
+    expect(t.cells.map((row) => row.map((cell) => cell.vertical))).toEqual([['vert', 'vert270'], ['eaVert', 'eaVert'], [undefined, undefined]]);
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deckWith(t))));
+    const slide = await zip.file('ppt/slides/slide1.xml').async('string');
+    expect(slide.match(/<a:tcPr[^>]*vert="(\w+)"/g).map((m) => /vert="(\w+)"/.exec(m)[1])).toEqual(['vert', 'vert270', 'eaVert', 'eaVert']);
   });
 });

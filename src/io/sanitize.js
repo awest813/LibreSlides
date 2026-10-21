@@ -140,6 +140,7 @@ export function sanitizeElement(el) {
         c.text = typeof c.text === 'string' ? sanitizeHtml(c.text) : '';
         if (c.fill != null) c.fill = safeColor(c.fill);
         if (c.valign != null && !['top', 'middle', 'bottom'].includes(c.valign)) delete c.valign;
+        if (c.vertical != null && !['vert', 'vert270', 'eaVert'].includes(c.vertical)) delete c.vertical;
         cleanCellLook(c);
       }
     }

@@ -429,6 +429,13 @@ function renderTable(el, ctx) {
       const body = document.createElement('div');
       body.className = 'cell-body';
       body.innerHTML = cell.text || '';
+      if (cell.vertical) {
+        // Vertical text, as in text boxes (see textLayout).
+        body.style.writingMode = 'vertical-rl';
+        body.style.textOrientation = cell.vertical === 'eaVert' ? 'upright' : 'sideways';
+        if (cell.vertical === 'vert270') body.style.transform = 'rotate(180deg)';
+        body.style.margin = '0 auto';
+      }
       td.append(body);
       tr.append(td);
     });

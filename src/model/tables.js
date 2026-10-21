@@ -4,7 +4,8 @@
  * `rowSpan` and/or `colSpan`; the cells it covers stay in the grid (so every
  * row has a cell for every column) with `merged: true`, and draw nothing.
  * `colWidths` and the optional `rowHeights` are fractions of the table's size.
- * Cells may also have borders and margins of their own (see setBorders).
+ * Cells may also have borders and margins of their own (see setBorders), and
+ * `vertical` text (vert, vert270 or eaVert, as in text boxes).
  */
 
 const blank = () => ({ text: '' });
