@@ -6,6 +6,7 @@ import { evaluateGeometry, definitionFromXml } from '../model/geometry.js';
 import PRESETS from '../model/preset-shapes.js';
 import { isDarkColor } from '../model/themes.js';
 import { readChart } from './pptx-chart.js';
+import { readAnimations } from './pptx-timing.js';
 import { readMedia } from './pptx-media.js';
 import { readEmbeddedFonts } from './pptx-fonts.js';
 import { EMU_PER_PT, kids, kid, path, desc, attr, rid, SCHEME_ALIAS, colorOf, alphaOf, blend, Package, addMediaTo } from './ooxml.js';
@@ -503,9 +504,17 @@ async function readSlide(pkg, slidePath, ctx, deck) {
    * master whose graphics show on it (their placeholders are only templates
    * for the slide's own, so they're skipped).
    */
+  // The elements each of the slide's shapes became (by shape id), for its animations.
+  const byShapeId = new Map();
   const walk = async (container, group, part) => {
     const tctx = { ...ctx, rels: part.rels };
+    let pending = null; // the shape just read, and where its elements start
+    const settle = () => {
+      if (pending?.id && part.isSlide && !part.inner) byShapeId.set(pending.id, slide.elements.slice(pending.from));
+    };
     for (const node of container.children) {
+      settle();
+      pending = { id: attr(desc(node, 'cNvPr')[0], 'id'), from: slide.elements.length };
       const name = node.localName;
       if (name === 'grpSp') {
         const gx = xfrmOf(kid(node, 'grpSpPr'));
@@ -738,6 +747,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         slide.elements.push(normalizeTable(table));
       }
     }
+    settle();
   };
 
   /**
@@ -759,7 +769,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
     if (tree && (kids(tree, 'sp').length || kids(tree, 'grpSp').length)) {
       const inFrame = { sx: 1, sy: 1, ox: frame.x, oy: frame.y };
       const g = group ? { sx: group.sx, sy: group.sy, ox: group.ox + frame.x * group.sx, oy: group.oy + frame.y * group.sy } : inFrame;
-      await walk(tree, g, { rels: await pkg.rels(drawingRel.path), isSlide: true });
+      await walk(tree, g, { rels: await pkg.rels(drawingRel.path), isSlide: true, inner: true });
       return;
     }
     // The text of the diagram's points, in order, as a bulleted list over the frame.
@@ -781,6 +791,14 @@ async function readSlide(pkg, slidePath, ctx, deck) {
     if (layoutDoc) await walk(tree(layoutDoc), null, { rels: layoutRels });
   }
   await walk(tree(doc), null, { rels, isSlide: true });
+
+  // Entrance animations, on the elements their shapes became (a group's or a diagram's play together).
+  let order = 0;
+  for (const a of readAnimations(doc)) {
+    (byShapeId.get(a.spid) || []).forEach((el, k) => {
+      el.anim = { effect: a.effect, duration: Math.round(a.duration * 100) / 100, start: k ? 'with' : a.start, order: ++order };
+    });
+  }
 
   // Transition (PowerPoint 2010+ effects sit inside mc:AlternateContent; the fallback is plain).
   const tr = desc(doc, 'transition')[0];

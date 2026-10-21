@@ -75,6 +75,7 @@ function entrance(effect, W, H, to = 1) {
   switch (effect) {
     case 'fade': case 'appear': return [{ opacity: 0 }, { opacity: to }];
     case 'fly-up': return [{ transform: `translateY(${H}px)`, opacity: 0 }, { transform: 'translateY(0)', opacity: to }];
+    case 'fly-down': return [{ transform: `translateY(${-H}px)`, opacity: 0 }, { transform: 'translateY(0)', opacity: to }];
     case 'fly-left': return [{ transform: `translateX(${-W}px)`, opacity: 0 }, { transform: 'translateX(0)', opacity: to }];
     case 'fly-right': return [{ transform: `translateX(${W}px)`, opacity: 0 }, { transform: 'translateX(0)', opacity: to }];
     case 'zoom': return [{ transform: 'scale(0.3)', opacity: 0 }, { transform: 'scale(1)', opacity: to }];

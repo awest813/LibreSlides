@@ -8,6 +8,7 @@ import { saveFile } from './files.js';
 import { addChart } from './pptx-chart.js';
 import { addMediaElement, finishMedia } from './pptx-media.js';
 import { embedFonts } from './pptx-fonts.js';
+import { timingXml, insertTiming } from './pptx-timing.js';
 
 /**
  * PowerPoint export with pptxgenjs. Slides become real PowerPoint text boxes,
@@ -233,6 +234,10 @@ async function imageSize(dataUrl) {
 async function addElement(pptx, s, el, deck, theme, marks) {
   const opacity = el.opacity ?? 1;
   const shadow = el.shadow ? { type: 'outer', blur: 8, offset: 4, angle: 90, color: '000000', opacity: 0.3 } : undefined;
+  // Animated elements, and media that plays by itself, are named so the slide's timeline can point at them.
+  const timed = (el.anim?.effect && el.anim.effect !== 'none') || (el.type === 'media' && (el.autoplay || el.loop));
+  const objectName = timed ? `LibreSlides shape ${++marks.count}` : undefined;
+  if (timed) marks.timeline.push({ name: objectName, el });
   if (el.type === 'line') {
     let { x1, y1, x2, y2, arrowStart, arrowEnd } = el;
     if (x1 > x2) {
@@ -242,11 +247,11 @@ async function addElement(pptx, s, el, deck, theme, marks) {
     const line = lineOpts({ color: 'theme:text', width: 2, ...el.stroke, color: el.stroke?.color === 'none' ? 'theme:text' : el.stroke?.color }, theme);
     if (arrowStart) line.beginArrowType = 'triangle';
     if (arrowEnd) line.endArrowType = 'triangle';
-    s.addShape('line', { ...geom({ x: x1, y: Math.min(y1, y2), w: x2 - x1, h: Math.abs(y2 - y1) }), flipV: y2 < y1, line });
+    s.addShape('line', { ...geom({ x: x1, y: Math.min(y1, y2), w: x2 - x1, h: Math.abs(y2 - y1) }), flipV: y2 < y1, line, objectName });
     return;
   }
   const g = geom(boxOf(el));
-  const common = { ...g, rotate: el.rot || 0, flipH: !!el.flipH, flipV: !!el.flipV, shadow };
+  const common = { ...g, rotate: el.rot || 0, flipH: !!el.flipH, flipV: !!el.flipV, shadow, objectName };
 
   if (el.type === 'image') {
     const data = await exportableImage(deck.media?.[el.media], el.w, el.h);
@@ -274,11 +279,11 @@ async function addElement(pptx, s, el, deck, theme, marks) {
   }
 
   if (el.type === 'chart') {
-    addChart(pptx, s, el, theme, g);
+    addChart(pptx, s, el, theme, g, objectName);
     return;
   }
   if (el.type === 'media') {
-    await addMediaElement(pptx, s, el, deck, g);
+    await addMediaElement(pptx, s, el, deck, g, objectName);
     return;
   }
 
@@ -305,7 +310,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
     s.addTable(rows, {
       x: g.x, y: g.y, w: g.w, colW: (el.colWidths || []).map((f) => f * g.w),
       rowH: el.rowHeights?.length === el.cells.length ? el.rowHeights.map((f) => f * g.h) : g.h / el.cells.length,
-      ...base, valign: 'middle', margin: 4,
+      ...base, valign: 'middle', margin: 4, objectName,
       border: border.type === 'none' ? { type: 'none' } : { type: 'solid', pt: border.width, color: border.color },
     });
     return;
@@ -356,7 +361,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
     extras = parts.slice(1);
   }
   // Drawn over the main shape, in the order they were in.
-  const addExtras = () => { for (const extra of extras) s.addShape(shape, { ...common, ...extra }); };
+  const addExtras = () => { for (const extra of extras) s.addShape(shape, { ...common, objectName: undefined, ...extra }); };
   if (!hasText) {
     if (el.type === 'shape' || opts.fill.type !== 'none' || opts.line.type !== 'none') s.addShape(shape, opts);
     addExtras();
@@ -502,9 +507,40 @@ async function applyPictureFills(zip, slideNo, xml, marks) {
   return xml;
 }
 
+/** Give shapes that pptxgenjs numbered the same (tables, media) ids of their own, so animations find the right one. */
+function uniqueShapeIds(xml) {
+  const ids = (xml.match(/<p:cNvPr id="\d+"/g) || []).map((m) => +m.match(/\d+/)[0]);
+  let next = Math.max(0, ...ids) + 1;
+  const seen = new Set();
+  return xml.replace(/<p:cNvPr id="(\d+)"/g, (m, id) => {
+    if (!seen.has(id)) {
+      seen.add(id);
+      return m;
+    }
+    return `<p:cNvPr id="${next++}"`;
+  });
+}
+
+/** The animations and media of a slide's timeline (see pptx-timing.js), found in its XML by name. */
+function timelineOf(xml, timeline) {
+  const anims = [];
+  const media = [];
+  for (const { name, el } of timeline) {
+    const spid = new RegExp(`<p:cNvPr id="(\\d+)" name="${name}"`).exec(xml)?.[1];
+    if (!spid) continue;
+    if (el.type === 'media') media.push({ spid, kind: el.kind === 'audio' ? 'audio' : 'video', autoplay: !!el.autoplay, loop: !!el.loop, duration: el.duration });
+    if (el.anim?.effect && el.anim.effect !== 'none') {
+      anims.push({ spid, order: el.anim.order || 0, effect: el.anim.effect, duration: el.anim.duration ?? 0.5, start: el.anim.start || 'click', hasText: !!htmlToText(el.text || '') });
+    }
+  }
+  anims.sort((a, b) => a.order - b.order);
+  return { anims, media };
+}
+
 /** Tidy the paragraphs, and add transitions and "skip slide" to the generated XML. */
 async function postProcess(buffer, deck, allMarks) {
   const zip = await JSZip.loadAsync(buffer);
+  await finishMedia(zip, deck);
   for (const [i, slide] of deck.slides.entries()) {
     const path = `ppt/slides/slide${i + 1}.xml`;
     const file = zip.file(path);
@@ -519,9 +555,10 @@ async function postProcess(buffer, deck, allMarks) {
       xml = xml.includes('</p:clrMapOvr>') ? xml.replace('</p:clrMapOvr>', `</p:clrMapOvr>${tr}`) : xml.replace('</p:sld>', `${tr}</p:sld>`);
     }
     if (slide.hidden) xml = xml.replace(/<p:sld(\s)/, '<p:sld show="0"$1');
+    xml = uniqueShapeIds(xml);
+    xml = insertTiming(xml, timingXml(timelineOf(xml, allMarks[i].timeline)));
     zip.file(path, xml);
   }
-  await finishMedia(zip, deck);
   await embedFonts(zip, deck);
   return zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', compression: 'DEFLATE' });
 }
@@ -541,7 +578,7 @@ export async function buildPptx(deck) {
   const allMarks = [];
   for (const slide of deck.slides) {
     const s = pptx.addSlide();
-    const marks = { count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), background: null };
+    const marks = { count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), timeline: [], background: null };
     allMarks.push(marks);
     const bg = slide.background || theme.background;
     if (bg.type === 'image' && deck.media?.[bg.media]) {

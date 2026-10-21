@@ -105,46 +105,22 @@ async function coverImage(dataUrl) {
 }
 
 /** Add a media element to a pptxgenjs slide (geom in inches). */
-export async function addMediaElement(pptx, slide, el, deck, geom) {
+export async function addMediaElement(pptx, slide, el, deck, geom, objectName) {
   const file = exportable(el, deck);
   if (!file) return;
   const opts = { type: el.kind === 'audio' ? 'audio' : 'video', data: file.data, extn: file.extn, x: geom.x, y: geom.y, w: geom.w, h: geom.h };
   // Without a poster pptxgenjs shows its own play button.
   const cover = await coverImage(deck.media?.[el.poster]);
   if (cover) opts.cover = cover;
+  if (objectName) opts.objectName = objectName;
   slide.addMedia(opts);
-}
-
-/** The timeline that plays (and loops) a slide's media: `items` are { spid, kind, autoplay, loop, duration }. */
-function timingXml(items) {
-  let n = 1; // the root is 1; the rest count up in document order
-  const id = () => ++n;
-  const plays = items.filter((m) => m.autoplay);
-  let seq = '';
-  if (plays.length) {
-    // One step that starts as the slide appears: the first file plays after it begins, the rest with it.
-    const [main, step, group] = [id(), id(), id()];
-    const effects = plays.map((m, i) => `<p:par><p:cTn id="${id()}" presetID="1" presetClass="mediacall" presetSubtype="0" fill="hold" nodeType="${i ? 'withEffect' : 'afterEffect'}">`
-      + '<p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst><p:cmd type="call" cmd="playFrom(0.0)"><p:cBhvr>'
-      + `<p:cTn id="${id()}" dur="${m.duration ? Math.round(m.duration * 1000) : 'indefinite'}" fill="hold"/><p:tgtEl><p:spTgt spid="${m.spid}"/></p:tgtEl>`
-      + '</p:cBhvr></p:cmd></p:childTnLst></p:cTn></p:par>').join('');
-    seq = `<p:seq concurrent="1" nextAc="seek"><p:cTn id="${main}" dur="indefinite" nodeType="mainSeq"><p:childTnLst>`
-      + `<p:par><p:cTn id="${step}" fill="hold"><p:stCondLst><p:cond delay="indefinite"/><p:cond evt="onBegin" delay="0"><p:tn val="${main}"/></p:cond></p:stCondLst><p:childTnLst>`
-      + `<p:par><p:cTn id="${group}" fill="hold"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst>${effects}</p:childTnLst></p:cTn></p:par>`
-      + '</p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn>'
-      + '<p:prevCondLst><p:cond evt="onPrev" delay="0"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:prevCondLst>'
-      + '<p:nextCondLst><p:cond evt="onNext" delay="0"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:nextCondLst></p:seq>';
-  }
-  // Each file's media node, which is where looping is set.
-  const nodes = items.map((m) => `<p:${m.kind}><p:cMediaNode vol="80000"><p:cTn id="${id()}" fill="hold"${m.loop ? ' repeatCount="indefinite"' : ''}>`
-    + `<p:stCondLst><p:cond delay="indefinite"/></p:stCondLst></p:cTn><p:tgtEl><p:spTgt spid="${m.spid}"/></p:tgtEl></p:cMediaNode></p:${m.kind}>`).join('');
-  return `<p:timing><p:tnLst><p:par><p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot"><p:childTnLst>${seq}${nodes}</p:childTnLst></p:cTn></p:par></p:tnLst></p:timing>`;
 }
 
 /**
  * Finish the media pptxgenjs wrote: sounds marked as audio (it writes every
  * file as a video), rotation, shape ids that are unique on the slide,
- * PowerPoint's content types, and the timeline for autoplay and looping.
+ * PowerPoint's content types. (Their timeline, for autoplay and looping, is
+ * written with the slide's animations: see pptx-timing.js.)
  */
 export async function finishMedia(zip, deck) {
   let any = false;
@@ -156,7 +132,6 @@ export async function finishMedia(zip, deck) {
     let xml = await file.async('string');
     const ids = (xml.match(/<p:cNvPr id="\d+"/g) || []).map((m) => +m.match(/\d+/)[0]);
     let nextId = Math.max(0, ...ids) + 1;
-    const items = [];
     let k = 0;
     // The media pictures are in the same order as the elements they came from.
     xml = xml.replace(/<p:pic>(?:(?!<\/p:pic>)[\s\S])*?<a:videoFile[\s\S]*?<\/p:pic>/g, (pic) => {
@@ -169,10 +144,8 @@ export async function finishMedia(zip, deck) {
       }
       if (el.kind === 'audio') pic = pic.replace('<a:videoFile ', '<a:audioFile ');
       if (el.rot) pic = pic.replace(/<a:xfrm(?=[\s>])/, `<a:xfrm rot="${Math.round((((el.rot % 360) + 360) % 360) * 60000)}"`);
-      if (el.autoplay || el.loop) items.push({ spid: id, kind: el.kind === 'audio' ? 'audio' : 'video', autoplay: !!el.autoplay, loop: !!el.loop, duration: el.duration });
       return pic;
     });
-    if (items.length) xml = xml.replace('</p:sld>', `${timingXml(items)}</p:sld>`);
     zip.file(file.name, xml);
   }
   if (!any) return;

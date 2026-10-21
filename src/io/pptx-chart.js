@@ -231,7 +231,7 @@ const LEGEND_POS = { right: 'r', left: 'l', top: 't', bottom: 'b' };
 const hex = (c) => (/^#[0-9a-f]{6}$/i.test(c || '') ? c.slice(1).toUpperCase() : null);
 
 /** Add a chart element to a pptxgenjs slide, as a native PowerPoint chart. */
-export function addChart(pptx, slide, el, theme, geom) {
+export function addChart(pptx, slide, el, theme, geom, objectName) {
   const chart = el.chart || {};
   const kind = CHART_KINDS.some((k) => k.id === chart.kind) ? chart.kind : 'column';
   const pie = kind === 'pie' || kind === 'doughnut';
@@ -285,5 +285,6 @@ export function addChart(pptx, slide, el, theme, geom) {
     lineDataSymbolSize: 6,
     chartArea: { fill: fill ? { color: fill } : undefined, border: border ? { color: border, pt: el.stroke.width } : undefined, roundedCorners: false },
     plotArea: { fill: { color: null } },
+    ...(objectName && { objectName }),
   });
 }

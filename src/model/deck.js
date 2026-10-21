@@ -70,6 +70,7 @@ export const ANIMATIONS = [
   { id: 'appear', name: 'Appear' },
   { id: 'fade', name: 'Fade in' },
   { id: 'fly-up', name: 'Fly in from bottom' },
+  { id: 'fly-down', name: 'Fly in from top' },
   { id: 'fly-left', name: 'Fly in from left' },
   { id: 'fly-right', name: 'Fly in from right' },
   { id: 'zoom', name: 'Zoom in' },
