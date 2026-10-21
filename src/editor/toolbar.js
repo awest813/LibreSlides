@@ -89,8 +89,8 @@ export class Toolbar {
         ];
       },
       View: () => [
-        { label: 'Slideshow', icon: 'present', shortcut: 'Mod-Enter', run: () => app.present({ fromStart: false }) },
-        { label: 'Slideshow from beginning', icon: 'play', shortcut: 'F5', run: () => app.present({ fromStart: true }) },
+        { label: 'Present from this slide', icon: 'present', shortcut: 'Mod-Enter', run: () => app.present({ fromStart: false }) },
+        { label: 'Present from beginning', icon: 'play', shortcut: 'F5', run: () => app.present({ fromStart: true }) },
         { label: 'Presenter view', icon: 'presenter', run: () => app.presenterView() },
         'separator',
         { label: 'Zoom in', icon: 'zoomIn', shortcut: 'Mod-=', run: () => app.zoomBy(1.25) },
@@ -106,20 +106,21 @@ export class Toolbar {
       Insert: () => [
         { label: 'Text box', icon: 'textBox', run: () => app.canvas.setTool({ type: 'text' }) },
         { label: 'Image…', icon: 'image', run: () => app.insertImage() },
-        { label: 'Link…', icon: 'link', shortcut: 'Mod-K', run: () => app.insertLink() },
-        { label: 'Slide number', run: () => app.insertField('slidenum') },
-        { label: 'Date', run: () => app.insertField('datetime1') },
         { label: 'Video or audio…', icon: 'media', run: () => app.insertMedia() },
         { label: 'Table…', icon: 'table', run: () => this.tableMenu(this.menuButtons.Insert) },
-        { label: 'Chart…', icon: 'chart', run: () => app.insertChart() },
+        { label: 'Chart', icon: 'chart', run: () => app.insertChart() },
         { label: 'Diagram…', icon: 'diagram', run: () => app.insertDiagram() },
         'separator',
         ...SHAPES.slice(0, 6).map((s) => ({ label: s.name, run: () => app.canvas.setTool({ type: 'shape', shape: s.id }) })),
-        { label: 'More shapes…', icon: 'shapes', run: () => this.shapeMenu(this.shapeBtn) },
+        { label: 'More shapes…', icon: 'shapes', run: () => this.shapeMenu(this.menuButtons.Insert) },
         { label: 'Line', icon: 'line', run: () => app.canvas.setTool({ type: 'line' }) },
         { label: 'Arrow', icon: 'arrow', run: () => app.canvas.setTool({ type: 'line', arrow: true }) },
         'separator',
+        { label: 'Link…', icon: 'link', shortcut: 'Mod-K', run: () => app.insertLink() },
+        { label: 'Slide number', run: () => app.insertField('slidenum') },
+        { label: 'Date', icon: 'clock', run: () => app.insertField('datetime1') },
         { label: 'Comment', icon: 'comment', shortcut: 'Mod-Alt-M', run: () => app.insertComment() },
+        'separator',
         { label: 'New slide', icon: 'plus', shortcut: 'Mod-M', run: () => app.addSlide() },
       ],
       Format: () => {
@@ -134,7 +135,7 @@ export class Toolbar {
           { label: 'Decrease font size', shortcut: 'Mod-Shift-,', disabled: !t, run: () => app.stepFontSize(-1) },
           'separator',
           { label: 'Align left', icon: 'alignLeft', shortcut: 'Mod-Shift-L', disabled: !t, run: () => app.setTextProp('align', 'left') },
-          { label: 'Center', icon: 'alignCenter', shortcut: 'Mod-Shift-E', disabled: !t, run: () => app.setTextProp('align', 'center') },
+          { label: 'Align centre', icon: 'alignCenter', shortcut: 'Mod-Shift-E', disabled: !t, run: () => app.setTextProp('align', 'center') },
           { label: 'Align right', icon: 'alignRight', shortcut: 'Mod-Shift-R', disabled: !t, run: () => app.setTextProp('align', 'right') },
           { label: 'Justify', icon: 'alignJustify', shortcut: 'Mod-Shift-J', disabled: !t, run: () => app.setTextProp('align', 'justify') },
           'separator',
@@ -222,7 +223,7 @@ export class Toolbar {
       'separator',
       { heading: n > 1 ? 'Align to each other' : 'Align on slide' },
       { label: 'Left', icon: 'alignLeftEdge', disabled: none, run: () => app.align('left') },
-      { label: 'Center', icon: 'alignHCenter', disabled: none, run: () => app.align('center') },
+      { label: 'Centre', icon: 'alignHCenter', disabled: none, run: () => app.align('center') },
       { label: 'Right', icon: 'alignRightEdge', disabled: none, run: () => app.align('right') },
       { label: 'Top', icon: 'alignTopEdge', disabled: none, run: () => app.align('top') },
       { label: 'Middle', icon: 'alignVCenter', disabled: none, run: () => app.align('middle') },
@@ -410,7 +411,7 @@ export class Toolbar {
     this.hiliteBtn = swatchButton('highlight', 'Highlight colour', (b) => openColorPicker(b, { theme: app.theme, allowNone: true, noneLabel: 'None', onPick: (v) => app.setTextProp('highlight', v === 'none' ? null : v) }));
     this.hiliteBtn.setColor('transparent');
     this.alignBtn = tb('alignLeft', 'Align', (b) => showPopover(b, h('div', { class: 'tb-row-panel' },
-      ...[['left', 'alignLeft', 'Left', 'Mod-Shift-L'], ['center', 'alignCenter', 'Center', 'Mod-Shift-E'], ['right', 'alignRight', 'Right', 'Mod-Shift-R'], ['justify', 'alignJustify', 'Justify', 'Mod-Shift-J']]
+      ...[['left', 'alignLeft', 'Left', 'Mod-Shift-L'], ['center', 'alignCenter', 'Centre', 'Mod-Shift-E'], ['right', 'alignRight', 'Right', 'Mod-Shift-R'], ['justify', 'alignJustify', 'Justify', 'Mod-Shift-J']]
         .map(([v, ic, name, sc]) => tb(ic, name, () => { closePopover(); app.setTextProp('align', v); }, { shortcut: sc })),
       h('span', { class: 'tb-sep' }),
       ...[['top', 'alignTopEdge', 'Top'], ['middle', 'alignVCenter', 'Middle'], ['bottom', 'alignBottomEdge', 'Bottom']]

@@ -2029,10 +2029,13 @@ export class EditorScreen {
 
   showShortcuts() {
     const rows = [
-      ['Present from this slide / from the beginning', 'Mod-Enter', 'F5'],
+      ['Present from this slide', 'Mod-Enter', 'Shift-F5'],
+      ['Present from the beginning', 'F5', 'Mod-Shift-Enter'],
+      ['Save / Save as', 'Mod-S', 'Mod-Shift-S'],
+      ['Open / Print', 'Mod-O', 'Mod-P'],
       ['New slide', 'Mod-M'],
       ['New comment', 'Mod-Alt-M'],
-      ['Duplicate', 'Mod-D'],
+      ['Duplicate the selected objects (or slides)', 'Mod-D'],
       ['Group / Ungroup', 'Mod-G', 'Mod-Shift-G'],
       ['Link', 'Mod-K'],
       ['Undo / Redo', 'Mod-Z', 'Mod-Y'],
@@ -2045,15 +2048,18 @@ export class EditorScreen {
       ['Bring forward / to front', 'Mod-Up', 'Mod-Shift-Up'],
       ['Send backward / to back', 'Mod-Down', 'Mod-Shift-Down'],
       ['Bold / Italic / Underline', 'Mod-B', 'Mod-I', 'Mod-U'],
-      ['Bigger / smaller text', 'Mod-Shift-.', 'Mod-Shift-,'],
-      ['Align left / center / right', 'Mod-Shift-L', 'Mod-Shift-E', 'Mod-Shift-R'],
+      ['Strikethrough', 'Alt-Shift-5'],
+      ['Increase / decrease font size', 'Mod-Shift-.', 'Mod-Shift-,'],
+      ['Align left / centre / right / justify', 'Mod-Shift-L', 'Mod-Shift-E', 'Mod-Shift-R', 'Mod-Shift-J'],
       ['Bulleted / numbered list', 'Mod-Shift-8', 'Mod-Shift-7'],
+      ['Decrease / increase indent (while typing)', 'Mod-[', 'Mod-]'],
+      ['Clear formatting', 'Mod-\\'],
       ['Previous / next slide', 'Page Up', 'Page Down'],
       ['Move slide up / down (in the slide list)', 'Mod-Up', 'Mod-Down'],
       ['Zoom in / out / fit', 'Mod-=', 'Mod--', 'Mod-Alt-0'],
       ['Keep proportions while resizing; draw straight lines', 'Shift-Drag'],
       ['Move without snapping', 'Alt-Drag'],
-      ['Print / Open', 'Mod-P', 'Mod-O'],
+      ['Keyboard shortcuts', 'Mod-/'],
     ];
     const table = h('table', { class: 'shortcut-table' }, h('tbody', {}, ...rows.map(([label, ...keys]) => h('tr', {}, h('td', {}, label), h('td', {}, ...keys.flatMap((kk, i) => [i ? ' ' : null, h('kbd', {}, /^[A-Z][a-z]/.test(kk) && !kk.includes('-') ? kk : shortcutLabel(kk))]))))));
     const present = h('table', { class: 'shortcut-table' }, h('tbody', {}, ...[

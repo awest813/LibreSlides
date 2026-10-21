@@ -367,8 +367,8 @@ export class SidePanel {
           field('X', numberInput(el.x, (v) => upd((e) => { e.x = v; }), { suffix: 'pt' })),
           field('Y', numberInput(el.y, (v) => upd((e) => { e.y = v; }), { suffix: 'pt' }))),
         h('div', { class: 'pf-row' },
-          h('button', { type: 'button', class: 'btn', onclick: () => app.align('center', { toSlide: true }) }, 'Center horizontally'),
-          h('button', { type: 'button', class: 'btn', onclick: () => app.align('middle', { toSlide: true }) }, 'Center vertically'))));
+          h('button', { type: 'button', class: 'btn', onclick: () => app.align('center', { toSlide: true }) }, 'Centre horizontally'),
+          h('button', { type: 'button', class: 'btn', onclick: () => app.align('middle', { toSlide: true }) }, 'Centre vertically'))));
     }
 
     if (els.every((e) => e.type !== 'line' && e.type !== 'diagram')) {
@@ -463,7 +463,7 @@ export class SidePanel {
 
 // ------------------------------------------------------------------ table cells
 
-const DASH_STYLES = [['solid', 'Solid'], ['dash', 'Dashed'], ['dot', 'Dotted'], ['dashDot', 'Dash dot'], ['longDash', 'Long dash']];
+const DASH_STYLES = [['solid', 'Solid'], ['dash', 'Dash'], ['dot', 'Dot'], ['dashDot', 'Dash-dot'], ['longDash', 'Long dash']];
 
 /**
  * Borders and margins for the cells being edited (from the cursor's cell to
@@ -484,7 +484,7 @@ function cellSection(panel, el, theme) {
     field('Borders', borders),
     colorButton('Border colour', pen.color, theme, (v) => { pen.color = v; panel.update(true); }),
     field('Border weight', numberInput(pen.width, (v) => { pen.width = v; }, { min: 0.25, max: 20, step: 0.25, suffix: 'pt' })),
-    field('Border style', select(DASH_STYLES, pen.dash, (v) => { pen.dash = v; })),
+    field('Border dash', select(DASH_STYLES, pen.dash, (v) => { pen.dash = v; })),
     h('div', { class: 'pf-grid' }, margin('Left margin', 'l'), margin('Right margin', 'r'), margin('Top margin', 't'), margin('Bottom margin', 'b')),
     h('p', { class: 'pf-hint' }, 'Applies to the cells you’re typing in (or have selected), or to the whole table.'));
 }
