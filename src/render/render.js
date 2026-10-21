@@ -1,6 +1,6 @@
 import { themeById, resolveColor, backgroundCss } from '../model/themes.js';
 import { slideSize, isTitleLayout, PLACEHOLDER_HINTS, canHoldText } from '../model/deck.js';
-import { shapePath, textInset } from '../model/shapes.js';
+import { shapePath, customPath, textInset } from '../model/shapes.js';
 import { fontStack } from '../model/fonts.js';
 
 /**
@@ -162,7 +162,13 @@ export function renderElement(el, ctx) {
 
   if (el.type === 'shape' || (el.type === 'text' && ((el.fill && el.fill !== 'none') || (el.stroke && el.stroke.color !== 'none' && el.stroke.width)))) {
     const svg = svgEl('svg', { class: 'el-svg', overflow: 'visible', width: el.w, height: el.h, viewBox: `0 0 ${el.w} ${el.h}`, preserveAspectRatio: 'none' });
-    svg.append(svgEl('path', { d: shapePath(el.type === 'shape' ? el.shape : 'rect', el.w, el.h), fill: resolveColor(el.fill, theme, 'transparent'), ...strokeAttrs(el.stroke, theme) }));
+    const fill = resolveColor(el.fill, theme, 'transparent');
+    const stroke = strokeAttrs(el.stroke, theme);
+    if (el.type === 'shape' && el.shape === 'custom' && Array.isArray(el.paths)) {
+      for (const p of el.paths) {
+        svg.append(svgEl('path', { d: customPath(p.cmds, el.w, el.h), fill: p.fill === false ? 'none' : fill, ...(p.stroke === false ? { stroke: 'none' } : stroke) }));
+      }
+    } else svg.append(svgEl('path', { d: shapePath(el.type === 'shape' ? el.shape : 'rect', el.w, el.h), fill, ...stroke }));
     if (shadow) svg.style.filter = shadow;
     if (el.flipH || el.flipV) svg.style.transform = `scale(${el.flipH ? -1 : 1}, ${el.flipV ? -1 : 1})`;
     div.append(svg);

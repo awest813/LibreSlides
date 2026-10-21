@@ -1,4 +1,5 @@
 import DOMPurify from 'dompurify';
+import { PATH_ARGS } from '../model/shapes.js';
 
 /**
  * Text in slides is HTML. Anything that comes from outside (opened files,
@@ -54,6 +55,22 @@ export function sanitizeElement(el) {
         c.text = sanitizeHtml(c.text);
         if (c.fill != null) c.fill = safeColor(c.fill);
       }
+    }
+  }
+  if (el.paths != null) {
+    // Freeform outlines: known commands with the right number of finite coordinates, within reason.
+    let budget = 20000;
+    el.paths = (Array.isArray(el.paths) ? el.paths : []).filter(isObject).map((p) => {
+      const cmds = (Array.isArray(p.cmds) ? p.cmds : []).filter((c) => Array.isArray(c) && Object.hasOwn(PATH_ARGS, c[0])
+        && c.length === PATH_ARGS[c[0]] + 1 && c.slice(1).every(Number.isFinite) && budget-- > 0);
+      const out = { cmds: cmds.map((c) => [...c]) };
+      if (p.fill === false) out.fill = false;
+      if (p.stroke === false) out.stroke = false;
+      return out;
+    }).filter((p) => p.cmds.length);
+    if (!el.paths.length) {
+      delete el.paths;
+      if (el.shape === 'custom') el.shape = 'rect';
     }
   }
   if (el.crop != null) {

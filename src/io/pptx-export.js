@@ -321,7 +321,7 @@ async function addElement(pptx, s, el, deck, theme) {
 
   // Text boxes and shapes (with or without text).
   const t = textStyle(el, theme);
-  const shape = el.type === 'shape' ? el.shape : 'rect';
+  let shape = el.type === 'shape' ? el.shape : 'rect';
   const hasText = !!htmlToText(el.text || '');
   const opts = {
     ...common,
@@ -329,8 +329,31 @@ async function addElement(pptx, s, el, deck, theme) {
     fill: fillOpts(el.fill, theme, opacity),
     line: lineOpts(el.stroke, theme),
   };
+  let extras = [];
+  if (shape === 'custom') {
+    // A freeform: one PowerPoint shape per kind of path (filled or not, outlined or not);
+    // the first carries the text.
+    const kinds = new Map();
+    for (const p of el.paths || []) {
+      const key = `${p.fill !== false}${p.stroke !== false}`;
+      if (!kinds.has(key)) kinds.set(key, []);
+      kinds.get(key).push(p);
+    }
+    const parts = [...kinds.values()].map((paths) => ({
+      points: customPoints(paths, g),
+      fill: paths[0].fill === false ? { type: 'none' } : opts.fill,
+      line: paths[0].stroke === false ? { type: 'none' } : opts.line,
+    }));
+    if (!parts.length) parts.push({ points: customPoints([{ cmds: [['M', 0, 0], ['L', 1, 0], ['L', 1, 1], ['L', 0, 1], ['Z']] }], g), fill: opts.fill, line: opts.line });
+    shape = 'custGeom';
+    Object.assign(opts, { shape, ...parts[0] });
+    extras = parts.slice(1);
+  }
+  // Drawn over the main shape, in the order they were in.
+  const addExtras = () => { for (const extra of extras) s.addShape(shape, { ...common, ...extra }); };
   if (!hasText) {
     if (el.type === 'shape' || opts.fill.type !== 'none' || opts.line.type !== 'none') s.addShape(shape, opts);
+    addExtras();
     return;
   }
   const base = {
@@ -352,6 +375,24 @@ async function addElement(pptx, s, el, deck, theme) {
     isTextBox: el.type === 'text',
   });
   s.addText(htmlToRuns(el.text, {}), opts);
+  addExtras();
+}
+
+/** Freeform paths (fractions of the box) as pptxgenjs custom geometry points (inches from the box's corner). */
+function customPoints(paths, g) {
+  const pts = [];
+  for (const { cmds } of paths) {
+    for (const [op, ...n] of cmds) {
+      const x = (i) => n[i] * g.w;
+      const y = (i) => n[i] * g.h;
+      if (op === 'M') pts.push({ x: x(0), y: y(1), moveTo: true });
+      else if (op === 'L') pts.push({ x: x(0), y: y(1) });
+      else if (op === 'C') pts.push({ x: x(4), y: y(5), curve: { type: 'cubic', x1: x(0), y1: y(1), x2: x(2), y2: y(3) } });
+      else if (op === 'Q') pts.push({ x: x(2), y: y(3), curve: { type: 'quadratic', x1: x(0), y1: y(1) } });
+      else if (op === 'Z') pts.push({ close: true });
+    }
+  }
+  return pts;
 }
 
 const TRANSITION_XML = {

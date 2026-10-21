@@ -129,6 +129,67 @@ describe('PowerPoint pictures and shapes', () => {
   });
 });
 
+describe('PowerPoint freeform shapes', () => {
+  /** Export one shape, swap its preset outline for `geometry` (or another preset), and read it back. */
+  const withGeometry = async (geometry) => {
+    const shape = newShape('rect', 0, 0, 200, 100);
+    shape.fill = '#3366cc';
+    const back = await roundTrip(deckWith(shape), async (zip) => {
+      const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+      zip.file('ppt/slides/slide1.xml', xml.replace(/<a:prstGeom prst="rect">[\s\S]*?<\/a:prstGeom>/, geometry));
+    });
+    return back.slides[0].elements[0];
+  };
+  const near = (cmds) => cmds.map(([op, ...n]) => [op, ...n.map((v) => Math.round(v * 1000) / 1000)]);
+
+  it('reads lines, curves, arcs and named points', async () => {
+    const el = await withGeometry('<a:custGeom><a:avLst/><a:gdLst/><a:pathLst>'
+      + '<a:path w="200" h="100"><a:moveTo><a:pt x="0" y="100"/></a:moveTo><a:arcTo wR="100" hR="100" stAng="10800000" swAng="10800000"/><a:close/></a:path>'
+      + '<a:path w="200" h="100" fill="none"><a:moveTo><a:pt x="l" y="b"/></a:moveTo><a:cubicBezTo><a:pt x="50" y="0"/><a:pt x="150" y="0"/><a:pt x="r" y="vc"/></a:cubicBezTo><a:quadBezTo><a:pt x="hc" y="t"/><a:pt x="0" y="0"/></a:quadBezTo></a:path>'
+      + '</a:pathLst></a:custGeom>');
+    expect(el.shape).toBe('custom');
+    const [half, open] = el.paths;
+    // A half circle over the top, from the bottom left to the bottom right corner, in two quarter curves.
+    expect(near(half.cmds)).toEqual([['M', 0, 1], ['C', 0, 0.448, 0.224, 0, 0.5, 0], ['C', 0.776, 0, 1, 0.448, 1, 1], ['Z']]);
+    expect(half.fill).toBeUndefined();
+    expect(open).toEqual({ cmds: [['M', 0, 1], ['C', 0.25, 0, 0.75, 0, 1, 0.5], ['Q', 0.5, 0, 0, 0]], fill: false });
+  });
+
+  it('falls back to a rectangle for formulas it can\'t work out', async () => {
+    const el = await withGeometry('<a:custGeom><a:pathLst><a:path w="10" h="10"><a:moveTo><a:pt x="x1" y="0"/></a:moveTo><a:lnTo><a:pt x="10" y="10"/></a:lnTo></a:path></a:pathLst></a:custGeom>');
+    expect(el.shape).toBe('rect');
+    expect(el.paths).toBeUndefined();
+  });
+
+  it('draws flowchart shapes as the closest shape it has', async () => {
+    expect((await withGeometry('<a:prstGeom prst="flowChartDecision"><a:avLst/></a:prstGeom>')).shape).toBe('diamond');
+    expect((await withGeometry('<a:prstGeom prst="flowChartConnector"><a:avLst/></a:prstGeom>')).shape).toBe('ellipse');
+  });
+
+  it('writes freeforms back as PowerPoint custom shapes, text and all', async () => {
+    const shape = newShape('rect', 100, 50, 200, 100);
+    shape.shape = 'custom';
+    shape.fill = '#ff0000';
+    shape.stroke = { color: '#000000', width: 2, dash: 'solid' };
+    shape.text = '<p>Inside</p>';
+    shape.paths = [
+      { cmds: [['M', 0, 1], ['C', 0, 0.5, 0.25, 0, 0.5, 0], ['Q', 1, 0, 1, 1], ['Z']] },
+      { cmds: [['M', 0, 0], ['L', 1, 0.5]], fill: false },
+    ];
+    const xml = await slideXml(deckWith(shape));
+    expect(xml.match(/<a:custGeom>/g)).toHaveLength(2);
+    expect(xml).toContain('<a:cubicBezTo>');
+    expect(xml).toContain('<a:quadBezTo>');
+    const els = (await roundTrip(deckWith(shape))).slides[0].elements;
+    expect(els).toHaveLength(2);
+    expect(els[0]).toMatchObject({ shape: 'custom', fill: '#ff0000', text: '<p>Inside</p>' });
+    expect([els[0].x, els[0].y, els[0].w, els[0].h].map(Math.round)).toEqual([100, 50, 200, 100]);
+    expect(near(els[0].paths[0].cmds)).toEqual(shape.paths[0].cmds);
+    expect(els[1]).toMatchObject({ shape: 'custom', fill: 'none' });
+    expect(near(els[1].paths[0].cmds)).toEqual([['M', 0, 0], ['L', 1, 0.5]]);
+  });
+});
+
 describe('PowerPoint round trip', () => {
   it('keeps text, layout, notes, transitions, lines and tables', async () => {
     const deck = TEMPLATES.find((t) => t.id === 'update').build();

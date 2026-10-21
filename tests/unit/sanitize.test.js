@@ -33,6 +33,17 @@ describe('untrusted presentations', () => {
     expect(table.cells).toEqual([[{ text: '' }, { text: '<b>x</b>' }]]);
   });
 
+  it('keeps only well-formed freeform outlines', () => {
+    const deck = sanitizeDeck({ slides: [{ elements: [
+      { type: 'shape', shape: 'custom', paths: [{ cmds: [['M', 0, 0], ['L', 1, 'x'], ['X', 1], ['C', 1, 2, 3], ['Q', 0.5, 0, 1, 1], ['Z']], fill: false, stroke: 'yes' }, 'junk'] },
+      { type: 'shape', shape: 'custom', paths: [{ cmds: [['L', NaN, 0]] }] },
+    ] }] });
+    const [good, bad] = deck.slides[0].elements;
+    expect(good.paths).toEqual([{ cmds: [['M', 0, 0], ['Q', 0.5, 0, 1, 1], ['Z']], fill: false }]);
+    expect(bad.shape).toBe('rect');
+    expect(bad.paths).toBeUndefined();
+  });
+
   it('refuses .lslides files from a newer version or another app', async () => {
     const deck = { title: 'T', slides: [] };
     await expect(importFile(lslides({ app: 'LibreSlides', format: 99, deck }))).rejects.toThrow(/newer version/);

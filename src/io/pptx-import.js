@@ -405,6 +405,101 @@ function cropOf(blipFill) {
   return Object.values(crop).some((v) => v > 0.0005) ? crop : null;
 }
 
+/** Closest LibreSlides shape for PowerPoint presets it doesn't draw itself. */
+const PRESET_ALIAS = {
+  flowChartProcess: 'rect', flowChartAlternateProcess: 'roundRect', flowChartTerminator: 'roundRect', snipRoundRect: 'roundRect', round2SameRect: 'roundRect',
+  flowChartDecision: 'diamond', flowChartConnector: 'ellipse', flowChartInputOutput: 'parallelogram', flowChartPreparation: 'hexagon',
+  notchedRightArrow: 'rightArrow', stripedRightArrow: 'rightArrow', star6: 'star5', star7: 'star5', star8: 'star5',
+};
+
+/**
+ * A custom geometry (a:custGeom) as freeform paths (see model/shapes.js), or
+ * null when it uses formulas this reader doesn't evaluate. `w` and `h` are
+ * the shape's size in EMU, the units of paths that don't give their own.
+ */
+function customGeometry(custGeom, w, h) {
+  const guides = {};
+  for (const gd of desc(kid(custGeom, 'gdLst'), 'gd')) {
+    const m = /^val\s+(-?[\d.]+)$/.exec(attr(gd, 'fmla') || '');
+    if (m) guides[attr(gd, 'name')] = +m[1];
+  }
+  const paths = [];
+  let count = 0;
+  for (const p of kids(kid(custGeom, 'pathLst'), 'path')) {
+    const pw = +attr(p, 'w') || w;
+    const ph = +attr(p, 'h') || h;
+    if (!pw || !ph) return null;
+    const known = { l: 0, t: 0, r: pw, b: ph, w: pw, h: ph, hc: pw / 2, vc: ph / 2, wd2: pw / 2, hd2: ph / 2 };
+    const num = (v) => (v == null ? NaN : /^-?[\d.]+$/.test(v) ? +v : known[v] ?? guides[v] ?? NaN);
+    const pts = (el) => kids(el, 'pt').flatMap((pt) => [num(attr(pt, 'x')), num(attr(pt, 'y'))]);
+    const cmds = [];
+    let cur = [0, 0];
+    let start = [0, 0];
+    for (const c of p.children) {
+      const name = c.localName;
+      if (name === 'moveTo' || name === 'lnTo') {
+        cur = pts(c);
+        if (name === 'moveTo') start = cur;
+        cmds.push([name === 'moveTo' ? 'M' : 'L', ...cur]);
+      } else if (name === 'cubicBezTo' || name === 'quadBezTo') {
+        const n = pts(c);
+        cmds.push([name === 'cubicBezTo' ? 'C' : 'Q', ...n]);
+        cur = n.slice(-2);
+      } else if (name === 'arcTo') {
+        const arc = arcToCurves(cur, num(attr(c, 'wR')), num(attr(c, 'hR')), num(attr(c, 'stAng')) / 60000, num(attr(c, 'swAng')) / 60000);
+        cmds.push(...arc.cmds);
+        cur = arc.end;
+      } else if (name === 'close') {
+        cmds.push(['Z']);
+        cur = start;
+      }
+    }
+    const flat = cmds.flat().filter((v) => typeof v === 'number');
+    if (!cmds.length || flat.some((v) => !Number.isFinite(v))) return null;
+    count += cmds.length;
+    const path = { cmds: cmds.map(([op, ...n]) => [op, ...n.map((v, i) => Math.round((v / (i % 2 ? ph : pw)) * 10000) / 10000 || 0)]) };
+    if (attr(p, 'fill') === 'none') path.fill = false;
+    if (attr(p, 'stroke') === '0' || attr(p, 'stroke') === 'false') path.stroke = false;
+    paths.push(path);
+  }
+  return paths.length && count <= 20000 ? paths : null;
+}
+
+/**
+ * An a:arcTo from point `from` as cubic Béziers. The angles (degrees) are where
+ * the arc starts and how far it turns, measured as seen on the ellipse, which
+ * is what PowerPoint means by them.
+ */
+function arcToCurves(from, wR, hR, stAng, swAng) {
+  if (![wR, hR, stAng, swAng].every(Number.isFinite) || !wR || !hR || !swAng) return { cmds: [], end: from };
+  const rad = (d) => (d * Math.PI) / 180;
+  // The ellipse's own (parametric) angle for an angle seen from its centre.
+  const param = (a) => Math.atan2(wR * Math.sin(rad(a)), hR * Math.cos(rad(a)));
+  const t0 = param(stAng);
+  let sweep = param(stAng + swAng) - t0;
+  const full = Math.abs(swAng) >= 360;
+  if (full) sweep = Math.sign(swAng) * 2 * Math.PI;
+  else {
+    while (swAng > 0 && sweep <= 0) sweep += 2 * Math.PI;
+    while (swAng < 0 && sweep >= 0) sweep -= 2 * Math.PI;
+  }
+  const cx = from[0] - wR * Math.cos(t0);
+  const cy = from[1] - hR * Math.sin(t0);
+  const at = (t) => [cx + wR * Math.cos(t), cy + hR * Math.sin(t)];
+  const steps = Math.max(1, Math.ceil(Math.abs(sweep) / (Math.PI / 2)));
+  const d = sweep / steps;
+  const k = (4 / 3) * Math.tan(d / 4);
+  const cmds = [];
+  let t = t0;
+  for (let i = 0; i < steps; i++) {
+    const [x1, y1] = at(t);
+    const [x2, y2] = at(t + d);
+    cmds.push(['C', x1 - k * wR * Math.sin(t), y1 + k * hR * Math.cos(t), x2 + k * wR * Math.sin(t + d), y2 - k * hR * Math.cos(t + d), x2, y2]);
+    t += d;
+  }
+  return { cmds, end: at(t0 + sweep) };
+}
+
 // ------------------------------------------------------------------ slides
 
 async function readSlide(pkg, slidePath, ctx, deck) {
@@ -535,6 +630,8 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         if (ph && !role && !txBody?.textContent.trim()) continue; // empty date/footer/slide number
         const refs = styleRefs(node, ctx.scheme);
         const prst = attr(kid(spPr, 'prstGeom'), 'prst') || 'rect';
+        const own = xfrmOf(spPr);
+        const paths = kid(spPr, 'custGeom') && own ? customGeometry(kid(spPr, 'custGeom'), own.w * EMU_PER_PT, own.h * EMU_PER_PT) : null;
         const ownFill = fillOf(spPr, ctx.scheme);
         let fill = ownFill?.color;
         if (fill === undefined) fill = refs.hasFill ? refs.fill : 'none';
@@ -570,7 +667,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         // A see-through fill: shown through the element's opacity when there's no text to fade with it.
         const fadeAll = alpha < 1 && !hasText && fill !== 'none' && (!stroke || !stroke.width);
         if (alpha < 1 && !fadeAll && fill && fill !== 'none') fill = blend(fill, bgColor, alpha);
-        const plainBox = prst === 'rect' && fill === 'none' && !stroke;
+        const plainBox = !paths && prst === 'rect' && fill === 'none' && !stroke;
         const el = {
           id: uid(), type: plainBox ? 'text' : 'shape', x: box.x, y: box.y, w: box.w, h: box.h, rot: box.rot, flipH: box.flipH || undefined, flipV: box.flipV || undefined,
           text: hasText ? text.html : '',
@@ -585,9 +682,12 @@ async function readSlide(pkg, slidePath, ctx, deck) {
           },
         };
         if (fadeAll) el.opacity = Math.round(alpha * 100) / 100;
-        if (!plainBox) el.shape = SHAPE_IDS.has(prst) ? prst : prst === 'flowChartProcess' ? 'rect' : prst === 'flowChartAlternateProcess' ? 'roundRect' : 'rect';
+        if (paths) {
+          el.shape = 'custom';
+          el.paths = paths;
+        } else if (!plainBox) el.shape = SHAPE_IDS.has(prst) ? prst : PRESET_ALIAS[prst] || 'rect';
         if (role && hasText) el.ph = role;
-        if (!hasText && plainBox) continue; // an empty placeholder: nothing to show
+        if (!hasText && (plainBox || (paths && fill === 'none' && !stroke))) continue; // nothing to show
         slide.elements.push(el);
       } else if (name === 'pic') {
         const blipFill = kid(node, 'blipFill');

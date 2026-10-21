@@ -5,7 +5,7 @@ import {
 } from '../../src/model/deck.js';
 import { TEMPLATES } from '../../src/model/templates.js';
 import { THEMES, resolveColor, backgroundCss, themeById } from '../../src/model/themes.js';
-import { SHAPES, shapePath } from '../../src/model/shapes.js';
+import { SHAPES, shapePath, customPath } from '../../src/model/shapes.js';
 
 describe('deck model', () => {
   it('creates a deck with a title slide', () => {
@@ -99,5 +99,10 @@ describe('themes and shapes', () => {
       expect(d).toMatch(/Z$/);
       expect(d).not.toMatch(/NaN/);
     }
+  });
+
+  it('stretches freeform outlines to the box', () => {
+    expect(customPath([['M', 0, 1], ['L', 0.5, 0], ['C', 0, 0, 1, 1, 1, 0.5], ['Q', 0.25, 0.25, 0, 0], ['Z']], 200, 100))
+      .toBe('M0 100L100 0C0 0 200 100 200 50Q50 25 0 0Z');
   });
 });
