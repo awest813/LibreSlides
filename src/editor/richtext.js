@@ -15,6 +15,9 @@ const PROP_CSS = {
   strike: ['text-decoration', 'text-decoration-line'],
   highlight: ['background-color', 'background'],
   align: ['text-align'],
+  // A box's line and paragraph spacing replace what its paragraphs had of their own (from PowerPoint).
+  lineHeight: ['line-height'],
+  spacing: ['margin-top', 'margin-bottom'],
   effect: ['-webkit-text-stroke', '-webkit-text-stroke-width', '-webkit-text-stroke-color', 'text-shadow', 'background-image', '-webkit-background-clip', 'background-clip', '-webkit-text-fill-color'],
 };
 const PROP_TAGS = { bold: ['B', 'STRONG'], italic: ['I', 'EM'], underline: ['U'], strike: ['S', 'STRIKE'] };
@@ -115,6 +118,22 @@ export function exec(cmd, value = null, { css = true } = {}) {
     document.execCommand('styleWithCSS', false, css);
   } catch { /* old browsers */ }
   return document.execCommand(cmd, false, value);
+}
+
+/**
+ * Set the paragraph at the caret in (dir 1) or out (-1) by a list's inset,
+ * as PowerPoint does, when it isn't a list item (the browser's indent
+ * command would wrap it in a quote). Returns whether it did.
+ */
+export function indentParagraph(dir) {
+  const node = document.getSelection()?.anchorNode;
+  const block = (node?.nodeType === 1 ? node : node?.parentElement)?.closest('p, div, li');
+  if (!block || block.tagName === 'LI' || block.isContentEditable === false || block.contentEditable === 'true') return false;
+  const step = 1.25 * (parseFloat(getComputedStyle(block).fontSize) || 18);
+  const next = Math.max(0, Math.round(((parseFloat(block.style.marginInlineStart) || 0) + dir * step) * 10) / 10);
+  block.style.marginInlineStart = next ? `${next}px` : '';
+  if (!block.getAttribute('style')) block.removeAttribute('style');
+  return true;
 }
 
 /** Set the font size (pt) of the selected text, or of what's typed next at the caret. */

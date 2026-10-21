@@ -3,7 +3,7 @@ import { renderSlide, renderElement, fillFields, slideNumber } from '../render/r
 import { slideSize, boxOf, moveElement, canHoldText, newTextBox, newShape, newLine, groupOf } from '../model/deck.js';
 import { themeById } from '../model/themes.js';
 import { sanitizeHtml } from '../io/sanitize.js';
-import { tidyHtml, normalizeFontTags, exec } from './richtext.js';
+import { tidyHtml, normalizeFontTags, exec, indentParagraph } from './richtext.js';
 import { drawCommentMarkers } from './comments.js';
 
 /**
@@ -732,7 +732,10 @@ export class SlideCanvas {
           bodies[i].focus();
           caretToEnd(bodies[i], true);
         }
-      } else if (inList) exec(e.shiftKey ? 'outdent' : 'indent');
+      } else if (inList) {
+        if (indentParagraph(e.shiftKey ? -1 : 1)) body.dispatchEvent(new Event('input'));
+        else exec(e.shiftKey ? 'outdent' : 'indent');
+      }
       else if (!e.shiftKey) exec('insertText', '\t');
     }
     // Formatting shortcuts while typing; app-wide ones (F5, Ctrl+S, Ctrl+O…) carry on to the editor.
