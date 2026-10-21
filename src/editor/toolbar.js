@@ -427,10 +427,8 @@ export class Toolbar {
   weightMenu(anchor) {
     const app = this.app;
     const stroke = app.firstSelected()?.stroke;
-    // Giving a borderless shape a weight also gives it a visible colour.
-    const colour = !stroke || stroke.color === 'none' ? { color: 'theme:text' } : {};
     showPopover(anchor, menu([1, 2, 3, 4, 6, 8, 12, 16].map((w) => ({
-      label: `${w} pt`, checked: stroke?.width === w && stroke?.color !== 'none', run: () => app.setStroke({ width: w, ...colour }),
+      label: `${w} pt`, checked: stroke?.width === w && stroke?.color !== 'none', run: () => app.setBorderWeight(w),
     }))), { label: 'Weight' });
   }
 

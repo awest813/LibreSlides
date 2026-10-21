@@ -958,6 +958,14 @@ export class EditorScreen {
     this.updateSelected((e) => { e.stroke = { color: 'theme:text', width: 2, dash: 'solid', ...(e.stroke || {}), ...partial }; });
   }
 
+  /** Give the selected objects borders this wide; a borderless one also gets a colour, so the border shows. */
+  setBorderWeight(width) {
+    this.updateSelected((e) => {
+      const visible = e.stroke?.color && e.stroke.color !== 'none';
+      e.stroke = { color: 'theme:text', dash: 'solid', ...(e.stroke || {}), width, ...(visible || !width ? {} : { color: 'theme:text' }) };
+    });
+  }
+
   setLineEnds(start, end) {
     this.updateSelected((e) => { if (e.type === 'line') { e.arrowStart = start; e.arrowEnd = end; } });
   }

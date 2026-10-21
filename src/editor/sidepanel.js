@@ -34,8 +34,8 @@ function numberInput(value, onValue, { step = 1, min = null, max = null, suffix 
   return suffix ? h('span', { class: 'pf-num' }, input, h('span', { class: 'pf-suffix' }, suffix)) : input;
 }
 
-function select(options, value, onValue) {
-  const s = h('select', {}, ...options.map(([v, label]) => h('option', { value: v, selected: String(v) === String(value) || null }, label)));
+function select(options, value, onValue, label = null) {
+  const s = h('select', { 'aria-label': label }, ...options.map(([v, text]) => h('option', { value: v, selected: String(v) === String(value) || null }, text)));
   s.addEventListener('change', () => onValue(s.value));
   return s;
 }
@@ -55,16 +55,14 @@ function checkbox(label, checked, onValue) {
 }
 
 function colorButton(label, value, theme, onPick, opts = {}) {
-  const sw = h('span', { class: 'pf-swatch', style: { background: resolveColor(value, theme, 'transparent') } });
+  // No colour shows as a struck-out swatch, as in the colour menu (an empty one is invisible in dark mode).
+  const none = !value || value === 'none';
+  const sw = h('span', { class: `pf-swatch${none ? ' is-none' : ''}`, style: none ? null : { background: resolveColor(value, theme, 'transparent') } });
   const b = h('button', { type: 'button', class: 'btn pf-color', 'aria-label': label, 'aria-haspopup': 'true' }, sw, h('span', {}, label));
   b.addEventListener('click', () => openColorPicker(b, { theme, current: value, onPick, ...opts }));
   return b;
 }
 
-/**
- * The right-hand panel: themes and backgrounds, transitions, animations,
- * the detailed format options for the selection and the slide's comments.
- */
 // Line ends, as PowerPoint names them.
 const ARROW_ENDS = [['none', 'None'], ['triangle', 'Arrow'], ['arrow', 'Open arrow'], ['stealth', 'Stealth arrow'], ['diamond', 'Diamond'], ['oval', 'Round']];
 const endValue = (end) => (!end ? 'none' : end === true ? 'triangle' : end);
@@ -135,6 +133,16 @@ function gradientControls(app, el, theme) {
   ];
 }
 
+/** How long an animation takes, with the one it has if it isn't one of these (from a PowerPoint file). */
+function durationOptions(current) {
+  const list = [[0.3, 'Very fast (0.3 s)'], [0.5, 'Fast (0.5 s)'], [0.8, 'Medium (0.8 s)'], [1.2, 'Slow (1.2 s)'], [2, 'Very slow (2 s)']];
+  return list.some(([v]) => v === current) || !Number.isFinite(current) ? list : [...list, [current, `${Math.round(current * 100) / 100} s`]].sort((a, b) => a[0] - b[0]);
+}
+
+/**
+ * The right-hand panel: themes and backgrounds, transitions, animations,
+ * the detailed format options for the selection and the slide's comments.
+ */
 export class SidePanel {
   constructor(app) {
     this.app = app;
@@ -253,7 +261,7 @@ export class SidePanel {
         ...Object.entries(SIZES).map(([id, s]) => [id, s.label]),
         ...(SIZES[deck.size] ? [] : [[deck.size, slideSize(deck).label]]),
         ['custom', 'Custom…'],
-      ], deck.size, (v) => (v === 'custom' ? app.customSizePrompt() : app.setSize(v))),
+      ], deck.size, (v) => (v === 'custom' ? app.customSizePrompt() : app.setSize(v)), 'Slide size'),
         h('p', { class: 'pf-hint' }, 'Changing the size scales everything on every slide.')),
     ];
   }
@@ -295,7 +303,7 @@ export class SidePanel {
         const on = a.effect && a.effect !== 'none';
         out.push(section(els.length > 1 ? `${title} (${els.length} objects)` : title,
           field('Effect', select(effects.map((x) => [x.id, x.name]), a.effect, (v) => app.setAnimation({ effect: v }, null, kind))),
-          on ? field('Duration', select([[0.3, 'Fast (0.3 s)'], [0.5, 'Medium (0.5 s)'], [0.8, 'Slow (0.8 s)'], [1.2, 'Very slow (1.2 s)'], [2, 'Very slow (2 s)']], a.duration ?? 0.5, (v) => app.setAnimation({ duration: +v }, null, kind))) : null,
+          on ? field('Duration', select(durationOptions(a.duration ?? 0.5), a.duration ?? 0.5, (v) => app.setAnimation({ duration: +v }, null, kind))) : null,
           on ? field('Start', select([['click', 'On click'], ['with', 'With previous'], ['after', 'After previous']], a.start || 'click', (v) => app.setAnimation({ start: v }, null, kind))) : null));
       }
     } else {
@@ -371,9 +379,10 @@ export class SidePanel {
           h('button', { type: 'button', class: 'btn', onclick: () => app.pickFillImage() }, el.fillImage ? 'Change fill picture…' : 'Fill with a picture…'),
           el.fillImage ? h('button', { type: 'button', class: 'btn btn-ghost', onclick: () => app.removeFillImage() }, 'Remove picture') : null));
       }
+      const border = el.stroke?.width && el.stroke.color && el.stroke.color !== 'none' ? el.stroke : null;
       look.append(
-        colorButton('Border', el.stroke?.width ? el.stroke.color : 'none', theme, (v) => app.setStroke({ color: v, width: Math.max(1, el.stroke?.width || 2) }), { allowNone: true, noneLabel: 'No border' }),
-        field('Border weight', numberInput(el.stroke?.width || 0, (v) => app.setStroke({ width: v }), { min: 0, max: 50, step: 0.5, suffix: 'pt' })),
+        colorButton('Border', border ? border.color : 'none', theme, (v) => app.setStroke({ color: v, width: Math.max(1, el.stroke?.width || 2) }), { allowNone: true, noneLabel: 'No border' }),
+        field('Border weight', numberInput(border ? border.width : 0, (v) => app.setBorderWeight(v), { min: 0, max: 50, step: 0.5, suffix: 'pt' })),
       );
       const op = h('input', { type: 'range', min: '0', max: '100', value: String(Math.round((el.opacity ?? 1) * 100)) });
       const opOut = h('output', {}, `${op.value}%`);
@@ -471,9 +480,8 @@ function cellSection(panel, el, theme) {
   const margin = (label, side) => field(label, numberInput(m[side], (v) => app.setCellMargins({ [side]: v }), { min: 0, max: 200, step: 0.5, suffix: 'pt' }));
   return section('Cells',
     field('Borders', borders),
-    h('div', { class: 'pf-row' },
-      colorButton('Border colour', pen.color, theme, (v) => { pen.color = v; panel.update(true); }),
-      numberInput(pen.width, (v) => { pen.width = v; }, { min: 0.25, max: 20, step: 0.25, suffix: 'pt' })),
+    colorButton('Border colour', pen.color, theme, (v) => { pen.color = v; panel.update(true); }),
+    field('Border weight', numberInput(pen.width, (v) => { pen.width = v; }, { min: 0.25, max: 20, step: 0.25, suffix: 'pt' })),
     field('Border style', select(DASH_STYLES, pen.dash, (v) => { pen.dash = v; })),
     h('div', { class: 'pf-grid' }, margin('Left margin', 'l'), margin('Right margin', 'r'), margin('Top margin', 't'), margin('Bottom margin', 'b')),
     h('p', { class: 'pf-hint' }, 'Applies to the cells you’re typing in (or have selected), or to the whole table.'));
@@ -651,7 +659,7 @@ function chartMore(c, edit) {
         select([['', 'Chart type'], ['column', 'Columns'], ['line', 'Line'], ['area', 'Area']], s.kind && s.kind !== c.kind ? s.kind : '', (v) => edit((ch) => {
           if (v && v !== ch.kind) ch.series[k].kind = v;
           else delete ch.series[k].kind;
-        })),
+        }), `How ${s.name || `series ${k + 1}`} is drawn`),
         checkbox('Secondary axis', s.secondary, (v) => edit((ch) => {
           if (v) ch.series[k].secondary = true;
           else delete ch.series[k].secondary;

@@ -208,6 +208,48 @@ describe('editor: side panel', () => {
     expect(t().cells[1][1].margin).toBeUndefined();
   });
 
+  it('gives a borderless box a visible border when its border weight is set', () => {
+    const box = newTextBox(0, 0);
+    box.stroke = { color: 'none', width: 2 };
+    const ed = openEditor(deckWith(box));
+    ed.setSelection([box.id]);
+    ed.openPanel('format');
+    const weight = [...ed.panel.body.querySelectorAll('label.pf')].find((l) => l.firstChild.textContent === 'Border weight').querySelector('input');
+    expect(weight.value).toBe('0'); // no border shows
+    expect(ed.panel.body.querySelector('.pf-color .pf-swatch.is-none')).toBeTruthy();
+    weight.value = '3';
+    weight.dispatchEvent(new Event('change'));
+    expect(ed.slide.elements[0].stroke).toMatchObject({ color: 'theme:text', width: 3 });
+    ed.undo();
+    expect(ed.slide.elements[0].stroke).toEqual({ color: 'none', width: 2 });
+  });
+
+  it('shows an animation’s own duration when it isn’t one of the choices', () => {
+    const shape = newShape('rect', 0, 0);
+    shape.anim = { effect: 'fade', duration: 1, start: 'click', order: 1 };
+    const ed = openEditor(deckWith(shape));
+    ed.setSelection([shape.id]);
+    ed.openPanel('animate');
+    const duration = [...ed.panel.body.querySelectorAll('label.pf')].find((l) => l.firstChild.textContent === 'Duration').querySelector('select');
+    expect(duration.selectedOptions[0].textContent).toBe('1 s');
+    const labels = [...duration.options].map((o) => o.textContent);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it('names every control in the panel', () => {
+    const table = newTable(2, 2, 0, 0, 200, 80);
+    const ed = openEditor(deckWith(table));
+    const unnamed = () => [...ed.panel.body.querySelectorAll('input, select, textarea, button')].filter((c) => !c.getAttribute('aria-label') && !c.closest('label') && !c.textContent.trim());
+    ed.openPanel('design');
+    expect(unnamed()).toEqual([]);
+    ed.setSelection([table.id]);
+    ed.openPanel('format');
+    expect(unnamed()).toEqual([]);
+    ed.insertChart();
+    ed.updateSelected((e) => { e.chart.series[1].kind = 'line'; });
+    expect(unnamed()).toEqual([]);
+  });
+
   it('makes one undo step for Enter in a number field, and updates the locked other side', () => {
     const shape = { ...newShape('rect', 0, 0, 200, 100), lockRatio: true };
     const ed = openEditor(deckWith(shape));
