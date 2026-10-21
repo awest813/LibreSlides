@@ -477,6 +477,28 @@ describe('PowerPoint links', () => {
     expect(p.link).toBe('https://example.org');
   });
 
+  it('gives text boxes\' own links a relationship, and keeps them off the box\'s text', async () => {
+    const deck = deckWith();
+    deck.slides.push({ id: 's2', layout: 'blank', background: null, elements: [], notes: '', transition: { type: 'none', duration: 0.6 }, hidden: false });
+    const web = Object.assign(newTextBox(10, 10, 400, 60), { text: '<p>plain <a href="https://example.com">site</a></p>', link: 'https://example.org/?a=1&b=2' });
+    const jump = Object.assign(newShape('rect', 10, 100), { text: '<p>go</p>', link: '#slide:s2' });
+    deck.slides[0].elements.push(web, jump);
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deck)));
+    const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+    const rels = await zip.file('ppt/slides/_rels/slide1.xml.rels').async('string');
+    expect(xml).not.toContain('rIdundefined');
+    for (const [, id] of xml.matchAll(/r:id="([^"]+)"/g)) expect(rels).toContain(`Id="${id}"`);
+    // Only the text that is a link of its own is one.
+    expect(xml.match(/<a:rPr\b[^>]*>(?:(?!<\/a:rPr>)[\s\S])*<a:hlinkClick/g)).toHaveLength(1);
+    expect(rels).toContain('Target="https://example.org/?a=1&amp;b=2"');
+    const back = await importPptx(await zip.generateAsync({ type: 'arraybuffer' }));
+    const [w, j] = back.slides[0].elements;
+    expect(w.link).toBe('https://example.org/?a=1&b=2');
+    expect(w.text).toContain('href="https://example.com"');
+    expect(w.text).not.toContain('example.org');
+    expect(j.link).toBe(`#slide:${back.slides[1].id}`);
+  });
+
   it('reads PowerPoint\'s next and previous slide actions', async () => {
     const shape = newShape('rect', 10, 100);
     shape.link = 'https://example.org';

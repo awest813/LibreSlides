@@ -27,6 +27,7 @@ import { diagramAsShapes } from '../model/diagram-layout.js';
  * be found by, and postProcess finishes each part.
  */
 const IN = 72; // points per inch
+const REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 
 /** "#rrggbb", "rgb(…)" → "RRGGBB" (null for transparent). */
 export function toHex(css) {
@@ -599,6 +600,11 @@ async function addElement(pptx, s, el, deck, theme, marks) {
   if (!isPlainWarp(box.warp) && hasText) marks.warps.set(mark(), box.warp);
   // Text with no fill of its own (hollow, outlined WordArt) has a transparent colour.
   const runBase = resolveColor(t.color, theme) === 'transparent' ? { noFill: true } : {};
+  // A text box's own link is added afterwards (see applyTextLinks).
+  if (hyperlink) {
+    marks.textLinks.set(mark(), hyperlink);
+    opts.hyperlink = undefined;
+  }
   s.addText(hasText ? htmlToRuns(withFields(el.text, marks.number), runBase, marks.links) : [{ text: '', options: {} }], opts);
   addExtras();
 }
@@ -723,6 +729,29 @@ export function applyGradients(xml, marks) {
     xml = xml.slice(0, at) + block + xml.slice(end);
   }
   if (marks.background) xml = xml.replace(/<p:bg>[\s\S]*?<\/p:bg>/, `<p:bg><p:bgPr>${marks.background}<a:effectLst/></p:bgPr></p:bg>`);
+  return xml;
+}
+
+/**
+ * Text boxes' own links (a click anywhere on the box): a web address, or a
+ * slide by number. pptxgenjs gives them no relationship (r:id="rIdundefined")
+ * and puts them on every run of the text that has no link of its own.
+ */
+async function applyTextLinks(zip, slideNo, xml, links) {
+  if (!links?.size) return xml;
+  const relsPath = `ppt/slides/_rels/slide${slideNo}.xml.rels`;
+  let rels = await zip.file(relsPath).async('string');
+  let n = 0;
+  for (const [name, link] of links) {
+    const id = `rIdLsLink${++n}`;
+    const rel = link.url
+      ? `<Relationship Id="${id}" Type="${REL}/hyperlink" Target="${xmlText(link.url)}" TargetMode="External"/>`
+      : `<Relationship Id="${id}" Type="${REL}/slide" Target="slide${link.slide}.xml"/>`;
+    rels = rels.replace('</Relationships>', `${rel}</Relationships>`);
+    const click = `<a:hlinkClick r:id="${id}"${link.url ? '' : ' action="ppaction://hlinksldjump"'}/>`;
+    xml = editShape(xml, name, (sp) => sp.replace(/<p:cNvPr\b([^>]*?)(\/?)>/, (m, attrs, empty) => `<p:cNvPr${attrs}>${click}${empty ? '</p:cNvPr>' : ''}`));
+  }
+  zip.file(relsPath, rels);
   return xml;
 }
 
@@ -971,6 +1000,7 @@ async function postProcess(buffer, deck, allMarks) {
     xml = applyPlaceholders(xml, allMarks[i].placeholders);
     xml = applyTableDashes(xml, allMarks[i].tableDashes);
     xml = await applyPictureFills(zip, i + 1, xml, allMarks[i]);
+    xml = await applyTextLinks(zip, i + 1, xml, allMarks[i].textLinks);
     xml = await applyDiagrams(zip, i + 1, xml, allMarks[i].diagrams, deck);
     const t = slide.transition;
     if (t && Object.hasOwn(TRANSITION_XML, t.type)) {
@@ -1015,7 +1045,7 @@ export async function buildPptx(deck) {
       const n = { next: index + 2, prev: index, first: 1, last: deck.slides.length }[to] ?? deck.slides.findIndex((x) => x.id === to) + 1;
       return to && n >= 1 && n <= deck.slides.length ? { slide: n } : null;
     };
-    const marks = { number: allMarks.length + 1, links, pngs, count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), warps: new Map(), pictureLooks: new Map(), placeholders: new Map(), tableDashes: new Map(), diagrams: new Map(), timeline: [], groups: [], background: null };
+    const marks = { number: allMarks.length + 1, links, pngs, count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), warps: new Map(), pictureLooks: new Map(), placeholders: new Map(), tableDashes: new Map(), textLinks: new Map(), diagrams: new Map(), timeline: [], groups: [], background: null };
     // Diagrams that don't go as SmartArt go as the shapes they're drawn with.
     const elements = slide.elements.flatMap((el) => (el.type === 'diagram' && !exportsAsSmartArt(el, deck.media) ? diagramAsShapes(el) : [el]));
     marks.groupSizes = elements.reduce((m, e) => (e.groupId ? m.set(e.groupId, (m.get(e.groupId) || 0) + 1) : m), new Map());
