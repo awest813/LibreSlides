@@ -1,7 +1,7 @@
 import { h, showPopover, menu, closePopover, shortcutLabel } from '../ui/dom.js';
 import { icon } from '../ui/icons.js';
 import { openColorPicker } from '../ui/color-picker.js';
-import { FONTS, FONT_SIZES, fontStack } from '../model/fonts.js';
+import { FONTS, FONT_SIZES, fontStack, embedFontsSetting, setEmbedFontsSetting } from '../model/fonts.js';
 import { SHAPES, shapePath } from '../model/shapes.js';
 import { LAYOUTS } from '../model/deck.js';
 import { resolveColor } from '../model/themes.js';
@@ -60,6 +60,7 @@ export class Toolbar {
         'separator',
         { heading: 'Download a copy' },
         { label: 'PowerPoint (.pptx)', icon: 'fileDown', run: () => app.downloadPptx() },
+        { label: 'Embed fonts in PowerPoint files', checked: embedFontsSetting(), run: () => setEmbedFontsSetting(!embedFontsSetting()) },
         { label: 'PDF document (.pdf)', icon: 'fileDown', run: () => app.printDeck({ pdf: true }) },
         { label: 'LibreSlides file (.lslides)', icon: 'fileDown', run: () => app.downloadNative() },
         'separator',

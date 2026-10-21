@@ -4,6 +4,7 @@ import { shapePath, customPath, textInset } from '../model/shapes.js';
 import { renderChart } from './chart.js';
 import { renderMedia } from './media.js';
 import { fontStack } from '../model/fonts.js';
+import { registerDeckFonts } from './deck-fonts.js';
 
 /**
  * Renders slides to DOM at 1px = 1pt. The same renderer draws the editor
@@ -357,6 +358,7 @@ export const themeDecor = (slide, deck) => {
  *   live    – videos and sounds can play (the slideshow), instead of showing their poster
  */
 export function renderSlide(slide, deck, { editing = false, live = false } = {}) {
+  registerDeckFonts(deck);
   const theme = themeById(deck.themeId);
   const { w, h } = slideSize(deck);
   const root = document.createElement('div');
