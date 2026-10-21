@@ -3,7 +3,7 @@ import JSZip from 'jszip';
 import { slideSize, boxOf, htmlToText, ANIM_KINDS, motionPath, FIELD, fieldText } from '../model/deck.js';
 import { cellBorder, cellMargin } from '../model/tables.js';
 import { isPlainWarp } from '../model/warps.js';
-import { themeById, resolveColor, backgroundBaseColor } from '../model/themes.js';
+import { themeById, resolveColor, backgroundBaseColor, backgroundGradient } from '../model/themes.js';
 import { textStyle, themeDecor } from '../render/render.js';
 import { safeFileName } from '../ui/dom.js';
 import { saveFile } from './files.js';
@@ -15,6 +15,8 @@ import { writeComments } from './pptx-comments.js';
 import { writeSections } from './pptx-sections.js';
 import { exportsAsSmartArt, writeDiagram } from './pptx-diagram.js';
 import { xmlText, emu } from './ooxml.js';
+import { pictureSizePt } from './images.js';
+import { isPattern } from '../model/patterns.js';
 import { diagramAsShapes } from '../model/diagram-layout.js';
 
 /**
@@ -537,8 +539,9 @@ async function addElement(pptx, s, el, deck, theme, marks) {
   const picture = el.fillImage && (await exportableImage(deck.media?.[el.fillImage.media], el.w, el.h, marks.pngs));
   if (picture) {
     if (opts.fill.type === 'none') opts.fill = { color: 'FFFFFF' };
-    marks.pictures.set(mark(), { data: picture, crop: el.fillImage.crop, opacity });
+    marks.pictures.set(mark(), { data: picture, crop: el.fillImage.crop, tile: el.fillImage.tile, opacity: opacity * (el.fillImage.opacity ?? 1) });
   } else if (el.gradient && opts.fill.type !== 'none') marks.gradients.set(mark(), gradFillXml(el.gradient, theme, opacity));
+  else if (el.pattern && opts.fill.type !== 'none') marks.gradients.set(mark(), pattFillXml(el.pattern, theme, opacity));
   let extras = [];
   if (shape === 'custom' && el.preset?.name) {
     // A PowerPoint preset goes back as that preset (pptxgenjs writes any preset name), with its adjust values.
@@ -676,6 +679,29 @@ export function gradFillXml(g, theme, opacity = 1) {
   return `<a:gradFill rotWithShape="1"><a:gsLst>${gs}</a:gsLst>${dir}</a:gradFill>`;
 }
 
+/** A pattern fill (see model/patterns.js) as DrawingML, faded by `opacity`. */
+export function pattFillXml(p, theme, opacity = 1) {
+  const color = (c, fallback) => {
+    const css = resolveColor(c, theme, fallback);
+    const alpha = (cssColor(css)?.alpha ?? 1) * opacity;
+    return `<a:srgbClr val="${toHex(css) || toHex(fallback)}">${alpha < 1 ? `<a:alpha val="${Math.round(alpha * 100000)}"/>` : ''}</a:srgbClr>`;
+  };
+  const preset = isPattern(p.preset) ? p.preset : 'pct50';
+  return `<a:pattFill prst="${preset}"><a:fgClr>${color(p.fg, '#000000')}</a:fgClr><a:bgClr>${color(p.bg, '#ffffff')}</a:bgClr></a:pattFill>`;
+}
+
+/**
+ * A tiled picture's a:tile (see themes.js backgroundCss): its scale from the
+ * picture's own size (`data`, as written), offset, alignment and flip.
+ */
+export function tileXml(tile, data) {
+  const size = pictureSizePt(data);
+  const pct = (v) => Math.max(1, Math.round(v * 100000));
+  const sx = size?.w ? pct(tile.w / size.w) : 100000;
+  const sy = size?.h ? pct(tile.h / size.h) : 100000;
+  return `<a:tile tx="${emu(tile.x || 0)}" ty="${emu(tile.y || 0)}" sx="${sx}" sy="${sy}" flip="${['x', 'y', 'xy'].includes(tile.flip) ? tile.flip : 'none'}" algn="${['t', 'tr', 'l', 'ctr', 'r', 'bl', 'b', 'br'].includes(tile.align) ? tile.align : 'tl'}"/>`;
+}
+
 /** Swap the solid fill of the shape called `name` for `fillXml`. */
 function replaceShapeFill(xml, name, fillXml) {
   const at = xml.indexOf(`name="${name}"`);
@@ -732,6 +758,9 @@ export function applyGradients(xml, marks) {
     xml = xml.slice(0, at) + block + xml.slice(end);
   }
   if (marks.background) xml = xml.replace(/<p:bg>[\s\S]*?<\/p:bg>/, `<p:bg><p:bgPr>${marks.background}<a:effectLst/></p:bgPr></p:bg>`);
+  if (marks.backgroundTile) {
+    xml = xml.replace(/<p:bg>[\s\S]*?<\/p:bg>/, (bg) => bg.replace(/<a:srcRect\/>/, '').replace(/<a:stretch>[\s\S]*?<\/a:stretch>|<a:stretch\/>/, marks.backgroundTile));
+  }
   return xml;
 }
 
@@ -765,7 +794,7 @@ async function applyPictureFills(zip, slideNo, xml, marks) {
   let rels = await zip.file(relsPath).async('string');
   let types = await zip.file('[Content_Types].xml').async('string');
   let n = 0;
-  for (const [name, { data, crop, opacity }] of marks.pictures) {
+  for (const [name, { data, crop, tile, opacity }] of marks.pictures) {
     const m = /^data:image\/(png|jpeg|gif);base64,(.*)$/s.exec(data);
     if (!m) continue;
     const ext = m[1] === 'jpeg' ? 'jpg' : m[1];
@@ -776,7 +805,8 @@ async function applyPictureFills(zip, slideNo, xml, marks) {
     const pct = (v) => Math.round((v || 0) * 100000);
     const src = crop ? `<a:srcRect l="${pct(crop.l)}" t="${pct(crop.t)}" r="${pct(crop.r)}" b="${pct(crop.b)}"/>` : '';
     const alpha = opacity < 1 ? `<a:alphaModFix amt="${pct(opacity)}"/>` : '';
-    xml = replaceShapeFill(xml, name, `<a:blipFill rotWithShape="1"><a:blip r:embed="${id}">${alpha}</a:blip>${src}<a:stretch><a:fillRect/></a:stretch></a:blipFill>`);
+    const fit = tile ? tileXml(tile, data) : '<a:stretch><a:fillRect/></a:stretch>';
+    xml = replaceShapeFill(xml, name, `<a:blipFill rotWithShape="1"><a:blip r:embed="${id}">${alpha}</a:blip>${tile ? '' : src}${fit}</a:blipFill>`);
   }
   zip.file(relsPath, rels);
   zip.file('[Content_Types].xml', types);
@@ -1055,12 +1085,14 @@ export async function buildPptx(deck) {
     allMarks.push(marks);
     const bg = slide.background || theme.background;
     if (bg.type === 'image' && deck.media?.[bg.media]) {
-      const data = await exportableImage(deck.media[bg.media], w, h, pngs);
+      const data = await exportableImage(deck.media[bg.media], bg.tile?.w || w, bg.tile?.h || h, pngs);
       if (data) s.background = { data: dataForPptx(data) };
-    } else if (bg.type === 'gradient') {
-      // Written as a solid colour, then made a real gradient afterwards.
-      s.background = { color: toHex(resolveColor(bg.from, theme)) || 'FFFFFF' };
-      marks.background = gradFillXml({ type: 'linear', angle: bg.angle, stops: [{ pos: 0, color: bg.from }, { pos: 1, color: bg.to }] }, theme);
+      // Tiled: its stretch made a tiling afterwards.
+      if (data && bg.tile) marks.backgroundTile = tileXml(bg.tile, data);
+    } else if (bg.type === 'gradient' || bg.type === 'pattern') {
+      // Written as a solid colour, then made a real gradient or pattern afterwards.
+      s.background = { color: toHex(resolveColor(backgroundBaseColor(bg), theme)) || 'FFFFFF' };
+      marks.background = bg.type === 'pattern' ? pattFillXml(bg.pattern, theme) : gradFillXml(backgroundGradient(bg), theme);
     } else {
       s.background = { color: toHex(resolveColor(bg.color, theme, backgroundBaseColor(theme.background))) || 'FFFFFF' };
     }
