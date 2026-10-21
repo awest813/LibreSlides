@@ -69,4 +69,33 @@ describe('untrusted presentations', () => {
     expect(deck.slides.map((s) => s.section?.length ?? s.section)).toEqual([14, undefined, undefined, 255]);
     expect(deck.slides[0].section).toBe('Intro <b>x</b>');
   });
+
+  it('keeps numbers numbers, and names and choices known ones', () => {
+    const deck = sanitizeDeck({
+      size: '__proto__',
+      slides: [{
+        id: '"><x', transition: { type: 'constructor', duration: 'slow' }, hidden: 'yes',
+        elements: [
+          { type: 'shape', shape: { a: 1 }, x: '10', y: -1e308, w: -5, rot: NaN, opacity: 7, text: { a: 1 }, stroke: { color: 'red', width: 'x', dash: 'constructor' }, style: { align: 3, valign: [], size: 'big', lineHeight: 1e9 } },
+          { type: 'line', x1: 0, y1: null, x2: '5', stroke: 'thin' },
+          { type: 'table', cells: '', colWidths: [1, 3] },
+          { type: 'table', cells: [[{ text: 'a' }, { text: 'b' }]], colWidths: [1, 3] },
+        ],
+        comments: [{ text: 't', x: -1e308, y: 2 }],
+      }],
+    });
+    expect(deck.size).toBe('16:9');
+    const [slide] = deck.slides;
+    expect(slide.id).toMatch(/^[\w-]+$/);
+    expect(slide.transition).toEqual({ type: 'none', duration: 0.6 });
+    expect(slide.hidden).toBe(false);
+    const [shape, line, empty, table] = slide.elements;
+    expect(shape).toMatchObject({ shape: 'rect', x: 0, y: -1e5, w: 0, h: 0, rot: 0, opacity: 1, text: '', stroke: { color: 'none', dash: 'solid' } });
+    expect(shape.stroke.width).toBeUndefined();
+    expect(shape.style).toEqual({ lineHeight: 10 });
+    expect(line).toMatchObject({ x1: 0, y1: 0, x2: 0, y2: 0, stroke: null });
+    expect(empty.cells).toEqual([[{ text: '' }]]);
+    expect(table.colWidths).toEqual([0.25, 0.75]);
+    expect(slide.comments[0]).toMatchObject({ x: -1e5, y: 2 });
+  });
 });

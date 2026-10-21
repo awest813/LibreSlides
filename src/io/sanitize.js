@@ -3,7 +3,7 @@ import { PATH_ARGS } from '../model/shapes.js';
 import { normalizeTable, SIDES, CELL_MARGIN } from '../model/tables.js';
 import { isMediaData } from './media-files.js';
 import {
-  CHART_KINDS, uid, ANIM_KINDS, ANIMATIONS, EMPHASES, EXITS, MOTIONS, FIELD, DIAGRAM_LAYOUTS, DIAGRAM_COLORS, DIAGRAM_STYLES, DIAGRAM_PARTS, xmlOfDataUrl,
+  CHART_KINDS, TRANSITIONS, SIZES, customSize, uid, ANIM_KINDS, ANIMATIONS, EMPHASES, EXITS, MOTIONS, FIELD, DIAGRAM_LAYOUTS, DIAGRAM_COLORS, DIAGRAM_STYLES, DIAGRAM_PARTS, xmlOfDataUrl,
 } from '../model/deck.js';
 import { normalizeLevels, MAX_LEVEL } from '../model/diagram-outline.js';
 import { FONT_FACES } from '../model/fonts.js';
@@ -89,17 +89,55 @@ function cleanCellLook(c) {
   }
 }
 
+// How far from the slide anything may be, in points (slides are at most 56 inches a side).
+const REACH = 1e5;
+const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+/** An id: a short plain string. */
+const isId = (v) => typeof v === 'string' && /^[\w-]{1,64}$/.test(v);
+
+/**
+ * An element's numbers: places, sizes and turns finite and within reach of
+ * the slide (they go into CSS and into .pptx XML as they are), see-through
+ * between 0 and 1, text sizes and spacing sensible. Ones that aren't numbers
+ * at all are put right or left out.
+ */
+function cleanNumbers(el) {
+  // Lines go from point to point; everything else has a box.
+  const needed = el.type === 'line' ? ['x1', 'y1', 'x2', 'y2'] : ['x', 'y', 'w', 'h'];
+  for (const key of ['x', 'y', 'w', 'h', 'x1', 'y1', 'x2', 'y2', 'rot']) {
+    if (el[key] !== undefined || needed.includes(key)) el[key] = Number.isFinite(el[key]) ? clamp(el[key], key === 'w' || key === 'h' ? 0 : -REACH, REACH) : 0;
+  }
+  if (el.opacity != null) {
+    if (Number.isFinite(el.opacity)) el.opacity = clamp(el.opacity, 0, 1);
+    else delete el.opacity;
+  }
+  if (el.radius != null && !(Number.isFinite(el.radius) && el.radius >= 0)) delete el.radius;
+  if (el.natural != null && !(isObject(el.natural) && [el.natural.w, el.natural.h].every((v) => Number.isFinite(v) && v > 0))) delete el.natural;
+  if (el.id != null && !isId(el.id)) el.id = uid();
+  if (el.groupId != null && !isId(el.groupId)) delete el.groupId;
+  const s = el.style;
+  if (isObject(s)) {
+    for (const [key, min, max] of [['size', 1, 4000], ['lineHeight', 0.1, 10], ['spacing', 0, 50], ['columnGap', 0, REACH]]) {
+      if (s[key] == null) continue;
+      if (Number.isFinite(s[key])) s[key] = clamp(s[key], min, max);
+      else delete s[key];
+    }
+  } else if (el.style != null) delete el.style;
+}
+
 /** Clean an element from an untrusted source (file, backup, clipboard) in place. */
 export function sanitizeElement(el) {
-  if (el.text) el.text = sanitizeHtml(el.text);
+  cleanNumbers(el);
+  if (el.text != null) el.text = typeof el.text === 'string' ? sanitizeHtml(el.text) : '';
   if (el.type === 'table' || el.cells != null) {
     el.cells = (Array.isArray(el.cells) ? el.cells : []).filter(Array.isArray).map((row) => row.map((c) => (isObject(c) ? c : { text: '' })));
+    if (!el.cells.length) el.cells = [[{ text: '' }]];
     // A rectangular grid (merged cells keep their place in it).
     const cols = Math.max(1, ...el.cells.map((row) => row.length));
     for (const row of el.cells) while (row.length < cols) row.push({ text: '' });
     for (const row of el.cells) {
       for (const c of row) {
-        c.text = sanitizeHtml(c.text);
+        c.text = typeof c.text === 'string' ? sanitizeHtml(c.text) : '';
         if (c.fill != null) c.fill = safeColor(c.fill);
         if (c.valign != null && !['top', 'middle', 'bottom'].includes(c.valign)) delete c.valign;
         cleanCellLook(c);
@@ -108,10 +146,14 @@ export function sanitizeElement(el) {
     for (const key of ['colWidths', 'rowHeights']) {
       const list = el[key];
       const n = key === 'colWidths' ? cols : el.cells.length;
-      if (list != null && !(Array.isArray(list) && list.length === n && list.every((v) => Number.isFinite(v) && v > 0))) delete el[key];
+      if (list == null) continue;
+      // Shares of the table's width or height: positive, adding up to 1.
+      const total = Array.isArray(list) && list.length === n && list.every((v) => Number.isFinite(v) && v > 0) ? list.reduce((a, v) => a + v, 0) : NaN;
+      if (Number.isFinite(total)) el[key] = list.map((v) => v / total);
+      else delete el[key];
     }
     if (!el.colWidths) el.colWidths = Array.from({ length: cols }, () => 1 / cols);
-    if (el.cells.length) normalizeTable(el);
+    normalizeTable(el);
   }
   if (el.paths != null) {
     // Freeform outlines: known commands with the right number of finite coordinates, within reason.
@@ -205,7 +247,14 @@ export function sanitizeElement(el) {
     else delete el.crop;
   }
   if (el.fill != null) el.fill = safeColor(el.fill) || 'none';
-  if (el.stroke && typeof el.stroke === 'object') el.stroke.color = safeColor(el.stroke.color) || 'none';
+  if (isObject(el.stroke)) {
+    const { color, width, dash } = el.stroke;
+    el.stroke = { color: safeColor(color) || 'none' };
+    if (Number.isFinite(width)) el.stroke.width = clamp(width, 0, 1000);
+    if (dash != null) el.stroke.dash = DASHES.includes(dash) ? dash : 'solid';
+  } else if (el.stroke != null) el.stroke = null;
+  // A shape's outline: a shape name (PowerPoint's presets among them).
+  if (el.shape != null && !(typeof el.shape === 'string' && /^[a-zA-Z0-9]{1,40}$/.test(el.shape))) el.shape = 'rect';
   if (el.style && typeof el.style === 'object') {
     if (el.style.color != null) el.style.color = safeColor(el.style.color);
     if (typeof el.style.font === 'string') el.style.font = el.style.font.replace(/[^\p{L}\p{N}\s-]/gu, '').slice(0, 64);
@@ -216,9 +265,11 @@ export function sanitizeElement(el) {
       else delete s.inset;
     }
     if (s.vertical != null && !['vert', 'vert270', 'eaVert'].includes(s.vertical)) delete s.vertical;
+    if (s.align != null && !['left', 'center', 'right', 'justify'].includes(s.align)) delete s.align;
+    if (s.valign != null && !['top', 'middle', 'bottom'].includes(s.valign)) delete s.valign;
+    if (s.font != null && typeof s.font !== 'string') delete s.font;
     if (s.wrap != null && s.wrap !== false) delete s.wrap;
     if (s.columns != null) s.columns = Math.max(1, Math.min(16, Math.round(+s.columns) || 1));
-    if (s.columnGap != null && !Number.isFinite(s.columnGap)) delete s.columnGap;
     // A WordArt warp: a known preset with adjust values in its range.
     if (s.warp != null) {
       const warp = cleanWarp(s.warp);
@@ -382,7 +433,7 @@ function commentEntry(c) {
 export function sanitizeComments(list) {
   return (Array.isArray(list) ? list : []).filter(isObject).slice(0, COMMENT_LIMITS.comments).map((c) => {
     const out = commentEntry(c);
-    if (Number.isFinite(c.x) && Number.isFinite(c.y)) Object.assign(out, { x: c.x, y: c.y });
+    if (Number.isFinite(c.x) && Number.isFinite(c.y)) Object.assign(out, { x: clamp(c.x, -REACH, REACH), y: clamp(c.y, -REACH, REACH) });
     if (c.resolved === true) out.resolved = true;
     const replies = (Array.isArray(c.replies) ? c.replies : []).filter(isObject).slice(0, COMMENT_LIMITS.replies).map(commentEntry);
     if (replies.length) out.replies = replies;
@@ -398,10 +449,17 @@ export const sectionName = (v) => (typeof v === 'string' ? v.replace(/[\u0000-\u
 export function sanitizeDeck(deck) {
   // Damaged or hand-edited files: keep only what has the expected shape.
   if (typeof deck.title !== 'string') deck.title = '';
+  if (!(typeof deck.size === 'string' && (Object.hasOwn(SIZES, deck.size) || customSize(deck.size)))) deck.size = '16:9';
   if (!isObject(deck.media)) deck.media = {};
   deck.slides = (Array.isArray(deck.slides) ? deck.slides : []).filter(isObject);
   for (const s of deck.slides) {
+    if (!isId(s.id)) s.id = uid();
     s.notes = typeof s.notes === 'string' ? s.notes : '';
+    s.hidden = s.hidden === true;
+    const t = s.transition;
+    s.transition = isObject(t) && TRANSITIONS.some((x) => x.id === t.type)
+      ? { type: t.type, duration: Number.isFinite(t.duration) ? clamp(t.duration, 0, 10) : 0.6 }
+      : { type: 'none', duration: 0.6 };
     s.elements = (Array.isArray(s.elements) ? s.elements : []).filter(isObject);
     for (const el of s.elements) sanitizeElement(el);
     if (s.comments != null) s.comments = sanitizeComments(s.comments);
