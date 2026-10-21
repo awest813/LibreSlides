@@ -11,7 +11,7 @@ import { showInstallHelp } from '../ui/install.js';
 import { getDeck, saveDeck, onStorageChange } from '../storage/db.js';
 import {
   slideSize, newSlide, layoutElements, cloneSlide, cloneElement, canHoldText, boxOf, moveElement, addMedia, newImage, newTable, newChart, newDiagram,
-  htmlToText, SIZES, customSize, uid, mediaSlots, newMedia, regroup, slideAnimations, ANIM_KINDS, slideTitle, newTextBox, fieldText,
+  htmlToText, namedSize, customSize, uid, mediaSlots, newMedia, regroup, slideAnimations, ANIM_KINDS, slideTitle, newTextBox, fieldText,
   sectionAt, setSections, moveSlidesWithSections, removeSlidesWithSections, DEFAULT_SECTION,
 } from '../model/deck.js';
 import { anchorOf, insertRow, insertCol, deleteRow, deleteCol, mergeCells, unmergeCell, blockRange, setBorders, setMargins } from '../model/tables.js';
@@ -643,7 +643,7 @@ export class EditorScreen {
   }
 
   setSize(size) {
-    const to = SIZES[size] || customSize(size);
+    const to = namedSize(size) || customSize(size);
     if (!to || size === this.deck.size) return;
     const sx = to.w / this.size.w;
     const sy = to.h / this.size.h;

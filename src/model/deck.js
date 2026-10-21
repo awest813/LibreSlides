@@ -152,7 +152,10 @@ export function customSize(size) {
   return { w, h, label: `Custom (${inch(w)} × ${inch(h)} in)` };
 }
 
-export const slideSize = (deck) => SIZES[deck?.size] || customSize(deck?.size) || SIZES['16:9'];
+/** One of SIZES by name (own names only, so "__proto__" and the like aren't sizes). */
+export const namedSize = (name) => (typeof name === 'string' && Object.hasOwn(SIZES, name) ? SIZES[name] : null);
+
+export const slideSize = (deck) => namedSize(deck?.size) || customSize(deck?.size) || SIZES['16:9'];
 
 export const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-3);
 
@@ -746,7 +749,7 @@ export function slideTitle(slide) {
 /** Make a loaded deck safe to use: fill in fields added by later versions. */
 export function normalizeDeck(deck) {
   deck.media ||= {};
-  deck.size = SIZES[deck.size] || customSize(deck.size) ? deck.size : '16:9';
+  deck.size = namedSize(deck.size) || customSize(deck.size) ? deck.size : '16:9';
   deck.themeId = themeById(deck.themeId).id;
   deck.title ||= 'Untitled presentation';
   if (!Array.isArray(deck.slides) || !deck.slides.length) deck.slides = [newSlide('title', deck)];

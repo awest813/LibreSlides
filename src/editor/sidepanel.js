@@ -2,7 +2,7 @@ import { h, rovingFocus } from '../ui/dom.js';
 import { icon } from '../ui/icons.js';
 import { openColorPicker } from '../ui/color-picker.js';
 import { THEMES, backgroundBaseColor } from '../model/themes.js';
-import { SIZES, slideSize, LAYOUTS, TRANSITIONS, ANIMATIONS, EMPHASES, EXITS, MOTIONS, slideAnimations, CHART_KINDS, newSlide, fillPlaceholders, canHoldText, slideText } from '../model/deck.js';
+import { SIZES, namedSize, slideSize, LAYOUTS, TRANSITIONS, ANIMATIONS, EMPHASES, EXITS, MOTIONS, slideAnimations, CHART_KINDS, newSlide, fillPlaceholders, canHoldText, slideText } from '../model/deck.js';
 import { SHAPES } from '../model/shapes.js';
 import { BORDER_PRESETS, cellMargin } from '../model/tables.js';
 import { renderThumb, textStyle } from '../render/render.js';
@@ -215,7 +215,7 @@ export class SidePanel {
       section('Layout (this slide)', layouts),
       section('Slide size', select([
         ...Object.entries(SIZES).map(([id, s]) => [id, s.label]),
-        ...(SIZES[deck.size] ? [] : [[deck.size, slideSize(deck).label]]),
+        ...(namedSize(deck.size) ? [] : [[deck.size, slideSize(deck).label]]),
         ['custom', 'Custom…'],
       ], deck.size, (v) => (v === 'custom' ? app.customSizePrompt() : app.setSize(v)), 'Slide size'),
         h('p', { class: 'pf-hint' }, 'Changing the size scales everything on every slide.')),

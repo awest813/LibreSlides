@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   newDeck, newSlide, layoutElements, cloneSlide, fillPlaceholders, addMedia, pruneMedia, normalizeDeck, slideText, slideTitle,
-  textToHtml, htmlToText, lineBox, moveElement, newLine, LAYOUTS, SIZES,
+  textToHtml, htmlToText, lineBox, moveElement, newLine, LAYOUTS, SIZES, slideSize,
   slideSections, moveSlidesWithSections, removeSlidesWithSections, setSections,
 } from '../../src/model/deck.js';
 import { TEMPLATES } from '../../src/model/templates.js';
@@ -9,6 +9,12 @@ import { THEMES, resolveColor, backgroundCss, themeById } from '../../src/model/
 import { SHAPES, shapePath, customPath } from '../../src/model/shapes.js';
 
 describe('deck model', () => {
+  it('takes only real size names as sizes', () => {
+    expect(slideSize({ size: '__proto__' })).toEqual(SIZES['16:9']);
+    expect(slideSize({ size: 'toString' })).toEqual(SIZES['16:9']);
+    expect(slideSize({ size: 'a4' })).toEqual(SIZES.a4);
+  });
+
   it('creates a deck with a title slide', () => {
     const d = newDeck();
     expect(d.slides).toHaveLength(1);
