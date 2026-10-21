@@ -899,11 +899,11 @@ async function readSlide(pkg, slidePath, ctx, deck) {
   }
   await walk(tree(doc), null, { rels, isSlide: true });
 
-  // Entrance animations, on the elements their shapes became (a group's or a diagram's play together).
+  // Animations, on the elements their shapes became (a group's or a diagram's play together).
   let order = 0;
   for (const a of readAnimations(doc)) {
     (byShapeId.get(a.spid) || []).forEach((el, k) => {
-      el.anim = { effect: a.effect, duration: Math.round(a.duration * 100) / 100, start: k ? 'with' : a.start, order: ++order };
+      el[a.kind] = { effect: a.effect, duration: Math.round(a.duration * 100) / 100, start: k ? 'with' : a.start, order: ++order };
     });
   }
 

@@ -26,6 +26,9 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  * contrast? }` (-1 to 1), and be cropped to a shape, `clip: { shape, paths?,
  * preset? }` as shape elements have (an oval, a PowerPoint preset…).
  *
+ * Elements can have an entrance (`anim`), an emphasis and an exit animation
+ * (see ANIM_KINDS).
+ *
  * Elements sharing a `groupId` are a group: selected, moved and saved
  * together, next to each other in the stacking order.
  *
@@ -108,6 +111,41 @@ export const ANIMATIONS = [
   { id: 'wipe', name: 'Wipe from left' },
   { id: 'spin', name: 'Spin in' },
 ];
+
+// Effects that draw attention to something already there, and that take it away.
+export const EMPHASES = [
+  { id: 'none', name: 'None' },
+  { id: 'pulse', name: 'Pulse' },
+  { id: 'spin', name: 'Spin' },
+  { id: 'teeter', name: 'Teeter' },
+  { id: 'flash', name: 'Flash' },
+];
+
+export const EXITS = [
+  { id: 'none', name: 'None' },
+  { id: 'appear', name: 'Disappear' },
+  { id: 'fade', name: 'Fade out' },
+  { id: 'fly-up', name: 'Fly out to bottom' },
+  { id: 'fly-down', name: 'Fly out to top' },
+  { id: 'fly-left', name: 'Fly out to left' },
+  { id: 'fly-right', name: 'Fly out to right' },
+  { id: 'zoom', name: 'Zoom out' },
+  { id: 'wipe', name: 'Wipe to left' },
+  { id: 'spin', name: 'Spin out' },
+];
+
+/**
+ * An element's animations: `anim` (its entrance), `emphasis` and `exit`,
+ * each { effect, duration, start: click|with|after, order }, sharing one
+ * playing order on the slide.
+ */
+export const ANIM_KINDS = ['anim', 'emphasis', 'exit'];
+
+/** Every animation on a slide, in playing order: { el, kind, anim }. */
+export function slideAnimations(slide) {
+  return slide.elements.flatMap((el) => ANIM_KINDS.filter((kind) => el[kind]?.effect && el[kind].effect !== 'none').map((kind) => ({ el, kind, anim: el[kind] })))
+    .sort((a, b) => (a.anim.order || 0) - (b.anim.order || 0));
+}
 
 /** Placeholder hint text shown on empty placeholders while editing. */
 export const PLACEHOLDER_HINTS = {

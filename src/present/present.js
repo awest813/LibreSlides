@@ -1,7 +1,7 @@
 import { h, toast } from '../ui/dom.js';
 import { icon } from '../ui/icons.js';
 import { renderSlide, renderThumb } from '../render/render.js';
-import { slideSize, slideTitle } from '../model/deck.js';
+import { slideSize, slideTitle, slideAnimations } from '../model/deck.js';
 
 /**
  * Slideshow: plays a deck full screen with transitions and click-by-click
@@ -17,15 +17,14 @@ import { slideSize, slideTitle } from '../model/deck.js';
 
 /** The slide's animations grouped into click-steps; each entry has delays for "with/after previous". */
 export function buildSteps(slide) {
-  const animated = slide.elements.filter((e) => e.anim && e.anim.effect && e.anim.effect !== 'none')
-    .sort((a, b) => (a.anim.order || 0) - (b.anim.order || 0));
+  const animated = slideAnimations(slide);
   const steps = [];
   let cur = null;
   let lastStart = 0;
   let lastEnd = 0;
-  for (const el of animated) {
-    const dur = el.anim.duration ?? 0.5;
-    const start = el.anim.start || 'click';
+  for (const { el, kind, anim } of animated) {
+    const dur = anim.duration ?? 0.5;
+    const start = anim.start || 'click';
     if (start === 'click' || !cur) {
       cur = [];
       steps.push(cur);
@@ -33,7 +32,7 @@ export function buildSteps(slide) {
       lastEnd = 0;
     }
     const delay = start === 'after' ? lastEnd : start === 'with' ? lastStart : 0;
-    cur.push({ id: el.id, effect: el.anim.effect, duration: dur, delay });
+    cur.push({ id: el.id, kind, effect: anim.effect, duration: dur, delay });
     lastStart = delay;
     lastEnd = delay + dur;
   }
@@ -69,6 +68,17 @@ export function firstPos(deck, from = 0) {
 }
 
 // ------------------------------------------------------------------ animation effects
+
+/** Keyframes for an emphasis: something already on the slide, drawing the eye and settling back. */
+function emphasis(effect, opacity = 1) {
+  switch (effect) {
+    case 'pulse': return [{ transform: 'scale(1)' }, { transform: 'scale(1.12)' }, { transform: 'scale(1)' }];
+    case 'spin': return [{ transform: 'rotate(0)' }, { transform: 'rotate(360deg)' }];
+    case 'teeter': return [0, 4, -4, 4, -4, 0].map((a) => ({ transform: `rotate(${a}deg)` }));
+    case 'flash': return [{ opacity }, { opacity: 0 }, { opacity }];
+    default: return null;
+  }
+}
 
 /** Keyframes for an entrance; `to` is the element's own opacity, where fades end. */
 function entrance(effect, W, H, to = 1) {
@@ -157,10 +167,10 @@ export class Player {
     node.style.transformOrigin = '0 0';
     node.style.transform = `scale(${this.scale || 1})`;
     const steps = buildSteps(slide);
-    // Objects that appear on later clicks start hidden.
+    // Objects that come in on later clicks start hidden, and those that went out on earlier ones are gone.
     for (const [k, items] of steps.entries()) {
-      if (k < step) continue;
       for (const it of items) {
+        if (it.kind === 'emphasis' || (it.kind === 'exit') === (k >= step)) continue;
         const el = node.querySelector(`:scope > .el[data-id="${CSS.escape(it.id)}"]`);
         if (el) el.style.visibility = 'hidden';
       }
@@ -226,12 +236,27 @@ export class Player {
     for (const it of items) {
       const el = node.querySelector(`:scope > .el[data-id="${CSS.escape(it.id)}"]`);
       if (!el) continue;
+      const delay = (it.delay + extraDelay) * 1000;
+      const opacity = +(el.style.opacity || 1);
+      if (it.kind === 'emphasis') {
+        const frames = emphasis(it.effect, opacity);
+        if (frames) el.animate(frames, { duration: it.duration * 1000, delay, easing: 'ease-in-out', composite: frames[0].transform ? 'add' : 'replace' });
+        continue;
+      }
+      if (it.kind === 'exit') {
+        // The entrance played backwards, then gone.
+        const frames = entrance(it.effect, w, H, opacity)?.reverse();
+        const out = el.animate(frames || [{ opacity }, { opacity: 0 }], { duration: it.effect === 'appear' ? 1 : it.duration * 1000, delay, easing: 'cubic-bezier(.4,0,.8,.3)', fill: 'forwards', composite: frames?.[0].transform ? 'add' : 'replace' });
+        out.finished.then(() => { el.style.visibility = 'hidden'; out.cancel(); }).catch(() => {});
+        (this.running ||= []).push(out);
+        continue;
+      }
       el.style.visibility = '';
-      this.startMedia(el, (it.delay + extraDelay) * 1000);
-      const frames = entrance(it.effect, w, H, +(el.style.opacity || 1));
+      this.startMedia(el, delay);
+      const frames = entrance(it.effect, w, H, opacity);
       if (!frames) continue;
       const duration = it.effect === 'appear' ? 1 : it.duration * 1000;
-      el.animate(frames, { duration, delay: (it.delay + extraDelay) * 1000, easing: 'cubic-bezier(.2,.7,.3,1)', fill: 'backwards', composite: frames[0].transform ? 'add' : 'replace' });
+      el.animate(frames, { duration, delay, easing: 'cubic-bezier(.2,.7,.3,1)', fill: 'backwards', composite: frames[0].transform ? 'add' : 'replace' });
     }
   }
 }

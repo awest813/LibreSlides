@@ -99,3 +99,28 @@ describe('playing a slideshow', () => {
     show.exit();
   });
 });
+
+describe('emphasis and exit effects', () => {
+  it('shows an object until its exit, and only from its entrance', () => {
+    const d = newDeck();
+    const s = newSlide('blank', d);
+    const a = newShape('rect', 0, 0);
+    const b = newShape('rect', 0, 0);
+    a.anim = { effect: 'fade', order: 1, duration: 0.5 };
+    a.emphasis = { effect: 'pulse', order: 2, duration: 0.5 };
+    b.exit = { effect: 'fade', order: 3, duration: 0.5 };
+    s.elements.push(a, b);
+    d.slides = [s];
+    const steps = buildSteps(s);
+    expect(steps.map((st) => st.map((x) => `${x.kind}:${x.effect}`))).toEqual([['anim:fade'], ['emphasis:pulse'], ['exit:fade']]);
+    const p = new Player(d, document.createElement('div'));
+    const visible = (step) => {
+      const layer = p.makeLayer(0, step);
+      return [a, b].map((el) => layer.querySelector(`[data-id="${el.id}"]`).style.visibility !== 'hidden');
+    };
+    expect(visible(0)).toEqual([false, true]);
+    expect(visible(1)).toEqual([true, true]);
+    expect(visible(2)).toEqual([true, true]);
+    expect(visible(3)).toEqual([true, false]);
+  });
+});

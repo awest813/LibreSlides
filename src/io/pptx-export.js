@@ -1,6 +1,6 @@
 import PptxGenJS from 'pptxgenjs';
 import JSZip from 'jszip';
-import { slideSize, boxOf, htmlToText } from '../model/deck.js';
+import { slideSize, boxOf, htmlToText, ANIM_KINDS } from '../model/deck.js';
 import { themeById, resolveColor, backgroundBaseColor } from '../model/themes.js';
 import { textStyle, themeDecor } from '../render/render.js';
 import { safeFileName } from '../ui/dom.js';
@@ -266,7 +266,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
   const shadow = el.shadow ? { type: 'outer', blur: 8, offset: 4, angle: 90, color: '000000', opacity: 0.3 } : undefined;
   // Animated elements, media that plays by itself and group members are named so the
   // slide's timeline and groups can find them.
-  const timed = (el.anim?.effect && el.anim.effect !== 'none') || (el.type === 'media' && (el.autoplay || el.loop));
+  const timed = ANIM_KINDS.some((kind) => el[kind]?.effect && el[kind].effect !== 'none') || (el.type === 'media' && (el.autoplay || el.loop));
   const grouped = el.groupId && marks.groupSizes.get(el.groupId) > 1;
   const objectName = timed || grouped ? `LibreSlides shape ${++marks.count}` : undefined;
   if (timed) marks.timeline.push({ name: objectName, el });
@@ -664,8 +664,10 @@ function timelineOf(xml, timeline) {
     const spid = new RegExp(`<p:cNvPr id="(\\d+)" name="${name}"`).exec(xml)?.[1];
     if (!spid) continue;
     if (el.type === 'media') media.push({ spid, kind: el.kind === 'audio' ? 'audio' : 'video', autoplay: !!el.autoplay, loop: !!el.loop, duration: el.duration });
-    if (el.anim?.effect && el.anim.effect !== 'none') {
-      anims.push({ spid, order: el.anim.order || 0, effect: el.anim.effect, duration: el.anim.duration ?? 0.5, start: el.anim.start || 'click', hasText: !!htmlToText(el.text || '') });
+    for (const kind of ANIM_KINDS) {
+      const a = el[kind];
+      if (!a?.effect || a.effect === 'none') continue;
+      anims.push({ spid, kind, order: a.order || 0, effect: a.effect, duration: a.duration ?? 0.5, start: a.start || 'click', hasText: !!htmlToText(el.text || '') });
     }
   }
   anims.sort((a, b) => a.order - b.order);

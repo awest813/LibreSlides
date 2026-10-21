@@ -11,7 +11,7 @@ import { showInstallHelp } from '../ui/install.js';
 import { getDeck, saveDeck, onStorageChange } from '../storage/db.js';
 import {
   slideSize, newSlide, layoutElements, cloneSlide, cloneElement, canHoldText, boxOf, moveElement, addMedia, newImage, newTable, newChart,
-  htmlToText, SIZES, customSize, uid, mediaSlots, newMedia, regroup,
+  htmlToText, SIZES, customSize, uid, mediaSlots, newMedia, regroup, slideAnimations, ANIM_KINDS,
 } from '../model/deck.js';
 import { anchorOf, insertRow, insertCol, deleteRow, deleteCol, mergeCells, unmergeCell } from '../model/tables.js';
 import { themeById, resolveColor } from '../model/themes.js';
@@ -640,7 +640,7 @@ export class EditorScreen {
     const copies = regroup(els.map((e) => {
       const c = cloneElement(e);
       moveElement(c, 16, 16);
-      if (c.anim) c.anim.order = this.nextAnimOrder() + (e.anim.order || 0);
+      for (const kind of ANIM_KINDS) if (c[kind]) c[kind].order = this.nextAnimOrder() + (e[kind].order || 0);
       return c;
     }));
     this.addElements(copies);
@@ -711,7 +711,7 @@ export class EditorScreen {
       if (sameSpot) moveElement(c, 16, 16);
       const b = boxOf(c);
       if (b.x > w - 10 || b.y > H - 10) moveElement(c, -b.x + 20, -b.y + 20);
-      delete c.anim;
+      for (const kind of ANIM_KINDS) delete c[kind];
     }
     this.change(() => {
       this.importMedia(payload.media, copies);
@@ -1282,10 +1282,11 @@ export class EditorScreen {
   // ---------------------------------------------------------------- animations
 
   nextAnimOrder() {
-    return Math.max(0, ...this.slide.elements.map((e) => e.anim?.order || 0)) + 1;
+    return Math.max(0, ...slideAnimations(this.slide).map((a) => a.anim.order || 0)) + 1;
   }
 
-  setAnimation(props, ids = null) {
+  /** Set the selected objects' (or `ids`') entrance, emphasis or exit animation (`kind`: see ANIM_KINDS). */
+  setAnimation(props, ids = null, kind = 'anim') {
     const set = new Set(ids || this.selection);
     const els = this.slide.elements.filter((e) => set.has(e.id));
     if (!els.length) return;
@@ -1293,27 +1294,28 @@ export class EditorScreen {
       let order = this.nextAnimOrder();
       for (const el of els) {
         if (props.effect === 'none') {
-          delete el.anim;
+          delete el[kind];
           continue;
         }
         // Duration or start alone doesn't animate something that isn't animated.
-        if (!el.anim && !props.effect) continue;
-        const fresh = !el.anim;
-        el.anim = { effect: 'fade', duration: 0.5, start: 'click', ...(el.anim || {}), ...props };
-        if (fresh) el.anim.order = order++;
+        if (!el[kind] && !props.effect) continue;
+        const fresh = !el[kind];
+        el[kind] = { effect: kind === 'emphasis' ? 'pulse' : 'fade', duration: 0.5, start: 'click', ...(el[kind] || {}), ...props };
+        if (fresh) el[kind].order = order++;
       }
     }, { render: true });
     this.panel.update(true);
   }
 
-  reorderAnimation(id, dir) {
-    const list = this.slide.elements.filter((e) => e.anim).sort((a, b) => a.anim.order - b.anim.order);
-    const i = list.findIndex((e) => e.id === id);
+  /** Move one of the slide's animations (the `kind` one of object `id`) earlier or later. */
+  reorderAnimation(id, dir, kind = 'anim') {
+    const list = slideAnimations(this.slide);
+    const i = list.findIndex((a) => a.el.id === id && a.kind === kind);
     const j = i + dir;
     if (i < 0 || j < 0 || j >= list.length) return;
     this.change(() => {
       [list[i], list[j]] = [list[j], list[i]];
-      list.forEach((e, k) => { e.anim.order = k + 1; });
+      list.forEach((a, k) => { a.anim.order = k + 1; });
     });
     this.panel.update(true);
   }

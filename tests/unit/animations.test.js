@@ -61,6 +61,25 @@ describe('animations in PowerPoint files', () => {
     ]);
   });
 
+  it('writes and reads emphasis and exit effects', async () => {
+    const a = newShape('rect', 10, 10);
+    a.anim = { effect: 'fade', duration: 0.5, start: 'click', order: 1 };
+    a.emphasis = { effect: 'pulse', duration: 0.8, start: 'click', order: 2 };
+    a.exit = { effect: 'fly-left', duration: 0.5, start: 'after', order: 3 };
+    const xml = await slideXml(deckWith(a));
+    expect(xml).toContain('presetID="26" presetClass="emph"');
+    expect(xml).toContain('presetID="2" presetClass="exit" presetSubtype="8"');
+    // Going out, it's hidden once it has gone.
+    expect(xml).toMatch(/<p:cond delay="499"\/><\/p:stCondLst><\/p:cTn><p:tgtEl><p:spTgt spid="\d+"\/><\/p:tgtEl><p:attrNameLst><p:attrName>style.visibility<\/p:attrName><\/p:attrNameLst><\/p:cBhvr><p:to><p:strVal val="hidden"\/>/);
+    const zip = await exported(deckWith(a));
+    const back = (await importPptx(await zip.generateAsync({ type: 'arraybuffer' }))).slides[0].elements[0];
+    expect([back.anim, back.emphasis, back.exit]).toEqual([
+      { effect: 'fade', duration: 0.5, start: 'click', order: 1 },
+      { effect: 'pulse', duration: 0.8, start: 'click', order: 2 },
+      { effect: 'fly-left', duration: 0.5, start: 'after', order: 3 },
+    ]);
+  });
+
   it('starts by itself when the first effect follows the slide', async () => {
     const a = newShape('rect', 10, 10);
     a.anim = { effect: 'fly-down', duration: 0.5, start: 'after', order: 1 };
@@ -83,12 +102,16 @@ describe('animations in PowerPoint files', () => {
     const doc = parse(`<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:timing><p:tnLst><p:par><p:cTn><p:childTnLst><p:seq><p:cTn nodeType="mainSeq"><p:childTnLst>${
       effect(4, 3, 10, 'clickEffect') // blinds
       + effect(4, 3, 10, 'withEffect', '<p:txEl><p:pRg st="1" end="1"/></p:txEl>') // the same shape's next paragraph
-      + effect(5, 10, 0, 'afterEffect', '', 'exit') // an exit: left out
+      + effect(5, 10, 0, 'afterEffect', '', 'exit')
       + effect(6, 2, 2, 'withEffect')
+      + effect(6, 32, 0, 'clickEffect', '', 'emph') // teeter
+      + effect(6, 99, 0, 'clickEffect', '', 'path') // a motion path: left out
     }</p:childTnLst></p:cTn></p:seq></p:childTnLst></p:cTn></p:par></p:tnLst></p:timing></p:sld>`);
     expect(readAnimations(doc)).toEqual([
-      { spid: '4', effect: 'fade', duration: 2, start: 'click', order: 1 },
-      { spid: '6', effect: 'fly-right', duration: 2, start: 'with', order: 2 },
+      { spid: '4', kind: 'anim', effect: 'fade', duration: 2, start: 'click', order: 1 },
+      { spid: '5', kind: 'exit', effect: 'fade', duration: 2, start: 'after', order: 2 },
+      { spid: '6', kind: 'anim', effect: 'fly-right', duration: 2, start: 'with', order: 3 },
+      { spid: '6', kind: 'emphasis', effect: 'teeter', duration: 2, start: 'click', order: 4 },
     ]);
   });
 });

@@ -2,7 +2,7 @@ import DOMPurify from 'dompurify';
 import { PATH_ARGS } from '../model/shapes.js';
 import { normalizeTable } from '../model/tables.js';
 import { isMediaData } from './media-files.js';
-import { CHART_KINDS, uid } from '../model/deck.js';
+import { CHART_KINDS, uid, ANIM_KINDS, ANIMATIONS, EMPHASES, EXITS } from '../model/deck.js';
 import { FONT_FACES } from '../model/fonts.js';
 
 /**
@@ -132,6 +132,22 @@ export function sanitizeElement(el) {
       if (holder.shape !== 'custom') delete el.clip;
       else el.clip = { shape: 'custom', paths: holder.paths, ...(holder.preset && { preset: holder.preset }) };
     } else el.clip = { shape: c.shape };
+  }
+  // Animations: known effects and starts, sensible numbers (the slideshow times them).
+  for (const kind of ANIM_KINDS) {
+    const a = el[kind];
+    if (a == null) continue;
+    const effects = { anim: ANIMATIONS, emphasis: EMPHASES, exit: EXITS }[kind];
+    if (!isObject(a) || !effects.some((x) => x.id === a.effect) || a.effect === 'none') {
+      delete el[kind];
+      continue;
+    }
+    el[kind] = {
+      effect: a.effect,
+      duration: Number.isFinite(a.duration) ? Math.max(0.05, Math.min(30, a.duration)) : 0.5,
+      start: ['click', 'with', 'after'].includes(a.start) ? a.start : 'click',
+      order: Number.isFinite(a.order) ? a.order : 0,
+    };
   }
   for (const end of ['arrowStart', 'arrowEnd']) {
     if (el[end] != null && el[end] !== true && el[end] !== false && !['arrow', 'stealth', 'diamond', 'oval', 'triangle'].includes(el[end])) el[end] = !!el[end];

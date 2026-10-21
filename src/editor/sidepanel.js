@@ -2,7 +2,7 @@ import { h } from '../ui/dom.js';
 import { icon } from '../ui/icons.js';
 import { openColorPicker } from '../ui/color-picker.js';
 import { THEMES, resolveColor, backgroundBaseColor } from '../model/themes.js';
-import { SIZES, slideSize, LAYOUTS, TRANSITIONS, ANIMATIONS, CHART_KINDS, newSlide, fillPlaceholders, canHoldText, slideText } from '../model/deck.js';
+import { SIZES, slideSize, LAYOUTS, TRANSITIONS, ANIMATIONS, EMPHASES, EXITS, slideAnimations, CHART_KINDS, newSlide, fillPlaceholders, canHoldText, slideText } from '../model/deck.js';
 import { SHAPES } from '../model/shapes.js';
 import { renderThumb, textStyle } from '../render/render.js';
 import { seriesColor, pointColor } from '../render/chart.js';
@@ -252,24 +252,29 @@ export class SidePanel {
     const els = app.selectedElements();
     const out = [];
     if (els.length) {
-      const a = els[0].anim || { effect: 'none', duration: 0.5 };
-      out.push(section(els.length > 1 ? `${els.length} objects` : 'Selected object',
-        field('Effect', select(ANIMATIONS.map((x) => [x.id, x.name]), a.effect, (v) => app.setAnimation({ effect: v }))),
-        field('Duration', select([[0.3, 'Fast (0.3 s)'], [0.5, 'Medium (0.5 s)'], [0.8, 'Slow (0.8 s)'], [1.2, 'Very slow (1.2 s)']], a.duration ?? 0.5, (v) => app.setAnimation({ duration: +v }))),
-        field('Start', select([['click', 'On click'], ['with', 'With previous'], ['after', 'After previous']], a.start || 'click', (v) => app.setAnimation({ start: v })))));
+      // One section each for how it comes in, draws attention and goes out.
+      for (const [kind, title, effects] of [['anim', 'Entrance', ANIMATIONS], ['emphasis', 'Emphasis', EMPHASES], ['exit', 'Exit', EXITS]]) {
+        const a = els[0][kind] || { effect: 'none', duration: 0.5 };
+        const on = a.effect && a.effect !== 'none';
+        out.push(section(els.length > 1 ? `${title} (${els.length} objects)` : title,
+          field('Effect', select(effects.map((x) => [x.id, x.name]), a.effect, (v) => app.setAnimation({ effect: v }, null, kind))),
+          on ? field('Duration', select([[0.3, 'Fast (0.3 s)'], [0.5, 'Medium (0.5 s)'], [0.8, 'Slow (0.8 s)'], [1.2, 'Very slow (1.2 s)'], [2, 'Very slow (2 s)']], a.duration ?? 0.5, (v) => app.setAnimation({ duration: +v }, null, kind))) : null,
+          on ? field('Start', select([['click', 'On click'], ['with', 'With previous'], ['after', 'After previous']], a.start || 'click', (v) => app.setAnimation({ start: v }, null, kind))) : null));
+      }
     } else {
       out.push(h('p', { class: 'pf-hint' }, 'Select an object on the slide to animate it.'));
     }
-    const animated = app.slide.elements.filter((e) => e.anim && e.anim.effect !== 'none').sort((x, y) => (x.anim.order || 0) - (y.anim.order || 0));
+    const animated = slideAnimations(app.slide);
     const list = h('ol', { class: 'anim-list' });
-    animated.forEach((el, i) => {
+    const effectName = { anim: ANIMATIONS, emphasis: EMPHASES, exit: EXITS };
+    animated.forEach(({ el, kind, anim }, i) => {
       const name = (canHoldText(el) && slideText({ elements: [el] })) || ({ image: 'Picture', line: 'Line', table: 'Table', shape: 'Shape', text: 'Text box', chart: 'Chart', media: el.kind === 'audio' ? 'Sound' : 'Video' }[el.type]) || 'Object';
-      const effect = ANIMATIONS.find((x) => x.id === el.anim.effect)?.name;
+      const effect = effectName[kind].find((x) => x.id === anim.effect)?.name;
       list.append(h('li', { class: `anim-item${app.selection.includes(el.id) ? ' is-selected' : ''}` },
-        h('button', { type: 'button', class: 'anim-name', onclick: () => app.setSelection([el.id]) }, h('b', {}, name.slice(0, 40)), h('small', {}, `${effect}${el.anim.start && el.anim.start !== 'click' ? ` · ${el.anim.start} previous` : ''}`)),
-        h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Move earlier', disabled: i === 0 || null, html: icon('up'), onclick: () => app.reorderAnimation(el.id, -1) }),
-        h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Move later', disabled: i === animated.length - 1 || null, html: icon('down'), onclick: () => app.reorderAnimation(el.id, 1) }),
-        h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Remove animation', html: icon('close'), onclick: () => app.setAnimation({ effect: 'none' }, [el.id]) })));
+        h('button', { type: 'button', class: 'anim-name', onclick: () => app.setSelection([el.id]) }, h('b', {}, name.slice(0, 40)), h('small', {}, `${effect}${anim.start && anim.start !== 'click' ? ` · ${anim.start} previous` : ''}`)),
+        h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Move earlier', disabled: i === 0 || null, html: icon('up'), onclick: () => app.reorderAnimation(el.id, -1, kind) }),
+        h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Move later', disabled: i === animated.length - 1 || null, html: icon('down'), onclick: () => app.reorderAnimation(el.id, 1, kind) }),
+        h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Remove animation', html: icon('close'), onclick: () => app.setAnimation({ effect: 'none' }, [el.id], kind) })));
     });
     out.push(section('Order on this slide', animated.length ? list : h('p', { class: 'pf-hint' }, 'Nothing on this slide is animated yet.')));
     if (animated.length) out.push(h('button', { type: 'button', class: 'btn btn-primary', html: `${icon('play')}<span>Preview</span>`, onclick: () => app.previewAnimations() }));
