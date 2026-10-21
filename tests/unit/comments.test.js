@@ -9,7 +9,7 @@ vi.mock('../../src/storage/db.js', () => ({
 import JSZip from 'jszip';
 import { buildPptx } from '../../src/io/pptx-export.js';
 import { importPptx } from '../../src/io/pptx-import.js';
-import { xmlText } from '../../src/io/pptx-comments.js';
+import { xmlText } from '../../src/io/ooxml.js';
 import { sanitizeDeck } from '../../src/io/sanitize.js';
 import { renderThumb } from '../../src/render/render.js';
 import { EditorScreen } from '../../src/editor/editor-screen.js';

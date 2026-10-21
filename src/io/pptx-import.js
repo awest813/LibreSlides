@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { uid, newDeck, SIZES, customSize, slideSize, FIELD } from '../model/deck.js';
+import { uid, newDeck, newSlide, SIZES, customSize, slideSize, FIELD } from '../model/deck.js';
 import { SHAPES } from '../model/shapes.js';
 import { normalizeTable, NO_BORDER, CELL_MARGIN, SIDES } from '../model/tables.js';
 import { evaluateGeometry, definitionFromXml } from '../model/geometry.js';
@@ -269,7 +269,7 @@ function textLayoutOf(bodyAttr, k) {
   const out = {};
   const ins = { l: bodyAttr('lIns'), t: bodyAttr('tIns'), r: bodyAttr('rIns'), b: bodyAttr('bIns') };
   if (Object.entries(ins).some(([side, v]) => v != null && +v !== DEFAULT_INSETS[side])) {
-    out.inset = Object.fromEntries(Object.entries(ins).map(([side, v]) => [side, Math.round(((v != null ? +v : DEFAULT_INSETS[side]) / 12700) * k * 10) / 10]));
+    out.inset = Object.fromEntries(Object.entries(ins).map(([side, v]) => [side, Math.round(((v != null ? +v : DEFAULT_INSETS[side]) / EMU_PER_PT) * k * 10) / 10]));
   }
   if (bodyAttr('wrap') === 'none') out.wrap = false;
   const vert = bodyAttr('vert');
@@ -278,7 +278,7 @@ function textLayoutOf(bodyAttr, k) {
   const cols = +bodyAttr('numCol') || 1;
   if (cols > 1) {
     out.columns = Math.min(16, cols);
-    if (bodyAttr('spcCol') != null) out.columnGap = Math.round((+bodyAttr('spcCol') / 12700) * k * 10) / 10;
+    if (bodyAttr('spcCol') != null) out.columnGap = Math.round((+bodyAttr('spcCol') / EMU_PER_PT) * k * 10) / 10;
   }
   return out;
 }
@@ -335,6 +335,9 @@ function xfrmOf(spPr) {
   return boxOfXfrm(kid(spPr, 'xfrm'));
 }
 
+/** An EMU coordinate as points: 0 for anything that isn't a number. */
+const ptOf = (v) => (Number.isFinite(+v) ? +v / EMU_PER_PT : 0);
+
 /** An a:xfrm (or a SmartArt dsp:txXfrm) as a box in points, with its rotation and flips. */
 function boxOfXfrm(x) {
   if (!x) return null;
@@ -342,14 +345,17 @@ function boxOfXfrm(x) {
   const ext = kid(x, 'ext');
   if (!off || !ext) return null;
   return {
-    x: +attr(off, 'x') / EMU_PER_PT, y: +attr(off, 'y') / EMU_PER_PT,
-    w: +attr(ext, 'cx') / EMU_PER_PT, h: +attr(ext, 'cy') / EMU_PER_PT,
-    rot: (+(attr(x, 'rot') || 0)) / 60000, flipH: attr(x, 'flipH') === '1', flipV: attr(x, 'flipV') === '1',
+    x: ptOf(attr(off, 'x')), y: ptOf(attr(off, 'y')),
+    w: Math.max(0, ptOf(attr(ext, 'cx'))), h: Math.max(0, ptOf(attr(ext, 'cy'))),
+    rot: ((+attr(x, 'rot') || 0) / 60000) % 360, flipH: isTrue(attr(x, 'flipH')), flipV: isTrue(attr(x, 'flipV')),
   };
 }
 
+/** A shape's non-visual properties (p:nvSpPr, p:nvPicPr…), where its id, name, link and placeholder are. */
+const nvOf = (node) => [...node.children].find((c) => /^nv/.test(c.localName)) || null;
+
 function phOf(sp) {
-  const nv = [...sp.children].find((c) => /^nv/.test(c.localName));
+  const nv = nvOf(sp);
   const ph = nv && desc(nv, 'ph')[0];
   if (!ph) return null;
   return { type: attr(ph, 'type') || 'body', idx: attr(ph, 'idx') };
@@ -357,14 +363,18 @@ function phOf(sp) {
 
 const PH_ROLE = { title: 'title', ctrTitle: 'title', subTitle: 'subtitle', body: 'body', obj: 'body' };
 
-/** Placeholder shapes of a layout or master, for looking up inherited positions and text styles. */
+/** Placeholder shapes of a layout or master, for looking up inherited positions and text styles (found once per part). */
+const placeholderLists = new WeakMap();
 function placeholders(doc) {
-  const list = [];
-  for (const sp of desc(doc, 'sp')) {
-    const ph = phOf(sp);
-    if (ph) list.push({ ...ph, sp });
+  if (!placeholderLists.has(doc)) {
+    const list = [];
+    for (const sp of desc(doc, 'sp')) {
+      const ph = phOf(sp);
+      if (ph) list.push({ ...ph, sp });
+    }
+    placeholderLists.set(doc, list);
   }
-  return list;
+  return placeholderLists.get(doc);
 }
 
 function findPh(list, ph) {
@@ -478,8 +488,10 @@ function cropOf(blipFill) {
 
 // ------------------------------------------------------------------ table styles
 
-// PowerPoint's default table style ("Medium Style 2 – Accent 1"), for files that use it without including it.
-const DEFAULT_TABLE_STYLE = `<a:tblStyle xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" styleId="{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}">
+// PowerPoint's default table style ("Medium Style 2 – Accent 1"), for files that use it without including it (parsed when first needed).
+const DEFAULT_TABLE_STYLE_ID = '{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}';
+let defaultTableStyle = null;
+const DEFAULT_TABLE_STYLE = `<a:tblStyle xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" styleId="${DEFAULT_TABLE_STYLE_ID}">
 <a:wholeTbl><a:tcTxStyle><a:schemeClr val="dk1"/></a:tcTxStyle><a:tcStyle><a:tcBdr><a:left><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:left><a:right><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:right><a:top><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:top><a:bottom><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:bottom><a:insideH><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:insideH><a:insideV><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:insideV></a:tcBdr>
 <a:fill><a:solidFill><a:schemeClr val="accent1"><a:tint val="20000"/></a:schemeClr></a:solidFill></a:fill></a:tcStyle></a:wholeTbl>
 <a:band1H><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"><a:tint val="40000"/></a:schemeClr></a:solidFill></a:fill></a:tcStyle></a:band1H>
@@ -508,7 +520,7 @@ function borderOf(ln, ctx) {
 function tableLook(tblPr, ctx, rows, cols) {
   const id = path(tblPr, 'tableStyleId')?.textContent.trim();
   let style = id && ctx.tableStyles?.get(id);
-  if (!style && id === '{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}') style = new DOMParser().parseFromString(DEFAULT_TABLE_STYLE, 'application/xml').documentElement;
+  if (!style && id === DEFAULT_TABLE_STYLE_ID) style = (defaultTableStyle ||= new DOMParser().parseFromString(DEFAULT_TABLE_STYLE, 'application/xml').documentElement);
   if (!style) return null;
   const on = (name) => isTrue(attr(tblPr, name));
   const partLook = (name) => {
@@ -642,6 +654,8 @@ function outlineOf(spPr, box) {
 
 // ------------------------------------------------------------------ slides
 
+const MAX_GROUP_DEPTH = 32;
+
 async function readSlide(pkg, slidePath, ctx, deck) {
   const doc = await pkg.doc(slidePath);
   const rels = await pkg.rels(slidePath);
@@ -720,14 +734,14 @@ async function readSlide(pkg, slidePath, ctx, deck) {
     };
   };
 
+  // The elements each of the slide's shapes became (by shape id), for its animations.
+  const byShapeId = new Map();
   /**
    * Add the shapes of a shape tree. `part` is the slide, or the layout or
    * master whose graphics show on it (their placeholders are only templates
    * for the slide's own, so they're skipped).
    */
-  // The elements each of the slide's shapes became (by shape id), for its animations.
-  const byShapeId = new Map();
-  const walk = async (container, group, part) => {
+  const walk = async (container, group, part, depth = 0) => {
     const tctx = { ...ctx, rels: part.rels };
     let pending = null; // the shape just read, and where its elements start
     const settle = () => {
@@ -739,10 +753,14 @@ async function readSlide(pkg, slidePath, ctx, deck) {
     };
     for (const node of container.children) {
       settle();
-      const cNvPr = desc(node, 'cNvPr')[0];
+      const cNvPr = kid(nvOf(node), 'cNvPr');
       pending = { id: attr(cNvPr, 'id'), from: slide.elements.length, link: linkOf(kid(cNvPr, 'hlinkClick'), part.rels) };
       const name = node.localName;
+      // Shapes hidden in PowerPoint's selection pane don't show (nor does anything in a hidden group).
+      if (isTrue(attr(cNvPr, 'hidden'))) continue;
       if (name === 'grpSp') {
+        // Groups nested deeper than anyone draws them are left out.
+        if (depth >= MAX_GROUP_DEPTH) continue;
         const gx = xfrmOf(kid(node, 'grpSpPr'));
         const ch = kid(kid(node, 'grpSpPr'), 'xfrm');
         const chOff = kid(ch, 'chOff');
@@ -760,7 +778,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
           g.rots = [...turn, ...(group?.rots || [])];
         }
         const from = slide.elements.length;
-        await walk(node, g, part);
+        await walk(node, g, part, depth + 1);
         if (!group) groupElements(slide.elements.slice(from));
         continue;
       }
@@ -914,7 +932,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         }
         box = place(box);
         if (!data || !box) continue;
-        const descr = attr(desc(node, 'cNvPr')[0], 'descr');
+        const descr = attr(cNvPr, 'descr');
         const amt = attr(kid(blip, 'alphaModFix'), 'amt');
         const el = {
           id: uid(), type: 'image', media: addMediaTo(deck, data), x: box.x, y: box.y, w: box.w, h: box.h, rot: box.rot,
@@ -961,7 +979,8 @@ async function readSlide(pkg, slidePath, ctx, deck) {
           continue;
         }
         if (/\/diagram$/.test(uri)) {
-          await readSmartArt(node, group, part);
+          // (Not inside another diagram's drawing, which could lead back to itself.)
+          if (!part.inner) await readSmartArt(node, group, part, depth);
           continue;
         }
         const tbl = desc(node, 'tbl')[0];
@@ -973,7 +992,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         // The table's own text style: the formatting of its last row (the header is often set apart).
         const rows = kids(tbl, 'tr');
         const sample = { ...runProps(desc(rows[0], 'rPr')[0], tctx), ...runProps(desc(rows[rows.length - 1], 'rPr')[0], tctx) };
-        const tableStyle = { size: Math.round(sample.size || 18 * k), color: sample.color || defaultText, font: sample.font, bold: false };
+        const tableStyle = { size: Math.round(sample.size || 18 * k), color: sample.color || defaultText, font: sample.font || ctx.fonts.minor, bold: false };
         // The table style's colours, written into the cells so the table looks the same and stays that way.
         const look = tableLook(tblPr, ctx, rows.length, cols.length);
         const cells = rows.map((tr, r) => kids(tr, 'tc').map((tc, c) => {
@@ -1009,7 +1028,15 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         const width = Math.max(...cells.map((r) => r.length));
         for (const row of cells) while (row.length < width) row.push({ text: '' });
         const stroke = tableBorders(cells, look);
-        const heights = rows.map((tr) => +attr(tr, 'h') || 0);
+        // Row heights are least heights; a row of 0 is as tall as its text, so it takes
+        // its share of what the other rows leave of the frame (at least a line).
+        const heights = rows.map((tr) => Math.max(0, ((+attr(tr, 'h') || 0) / EMU_PER_PT) * k));
+        const unsized = heights.filter((v) => !v).length;
+        if (unsized) {
+          const line = tableStyle.size * 1.2 + CELL_MARGIN.t + CELL_MARGIN.b;
+          const share = Math.max(line, (b.h - heights.reduce((s, v) => s + v, 0)) / unsized);
+          heights.forEach((v, i) => { if (!v) heights[i] = share; });
+        }
         const allHeights = heights.reduce((s, v) => s + v, 0);
         const table = {
           id: uid(), type: 'table', x: b.x, y: b.y, w: b.w, h: b.h, rot: 0,
@@ -1019,7 +1046,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
           fill: `#${(ctx.scheme.accent1 || '4472c4').toLowerCase()}`, stroke,
           style: { size: tableStyle.size, color: tableStyle.color, font: tableStyle.font },
         };
-        if (allHeights && heights.every((v) => v > 0)) table.rowHeights = heights.map((v) => v / allHeights);
+        if (allHeights > 0 && heights.length === cells.length) table.rowHeights = heights.map((v) => v / allHeights);
         slide.elements.push(normalizeTable(table));
       }
     }
@@ -1032,7 +1059,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
    * of ordinary shapes placed relative to the graphic frame: that's what it
    * shows until it's edited, so it looks as it did in PowerPoint.
    */
-  async function readSmartArt(node, group, part) {
+  async function readSmartArt(node, group, part, depth) {
     const frame = xfrmOf(node);
     if (!frame) return;
     const read = await readDiagram({ pkg, node, rels: part.rels, scheme: ctx.scheme, font: ctx.fonts.minor, deck });
@@ -1045,7 +1072,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
     if (tree && (kids(tree, 'sp').length || kids(tree, 'grpSp').length)) {
       // The drawn shapes, in the diagram's box (its corner at 0, 0).
       const from = slide.elements.length;
-      await walk(tree, g, { rels: await pkg.rels(drawingPath), isSlide: true, inner: true });
+      await walk(tree, g, { rels: await pkg.rels(drawingPath), isSlide: true, inner: true }, depth + 1);
       const elements = slide.elements.splice(from).map((el) => {
         delete el.groupId;
         if (el.type === 'line') Object.assign(el, { x1: el.x1 - box.x, y1: el.y1 - box.y, x2: el.x2 - box.x, y2: el.y2 - box.y });
@@ -1111,24 +1138,40 @@ async function readSlide(pkg, slidePath, ctx, deck) {
   return slide;
 }
 
-/** Read a .pptx (ArrayBuffer) into a deck. */
+const badFile = (message = 'This file is damaged or isn’t a PowerPoint presentation.') => Object.assign(new Error(message), { code: 'bad-file' });
+
+/**
+ * Read a .pptx (ArrayBuffer) into a deck. A file that can't be read fails
+ * with an error that has a `code` ('bad-file', 'too-big'), whatever is wrong with it.
+ */
 export async function importPptx(buffer, fallbackTitle = 'Presentation') {
   let zip;
   try {
     zip = await JSZip.loadAsync(buffer);
   } catch {
-    throw Object.assign(new Error('This file is damaged or isn’t a PowerPoint presentation.'), { code: 'bad-file' });
+    throw badFile();
   }
-  const pkg = new Package(zip);
+  try {
+    return await readPresentation(new Package(zip), fallbackTitle);
+  } catch (err) {
+    if (err?.code) throw err;
+    console.warn('Couldn’t read the presentation', err);
+    throw Object.assign(badFile(), { cause: err });
+  }
+}
+
+async function readPresentation(pkg, fallbackTitle) {
   const presPath = 'ppt/presentation.xml';
   const pres = await pkg.doc(presPath);
-  if (!pres) throw Object.assign(new Error('This isn’t a PowerPoint presentation (.pptx).'), { code: 'bad-file' });
+  if (!pres?.documentElement || pres.documentElement.localName !== 'presentation') throw badFile('This isn’t a PowerPoint presentation (.pptx).');
   const presRels = await pkg.rels(presPath);
 
   // The closest LibreSlides size; anything else (A4, portrait…) is scaled to fit and centred.
+  // (PowerPoint's slides are 1 to 56 inches a side.)
   const sz = desc(pres, 'sldSz')[0];
-  const W = (sz && +attr(sz, 'cx') / EMU_PER_PT) || 960;
-  const H = (sz && +attr(sz, 'cy') / EMU_PER_PT) || 540;
+  const side = (v, fallback) => (v > 0 ? Math.max(72, Math.min(4032, v / EMU_PER_PT)) : fallback);
+  const W = side(+attr(sz, 'cx'), 960);
+  const H = side(+attr(sz, 'cy'), 540);
   // A standard size of the same shape (scaled to it), or the file's own.
   const closest = Object.keys(SIZES).reduce((best, id) => (Math.abs(SIZES[id].w / SIZES[id].h - W / H) < Math.abs(SIZES[best].w / SIZES[best].h - W / H) ? id : best), '16:9');
   const standard = Math.abs(SIZES[closest].w / SIZES[closest].h - W / H) < 0.01 * (W / H);
@@ -1185,10 +1228,15 @@ export async function importPptx(buffer, fallbackTitle = 'Presentation') {
       slidePaths.push(rel.path);
       sldIds.push(attr(s, 'id'));
     } catch (err) {
+      if (pkg.full) throw err; // a zip bomb, or too much to hold
       console.warn('Skipped a slide that could not be read', err);
     }
   }
-  if (!deck.slides.length) throw Object.assign(new Error('No slides could be read from this file.'), { code: 'bad-file' });
+  if (!deck.slides.length) {
+    if (ids.length) throw badFile('No slides could be read from this file.');
+    // A presentation with no slides yet (a template, say) opens with a blank one.
+    deck.slides.push(newSlide('blank', deck));
+  }
   readSections(pres, deck.slides, sldIds);
   // Links to particular slides, now that the slides have ids.
   const idOfPath = new Map(slidePaths.map((p, i) => [p, deck.slides[i]?.id]));

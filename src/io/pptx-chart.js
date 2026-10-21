@@ -2,7 +2,7 @@ import { uid, CHART_KINDS } from '../model/deck.js';
 import { resolveColor, backgroundBaseColor } from '../model/themes.js';
 import { seriesColor, pointColor, seriesKind, onSecondaryAxis, labelParts, showsMarkers, COMBO_KINDS } from '../render/chart.js';
 import { formatValue, isGeneral, isPercentFormat } from '../render/number-format.js';
-import { EMU_PER_PT, kids, kid, path, desc, attr, rid, colorOf, blend } from './ooxml.js';
+import { EMU_PER_PT, kids, kid, path, desc, attr, rid, colorOf, blend, xmlText } from './ooxml.js';
 
 /**
  * PowerPoint charts (c:chartSpace parts) to and from LibreSlides chart
@@ -347,7 +347,6 @@ export async function readChart({ pkg, node, rels, box, ctx }) {
 const TYPES = { column: 'bar', bar: 'bar', line: 'line', area: 'area', pie: 'pie', doughnut: 'doughnut', scatter: 'scatter' };
 const LEGEND_POS = { right: 'r', left: 'l', top: 't', bottom: 'b' };
 const hex = (c) => (/^#[0-9a-f]{6}$/i.test(c || '') ? c.slice(1).toUpperCase() : null);
-const xmlText = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 /**
  * Data label positions each kind of plot takes (as pptxgenjs checks them).
@@ -412,8 +411,8 @@ export function addChart(pptx, slide, el, theme, geom, objectName) {
   const text = hex(ink) || '000000';
   const grid = hex(/^#[0-9a-f]{6}$/i.test(ink) ? blend(ink, backgroundBaseColor(theme.background), 0.2) : null) || 'D9D9D9';
   const size = el.style?.size || 12;
-  // Font names go into the chart's XML as they are.
-  const font = (el.style?.font || theme.fonts.body).replace(/[&<>"]/g, '');
+  // pptxgenjs writes font names into the chart's XML as they are.
+  const font = xmlText(el.style?.font || theme.fonts.body);
   const fill = hex(resolveColor(el.fill, theme, null));
   const border = el.stroke?.width && el.stroke.color !== 'none' ? hex(resolveColor(el.stroke.color, theme, null)) : null;
   const grouping = chart.grouping === 'percent' ? 'percentStacked' : chart.grouping === 'stacked' ? 'stacked' : null;

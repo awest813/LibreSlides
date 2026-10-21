@@ -1,3 +1,5 @@
+import { readAsDataUrl } from './images.js';
+
 /**
  * Video and sound files: the formats LibreSlides keeps in a deck (the ones
  * browsers play), and reading one from the device, with a still frame of a
@@ -39,13 +41,6 @@ export function mediaTypeOf(file) {
   if (Object.hasOwn(MEDIA_TYPES, type)) return type;
   return BY_EXTENSION[(/\.([^.]+)$/.exec(file.name || '')?.[1] || '').toLowerCase()] || null;
 }
-
-const readAsDataUrl = (blob) => new Promise((resolve, reject) => {
-  const r = new FileReader();
-  r.onload = () => resolve(r.result);
-  r.onerror = () => reject(r.error || new Error('Couldn’t read the file.'));
-  r.readAsDataURL(blob);
-});
 
 /**
  * A video or sound file as { kind, dataUrl, poster, width, height, duration }.

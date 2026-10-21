@@ -1,5 +1,4 @@
-import { kids, kid, desc, attr, rid, addMediaTo } from './ooxml.js';
-import { xmlText } from './pptx-comments.js';
+import { kids, kid, desc, attr, rid, addMediaTo, xmlText, emu, guid } from './ooxml.js';
 import { normalizeLevels } from '../model/diagram-outline.js';
 import { xmlDataUrl, xmlOfDataUrl, DIAGRAM_PARTS } from '../model/deck.js';
 import { diagramChildren } from '../model/diagram-layout.js';
@@ -173,12 +172,6 @@ export function exportsAsSmartArt(el, media = null) {
   const look = src.look || {};
   return look.layout === d.layout && look.colors === d.colors && look.style === d.style;
 }
-
-const emu = (pt) => Math.round(pt * 12700);
-const guid = () => {
-  const hex = globalThis.crypto?.randomUUID?.() || 'xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx'.replace(/x/g, () => Math.floor(Math.random() * 16).toString(16));
-  return `{${hex.toUpperCase()}}`;
-};
 
 /** A colour as PowerPoint's RRGGBB (theme colours resolved), or null for none. */
 function hexOf(color, theme) {

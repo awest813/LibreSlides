@@ -1,5 +1,5 @@
 import { uid, initialsOf } from '../model/deck.js';
-import { EMU_PER_PT, kids, kid, desc, attr } from './ooxml.js';
+import { EMU_PER_PT, kids, kid, desc, attr, xmlText } from './ooxml.js';
 
 /**
  * Slide comments in .pptx files.
@@ -159,12 +159,6 @@ export async function readComments(pkg, slidePath, rels, ctx) {
 }
 
 // ------------------------------------------------------------------ writing
-
-/** Text for XML: escaped, without the control characters (or halves of emoji) XML can't hold. */
-export const xmlText = (s) => String(s ?? '')
-  .replace(/\r\n?/g, '\n')
-  .replace(/[\ud800-\udbff][\udc00-\udfff]|[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff\ud800-\udfff]/g, (c) => (c.length === 2 ? c : ''))
-  .replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
 
 /**
  * A classic comment's date: local time with no zone, as PowerPoint writes it,

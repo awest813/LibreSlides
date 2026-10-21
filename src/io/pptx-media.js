@@ -19,15 +19,14 @@ import { MEDIA_TYPES, MEDIA_CONTENT_TYPES, dataType } from './media-files.js';
 const EXT_TYPE = { mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', ogv: 'video/ogg', ogg: 'audio/ogg', oga: 'audio/ogg', mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav' };
 
 /** The media file a relationship points at, as a data URL; null if it's elsewhere or can't play. */
-async function mediaData(pkg, target, kind) {
+function mediaData(pkg, target, kind) {
   if (!target || target.external) return null;
-  const f = pkg.zip.file(target.path);
   let type = EXT_TYPE[(target.path.split('.').pop() || '').toLowerCase()];
-  if (!f || !type) return null;
+  if (!type) return null;
   // An .mp4 that PowerPoint calls a sound is a sound (and an .ogg it calls a video, a video).
   if (kind === 'audio' && type === 'video/mp4') type = 'audio/mp4';
   if (kind === 'video' && type === 'audio/ogg') type = 'video/ogg';
-  return `data:${type};base64,${await f.async('base64')}`;
+  return pkg.dataUrl(target.path, type);
 }
 
 /** Whether the slide's timeline plays a shape as the slide appears, and loops it. */
@@ -118,9 +117,10 @@ export async function addMediaElement(pptx, slide, el, deck, geom, objectName) {
 
 /**
  * Finish the media pptxgenjs wrote: sounds marked as audio (it writes every
- * file as a video), rotation, shape ids that are unique on the slide,
- * PowerPoint's content types. (Their timeline, for autoplay and looping, is
- * written with the slide's animations: see pptx-timing.js.)
+ * file as a video), rotation and PowerPoint's content types. (Shape ids are
+ * made unique for the whole slide afterwards, and the timeline, for
+ * autoplay and looping, is written with the slide's animations: see
+ * pptx-export.js and pptx-timing.js.)
  */
 export async function finishMedia(zip, deck) {
   let any = false;
@@ -130,18 +130,11 @@ export async function finishMedia(zip, deck) {
     if (!file) continue;
     any = true;
     let xml = await file.async('string');
-    const ids = (xml.match(/<p:cNvPr id="\d+"/g) || []).map((m) => +m.match(/\d+/)[0]);
-    let nextId = Math.max(0, ...ids) + 1;
     let k = 0;
     // The media pictures are in the same order as the elements they came from.
     xml = xml.replace(/<p:pic>(?:(?!<\/p:pic>)[\s\S])*?<a:videoFile[\s\S]*?<\/p:pic>/g, (pic) => {
       const el = els[k++];
       if (!el) return pic;
-      let id = +/<p:cNvPr id="(\d+)"/.exec(pic)[1];
-      if (ids.filter((n) => n === id).length > 1) {
-        id = nextId++;
-        pic = pic.replace(/<p:cNvPr id="\d+"/, `<p:cNvPr id="${id}"`);
-      }
       if (el.kind === 'audio') pic = pic.replace('<a:videoFile ', '<a:audioFile ');
       if (el.rot) pic = pic.replace(/<a:xfrm(?=[\s>])/, `<a:xfrm rot="${Math.round((((el.rot % 360) + 360) % 360) * 60000)}"`);
       return pic;

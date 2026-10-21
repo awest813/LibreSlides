@@ -14,15 +14,20 @@ import { timingXml, insertTiming } from './pptx-timing.js';
 import { writeComments } from './pptx-comments.js';
 import { writeSections } from './pptx-sections.js';
 import { exportsAsSmartArt, writeDiagram } from './pptx-diagram.js';
+import { xmlText, emu } from './ooxml.js';
 import { diagramAsShapes } from '../model/diagram-layout.js';
 
 /**
  * PowerPoint export with pptxgenjs. Slides become real PowerPoint text boxes,
- * shapes, pictures and tables (editable in PowerPoint, Keynote, Google Slides
- * and LibreOffice). Transitions and skipped slides are added to the XML
- * afterwards, since pptxgenjs doesn't write them.
+ * shapes, pictures, tables, charts and media (editable in PowerPoint,
+ * Keynote, Google Slides and LibreOffice). What pptxgenjs can't write
+ * (gradients, groups, placeholders, text effects and warps, transitions,
+ * animations, comments, sections, SmartArt, fonts…) is added to its XML
+ * afterwards: shapes that need it are given names ("LibreSlides shape N") to
+ * be found by, and postProcess finishes each part.
  */
 const IN = 72; // points per inch
+const REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 
 /** "#rrggbb", "rgb(…)" → "RRGGBB" (null for transparent). */
 export function toHex(css) {
@@ -41,6 +46,9 @@ export function toHex(css) {
 
 /** A line end (true or a style name) as pptxgenjs's arrow type. */
 const arrowType = (end) => (['arrow', 'stealth', 'diamond', 'oval'].includes(end) ? end : 'triangle');
+
+/** A font name as pptxgenjs takes it: it writes font names into the XML as they are, so they're escaped here. */
+const fontFace = (name) => (name ? xmlText(name) : undefined);
 
 const DASH = { solid: 'solid', dash: 'dash', dot: 'sysDot', dashDot: 'dashDot', longDash: 'lgDash' };
 
@@ -171,6 +179,7 @@ function runStyle(node, root, base, links) {
     const deco = `${st.textDecoration || ''} ${st.textDecorationLine || ''}`;
     if (/underline/.test(deco)) s.underline = true;
     if (/line-through/.test(deco)) s.strike = true;
+    if (/\bnone\b/.test(deco) && !/underline|line-through/.test(deco)) Object.assign(s, { underline: false, strike: false });
     if (st.color && toHex(st.color)) Object.assign(s, { color: toHex(st.color), noFill: false });
     if (st.backgroundColor) s.highlight = toHex(st.backgroundColor) || s.highlight;
     if (st.fontSize && /px|pt$/.test(st.fontSize)) s.fontSize = parseFloat(st.fontSize);
@@ -185,23 +194,26 @@ function runStyle(node, root, base, links) {
 
 /**
  * What pptxgenjs can't write — capitals, fields, outlines, gradient text,
- * shadows and glows — travels in the run's language as "x-ls-" and hex-coded
- * JSON, and is written into the XML afterwards (see fixRuns).
+ * shadows and glows, and bold or italic turned off in a box that has them —
+ * travels in the run's language as "x-ls-" and hex-coded JSON, and is
+ * written into the XML afterwards (see fixRuns).
  */
 const EXTRAS_LANG = 'x-ls-';
 const hexOf = (str) => [...new TextEncoder().encode(str)].map((b) => b.toString(16).padStart(2, '0')).join('');
 const unhex = (hex) => new TextDecoder().decode(new Uint8Array(hex.match(/../g).map((h) => parseInt(h, 16))));
 
 function toRunOptions(s) {
+  // Formatting a run turns off is written as off, or it would take the box's
+  // (pptxgenjs gives every run the box's options, and only writes b and i when they're on).
   const o = {};
-  if (s.bold) o.bold = true;
-  if (s.italic) o.italic = true;
-  if (s.underline) o.underline = { style: 'sng' };
-  if (s.strike) o.strike = 'sngStrike';
+  if (s.bold != null) o.bold = !!s.bold;
+  if (s.italic != null) o.italic = !!s.italic;
+  if (s.underline != null) o.underline = { style: s.underline ? 'sng' : 'none' };
+  if (s.strike != null) o.strike = s.strike ? 'sngStrike' : 'noStrike';
   if (s.color) o.color = s.color;
   if (s.highlight) o.highlight = s.highlight;
   if (s.fontSize) o.fontSize = s.fontSize;
-  if (s.fontFace) o.fontFace = s.fontFace;
+  if (s.fontFace) o.fontFace = fontFace(s.fontFace);
   if (s.subscript) o.subscript = true;
   if (s.superscript) o.superscript = true;
   if (s.hyperlink) o.hyperlink = s.hyperlink;
@@ -209,11 +221,12 @@ function toRunOptions(s) {
   const extras = {};
   for (const key of ['caps', 'field', 'outline', 'gradient', 'shadows']) if (s[key]) extras[key] = s[key];
   if (s.noFill && !s.gradient) extras.noFill = true;
+  const off = [s.bold === false && 'b', s.italic === false && 'i'].filter(Boolean);
+  if (off.length) extras.off = off;
   if (Object.keys(extras).length) o.lang = EXTRAS_LANG + hexOf(JSON.stringify(extras));
   return o;
 }
 
-const emu = (pt) => Math.round(pt * 12700);
 const clrXml = ({ color, alpha }) => (alpha < 1 ? `<a:srgbClr val="${color}"><a:alpha val="${Math.round(alpha * 100000)}"/></a:srgbClr>` : `<a:srgbClr val="${color}"/>`);
 
 /** A run's a:rPr with its extras (see EXTRAS_LANG) written in. */
@@ -225,6 +238,7 @@ function runWithExtras(hex, attrs, body) {
     return `<a:rPr lang="en-US"${attrs}>${body}</a:rPr>`;
   }
   if (extras.caps === 'all' || extras.caps === 'small') attrs += ` cap="${extras.caps}"`;
+  for (const name of extras.off || []) if (name === 'b' || name === 'i') attrs = `${attrs.replace(new RegExp(` ${name}="[^"]*"`), '')} ${name}="0"`;
   if (extras.field) attrs += ` x-ls-fld="${extras.field}"`;
   const [, solid = '', rest] = /^(<a:solidFill>[\s\S]*?<\/a:solidFill>)?([\s\S]*)$/.exec(body);
   const o = extras.outline;
@@ -350,14 +364,7 @@ export function htmlToRuns(html, base = {}, links = null) {
 
 // ------------------------------------------------------------------ pictures
 
-const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
-  const r = new FileReader();
-  r.onload = () => resolve(r.result);
-  r.onerror = () => reject(r.error);
-  r.readAsDataURL(blob);
-});
-
-/** PowerPoint can't read SVG reliably, so vector pictures are exported as PNG. */
+/** A picture drawn into a PNG at about the size it's shown (sharper, up to 2,000 pixels across). */
 async function rasterize(dataUrl, w, h) {
   const img = new Image();
   img.src = dataUrl;
@@ -370,23 +377,18 @@ async function rasterize(dataUrl, w, h) {
   return canvas.toDataURL('image/png');
 }
 
-async function exportableImage(dataUrl, w = 400, h = 300) {
+/**
+ * A picture as PowerPoint can show it: SVG (which it can't read reliably),
+ * WebP, AVIF and BMP are drawn into PNGs, each once per export and size.
+ */
+function exportableImage(dataUrl, w = 400, h = 300, cache = null) {
   if (!dataUrl) return null;
-  if (/^data:image\/svg/i.test(dataUrl) || !/;base64,/.test(dataUrl)) {
-    try {
-      return await rasterize(dataUrl, w, h);
-    } catch {
-      return null;
-    }
-  }
-  if (/^data:image\/(webp|avif|bmp)/i.test(dataUrl)) {
-    try {
-      return await blobToDataUrl(await (await fetch(await rasterize(dataUrl, w, h))).blob());
-    } catch {
-      return null;
-    }
-  }
-  return dataUrl;
+  if (!/^data:image\/(svg|webp|avif|bmp)/i.test(dataUrl) && /;base64,/.test(dataUrl)) return dataUrl;
+  const key = `${Math.round(w)}x${Math.round(h)} ${dataUrl}`;
+  if (cache?.has(key)) return cache.get(key);
+  const png = rasterize(dataUrl, w, h).catch(() => null);
+  cache?.set(key, png);
+  return png;
 }
 
 const dataForPptx = (url) => url.replace(/^data:/, '');
@@ -432,7 +434,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
   const common = { ...g, rotate: el.rot || 0, flipH: !!el.flipH, flipV: !!el.flipV, shadow, objectName, hyperlink };
 
   if (el.type === 'image') {
-    const data = await exportableImage(deck.media?.[el.media], el.w, el.h);
+    const data = await exportableImage(deck.media?.[el.media], el.w, el.h, marks.pngs);
     if (!data) return;
     const opts = { ...common, data: dataForPptx(data), altText: el.alt || '' };
     const crop = (!el.fit || el.fit === 'fill') && el.crop;
@@ -479,7 +481,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
 
   if (el.type === 'table') {
     const t = textStyle({ ...el, type: 'text' }, theme);
-    const base = { fontFace: t.font, fontSize: t.size, color: toHex(resolveColor(t.color, theme)) || '000000' };
+    const base = { fontFace: fontFace(t.font), fontSize: t.size, color: toHex(resolveColor(t.color, theme)) || '000000' };
     const header = toHex(resolveColor(el.fill || 'theme:accent1', theme));
     const cols = el.cells[0].length;
     const dashes = []; // borders pptxgenjs can only write solid or dashed: { index (of the cell in the grid), side, dash }
@@ -529,7 +531,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
   };
   // What pptxgenjs can't write is fixed in its XML afterwards (see postProcess), found by the shape's name.
   const mark = () => (opts.objectName ||= `LibreSlides shape ${++marks.count}`);
-  const picture = el.fillImage && (await exportableImage(deck.media?.[el.fillImage.media], el.w, el.h));
+  const picture = el.fillImage && (await exportableImage(deck.media?.[el.fillImage.media], el.w, el.h, marks.pngs));
   if (picture) {
     if (opts.fill.type === 'none') opts.fill = { color: 'FFFFFF' };
     marks.pictures.set(mark(), { data: picture, crop: el.fillImage.crop, opacity });
@@ -572,7 +574,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
     return;
   }
   const base = {
-    fontFace: t.font,
+    fontFace: fontFace(t.font),
     fontSize: t.size,
     color: toHex(resolveColor(t.color, theme)) || '000000',
     bold: t.bold || undefined,
@@ -598,6 +600,11 @@ async function addElement(pptx, s, el, deck, theme, marks) {
   if (!isPlainWarp(box.warp) && hasText) marks.warps.set(mark(), box.warp);
   // Text with no fill of its own (hollow, outlined WordArt) has a transparent colour.
   const runBase = resolveColor(t.color, theme) === 'transparent' ? { noFill: true } : {};
+  // A text box's own link is added afterwards (see applyTextLinks).
+  if (hyperlink) {
+    marks.textLinks.set(mark(), hyperlink);
+    opts.hyperlink = undefined;
+  }
   s.addText(hasText ? htmlToRuns(withFields(el.text, marks.number), runBase, marks.links) : [{ text: '', options: {} }], opts);
   addExtras();
 }
@@ -685,7 +692,11 @@ export function warpXml(warp) {
   return `<a:prstTxWarp prst="${warp.preset}">${gds ? `<a:avLst>${gds}</a:avLst>` : '<a:avLst/>'}</a:prstTxWarp>`;
 }
 
-/** Turn the solid fills of the shapes named for gradients (and a gradient background) into real gradients. */
+/**
+ * What pptxgenjs can't write into a shape's own XML, for the shapes named
+ * in `marks`: text columns, gradient fills (and a gradient background),
+ * preset shapes' adjust values and text warps.
+ */
 export function applyGradients(xml, marks) {
   if (!marks) return xml;
   // Text in columns.
@@ -693,7 +704,7 @@ export function applyGradients(xml, marks) {
     const at = xml.indexOf(`name="${name}"`);
     const end = xml.indexOf('</p:sp>', at);
     if (at < 0 || end < 0) continue;
-    const block = xml.slice(at, end).replace('<a:bodyPr', `<a:bodyPr numCol="${Math.round(n)}"${gap != null ? ` spcCol="${Math.round(gap * 12700)}"` : ''}`);
+    const block = xml.slice(at, end).replace('<a:bodyPr', `<a:bodyPr numCol="${Math.round(n)}"${gap != null ? ` spcCol="${emu(gap)}"` : ''}`);
     xml = xml.slice(0, at) + block + xml.slice(end);
   }
   for (const [name, grad] of marks.gradients) xml = replaceShapeFill(xml, name, grad);
@@ -718,6 +729,29 @@ export function applyGradients(xml, marks) {
     xml = xml.slice(0, at) + block + xml.slice(end);
   }
   if (marks.background) xml = xml.replace(/<p:bg>[\s\S]*?<\/p:bg>/, `<p:bg><p:bgPr>${marks.background}<a:effectLst/></p:bgPr></p:bg>`);
+  return xml;
+}
+
+/**
+ * Text boxes' own links (a click anywhere on the box): a web address, or a
+ * slide by number. pptxgenjs gives them no relationship (r:id="rIdundefined")
+ * and puts them on every run of the text that has no link of its own.
+ */
+async function applyTextLinks(zip, slideNo, xml, links) {
+  if (!links?.size) return xml;
+  const relsPath = `ppt/slides/_rels/slide${slideNo}.xml.rels`;
+  let rels = await zip.file(relsPath).async('string');
+  let n = 0;
+  for (const [name, link] of links) {
+    const id = `rIdLsLink${++n}`;
+    const rel = link.url
+      ? `<Relationship Id="${id}" Type="${REL}/hyperlink" Target="${xmlText(link.url)}" TargetMode="External"/>`
+      : `<Relationship Id="${id}" Type="${REL}/slide" Target="slide${link.slide}.xml"/>`;
+    rels = rels.replace('</Relationships>', `${rel}</Relationships>`);
+    const click = `<a:hlinkClick r:id="${id}"${link.url ? '' : ' action="ppaction://hlinksldjump"'}/>`;
+    xml = editShape(xml, name, (sp) => sp.replace(/<p:cNvPr\b([^>]*?)(\/?)>/, (m, attrs, empty) => `<p:cNvPr${attrs}>${click}${empty ? '</p:cNvPr>' : ''}`));
+  }
+  zip.file(relsPath, rels);
   return xml;
 }
 
@@ -808,7 +842,6 @@ export function applyGroups(xml, members) {
     }
     if (blocks.length < 2) continue;
     blocks.sort((a, b) => a.start - b.start);
-    const emu = (v) => Math.round(v * 12700);
     const boxes = list.map((m) => m.box);
     const x = Math.min(...boxes.map((b) => b.x));
     const y = Math.min(...boxes.map((b) => b.y));
@@ -887,7 +920,74 @@ function timelineOf(xml, timeline) {
   return { anims, media };
 }
 
-/** Tidy the paragraphs, and add transitions and "skip slide" to the generated XML. */
+// Picture formats by their first bytes, for parts named after another format.
+const PICTURE_MAGIC = [
+  { bytes: [0x89, 0x50, 0x4e, 0x47], ext: 'png', type: 'image/png' },
+  { bytes: [0xff, 0xd8, 0xff], ext: 'jpg', type: 'image/jpeg', also: ['jpeg'] },
+  { bytes: [0x47, 0x49, 0x46, 0x38], ext: 'gif', type: 'image/gif' },
+];
+const sameBytes = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+// Characters XML 1.0 can't hold (control characters, lone surrogates), which text may carry into pptxgenjs's XML.
+const NOT_XML = /[\ud800-\udbff][\udc00-\udfff]|[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff\ud800-\udfff]/g;
+
+/**
+ * Last touches to the package: each picture stored once (pptxgenjs writes a
+ * copy per use, so a master's logo would be on every slide) under the name
+ * of its real format (it calls slide backgrounds .png whatever they are),
+ * no content types for parts that aren't there, and no characters XML can't hold.
+ */
+export async function tidyPackage(zip) {
+  const renamed = new Map(); // ppt/media/… → the name it now has
+  const kept = new Map(); // byte length → [{ name, bytes }]
+  for (const file of zip.file(/^ppt\/media\/[^/]+$/)) {
+    const bytes = await file.async('uint8array');
+    const ext = (/\.([^.]+)$/.exec(file.name)?.[1] || '').toLowerCase();
+    const real = PICTURE_MAGIC.find((m) => m.bytes.every((b, i) => bytes[i] === b));
+    let name = file.name;
+    if (real && ext !== real.ext && !real.also?.includes(ext)) {
+      name = `${file.name.replace(/\.[^.]*$/, '')}.${real.ext}`;
+      while (zip.file(name) || [...renamed.values()].includes(name)) name = name.replace(/(\.[^.]+)$/, '-1$1');
+    }
+    const same = (kept.get(bytes.length) || []).find((k) => k.name.split('.').pop() === name.split('.').pop() && sameBytes(k.bytes, bytes));
+    if (same) name = same.name;
+    else (kept.get(bytes.length) || kept.set(bytes.length, []).get(bytes.length)).push({ name, bytes });
+    if (name === file.name) continue;
+    renamed.set(file.name, name);
+    zip.remove(file.name);
+    if (!same) zip.file(name, bytes);
+  }
+  const typesPath = '[Content_Types].xml';
+  let types = await zip.file(typesPath).async('string');
+  if (renamed.size) {
+    for (const file of zip.file(/\.rels$/)) {
+      const rels = await file.async('string');
+      // Relationships point at media from parts one folder below ppt/ (slides, layouts, diagrams…).
+      const fixed = rels.replace(/Target="\.\.\/media\/([^"]+)"/g, (m, base) => {
+        const to = renamed.get(`ppt/media/${base}`);
+        return to ? `Target="../media/${to.split('/').pop()}"` : m;
+      });
+      if (fixed !== rels) zip.file(file.name, fixed);
+    }
+    for (const m of PICTURE_MAGIC) {
+      const used = [...renamed.values()].some((n) => n.endsWith(`.${m.ext}`));
+      if (used && !new RegExp(`<Default Extension="${m.ext}"`, 'i').test(types)) types = types.replace(/<Types\b[^>]*>/, (t) => `${t}<Default Extension="${m.ext}" ContentType="${m.type}"/>`);
+    }
+  }
+  // pptxgenjs lists a slide master per slide, though there's one.
+  types = types.replace(/<Override PartName="\/([^"]+)"[^>]*\/>/g, (o, part) => (zip.file(part) ? o : ''));
+  zip.file(typesPath, types);
+  for (const file of zip.file(/\.(xml|rels)$/)) {
+    const xml = await file.async('string');
+    const clean = xml.replace(NOT_XML, (c) => (c.length === 2 ? c : ''));
+    if (clean !== xml) zip.file(file.name, clean);
+  }
+}
+
+/**
+ * Finish the package pptxgenjs wrote: media and charts, then each slide's
+ * XML (paragraphs, the shapes' marks, transitions, "skip slide", groups and
+ * animations), comments, sections, fonts, and last tidyPackage.
+ */
 async function postProcess(buffer, deck, allMarks) {
   const zip = await JSZip.loadAsync(buffer);
   await finishMedia(zip, deck);
@@ -900,10 +1000,11 @@ async function postProcess(buffer, deck, allMarks) {
     xml = applyPlaceholders(xml, allMarks[i].placeholders);
     xml = applyTableDashes(xml, allMarks[i].tableDashes);
     xml = await applyPictureFills(zip, i + 1, xml, allMarks[i]);
+    xml = await applyTextLinks(zip, i + 1, xml, allMarks[i].textLinks);
     xml = await applyDiagrams(zip, i + 1, xml, allMarks[i].diagrams, deck);
     const t = slide.transition;
-    if (t && TRANSITION_XML[t.type]) {
-      const d = t.duration ?? 0.6;
+    if (t && Object.hasOwn(TRANSITION_XML, t.type)) {
+      const d = Number.isFinite(t.duration) ? t.duration : 0.6;
       const spd = d < 0.45 ? 'fast' : d < 0.9 ? 'med' : 'slow';
       const tr = `<p:transition spd="${spd}">${TRANSITION_XML[t.type]}</p:transition>`;
       xml = xml.includes('</p:clrMapOvr>') ? xml.replace('</p:clrMapOvr>', `</p:clrMapOvr>${tr}`) : xml.replace('</p:sld>', `${tr}</p:sld>`);
@@ -916,6 +1017,7 @@ async function postProcess(buffer, deck, allMarks) {
   await writeComments(zip, deck);
   await writeSections(zip, deck);
   await embedFonts(zip, deck);
+  await tidyPackage(zip);
   return zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', compression: 'DEFLATE' });
 }
 
@@ -930,8 +1032,9 @@ export async function buildPptx(deck) {
   pptx.company = 'LibreSlides';
   pptx.theme = { headFontFace: theme.fonts.title, bodyFontFace: theme.fonts.body };
 
-  // What each slide needs fixing in the XML pptxgenjs writes (see applyGradients).
+  // What each slide needs fixing in the XML pptxgenjs writes (see postProcess).
   const allMarks = [];
+  const pngs = new Map(); // pictures drawn into PNGs (see exportableImage)
   for (const slide of deck.slides) {
     const s = pptx.addSlide();
     // Links as pptxgenjs takes them: a web address, or a slide by number.
@@ -942,14 +1045,14 @@ export async function buildPptx(deck) {
       const n = { next: index + 2, prev: index, first: 1, last: deck.slides.length }[to] ?? deck.slides.findIndex((x) => x.id === to) + 1;
       return to && n >= 1 && n <= deck.slides.length ? { slide: n } : null;
     };
-    const marks = { number: allMarks.length + 1, links, count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), warps: new Map(), pictureLooks: new Map(), placeholders: new Map(), tableDashes: new Map(), diagrams: new Map(), timeline: [], groups: [], background: null };
+    const marks = { number: allMarks.length + 1, links, pngs, count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), warps: new Map(), pictureLooks: new Map(), placeholders: new Map(), tableDashes: new Map(), textLinks: new Map(), diagrams: new Map(), timeline: [], groups: [], background: null };
     // Diagrams that don't go as SmartArt go as the shapes they're drawn with.
     const elements = slide.elements.flatMap((el) => (el.type === 'diagram' && !exportsAsSmartArt(el, deck.media) ? diagramAsShapes(el) : [el]));
     marks.groupSizes = elements.reduce((m, e) => (e.groupId ? m.set(e.groupId, (m.get(e.groupId) || 0) + 1) : m), new Map());
     allMarks.push(marks);
     const bg = slide.background || theme.background;
     if (bg.type === 'image' && deck.media?.[bg.media]) {
-      const data = await exportableImage(deck.media[bg.media], w, h);
+      const data = await exportableImage(deck.media[bg.media], w, h, pngs);
       if (data) s.background = { data: dataForPptx(data) };
     } else if (bg.type === 'gradient') {
       // Written as a solid colour, then made a real gradient afterwards.
