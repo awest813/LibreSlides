@@ -8,8 +8,27 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  *
  * deck    { id, title, themeId, size, slides[], media{id: dataUrl}, createdAt, updatedAt }
  * slide   { id, layout, background|null, elements[], notes, transition{type, duration}, hidden }
- * element { id, type: text|shape|image|line|table|chart|media, x, y, w, h, rot, opacity, … }
+ * element { id, type: text|shape|image|line|table|chart|media|diagram, x, y, w, h, rot, opacity, … }
  * media   { id, type: 'media', kind: 'video'|'audio', media, poster?, x, y, w, h, rot, autoplay?, loop? }
+ *
+ * A diagram (PowerPoint's SmartArt) keeps its text as an outline and is
+ * drawn from it by diagram-layout.js, so it re-lays itself out as it's edited:
+ *   diagram { layout: one of DIAGRAM_LAYOUTS (list, vlist, process, chevron, cycle,
+ *               hierarchy, pyramid, venn, matrix, radial),
+ *             nodes: [{ id, text (plain text), level (0–8, as in PowerPoint's text pane) }],
+ *             colors: accent1…accent6|colorful, style: flat|outline|raised (DIAGRAM_COLORS, DIAGRAM_STYLES),
+ *             font?, palette? (the six accent colours of the file it came from, used for its accents),
+ *             drawn?: { w, h, elements[] } (PowerPoint's own drawing of it: shapes, lines and
+ *               pictures in the box's coordinates when it was w × h; shown, stretched to the box,
+ *               until the diagram is edited),
+ *             edited? (changed since it was opened from a file),
+ *             source?: { data, layout, style, colors, drawing? (the SmartArt parts, their XML in
+ *                 deck.media as "data:application/xml" URLs, see xmlDataUrl),
+ *               look: { layout, colors, style } (as opened),
+ *               media?: { data?|drawing?: [{ id (relationship), media }] } (pictures the parts refer to) } }
+ * A diagram from a PowerPoint file goes back as SmartArt (its parts as they were, or its
+ * data with the new outline when edited); new ones, or ones given another layout, colours
+ * or style, go as a group of plain shapes (see io/pptx-diagram.js).
  *
  * A chart keeps its data in the element, so it can be edited and exported as
  * a real PowerPoint chart:
@@ -54,7 +73,7 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  *
  * Pictures, videos and sounds live in deck.media (as data URLs) and are
  * referenced by id, so undo snapshots of the slides stay small however many
- * a deck has. A video or sound element points at its file (`media`) and at
+ * a deck has. So do the SmartArt parts diagrams from PowerPoint keep. A video or sound element points at its file (`media`) and at
  * the picture shown until it plays (`poster`, optional). It plays when the
  * slide appears if `autoplay`, otherwise when its control is clicked.
  *
@@ -357,6 +376,54 @@ export function newChart(x, y, w = 480, h = 300) {
   };
 }
 
+// Diagrams (see diagram-layout.js): the kinds LibreSlides lays out, their colours and styles.
+export const DIAGRAM_LAYOUTS = [
+  { id: 'list', name: 'Basic list' },
+  { id: 'vlist', name: 'Vertical list' },
+  { id: 'process', name: 'Process' },
+  { id: 'chevron', name: 'Chevron process' },
+  { id: 'cycle', name: 'Cycle' },
+  { id: 'hierarchy', name: 'Hierarchy' },
+  { id: 'pyramid', name: 'Pyramid' },
+  { id: 'venn', name: 'Basic Venn' },
+  { id: 'matrix', name: 'Matrix' },
+  { id: 'radial', name: 'Radial' },
+];
+
+export const DIAGRAM_COLORS = [
+  ...[1, 2, 3, 4, 5, 6].map((n) => ({ id: `accent${n}`, name: `Accent ${n}` })),
+  { id: 'colorful', name: 'Colourful' },
+];
+
+export const DIAGRAM_STYLES = [
+  { id: 'flat', name: 'Flat' },
+  { id: 'outline', name: 'Outline' },
+  { id: 'raised', name: 'Raised (shadow)' },
+];
+
+// Text to start a new diagram of each kind with: [text, level].
+const DIAGRAM_SAMPLES = {
+  list: [['Research', 0], ['Ideas', 0], ['Feedback', 0], ['Results', 0]],
+  vlist: [['Goals', 0], ['Grow the team', 1], ['Plan', 0], ['One step at a time', 1]],
+  process: [['Plan', 0], ['Build', 0], ['Launch', 0]],
+  chevron: [['Plan', 0], ['Design', 0], ['Build', 0], ['Launch', 0]],
+  cycle: [['Plan', 0], ['Do', 0], ['Check', 0], ['Act', 0]],
+  hierarchy: [['Director', 0], ['Manager', 1], ['Team', 2], ['Team', 2], ['Manager', 1], ['Team', 2]],
+  pyramid: [['Vision', 0], ['Strategy', 0], ['Tactics', 0]],
+  venn: [['People', 0], ['Process', 0], ['Technology', 0]],
+  matrix: [['Strengths', 0], ['Weaknesses', 0], ['Opportunities', 0], ['Threats', 0]],
+  radial: [['Core', 0], ['Idea', 1], ['Idea', 1], ['Idea', 1], ['Idea', 1]],
+};
+
+/** A diagram of the given kind with some sample text, ready to be edited. */
+export function newDiagram(layout, x, y, w = 560, h = 320) {
+  const kind = DIAGRAM_LAYOUTS.some((k) => k.id === layout) ? layout : 'list';
+  return {
+    id: uid(), type: 'diagram', x, y, w, h, rot: 0,
+    diagram: { layout: kind, nodes: DIAGRAM_SAMPLES[kind].map(([t, level]) => ({ id: uid(), text: t, level })), colors: 'accent1', style: 'flat' },
+  };
+}
+
 /** A line's bounding box (lines store their two end points). */
 export function lineBox(el) {
   const x = Math.min(el.x1, el.x2);
@@ -528,7 +595,34 @@ export function mediaSlots(el) {
   if (el?.media) slots.push([el, 'media']);
   if (el?.poster) slots.push([el, 'poster']);
   if (el?.fillImage?.media) slots.push([el.fillImage, 'media']);
+  // A diagram's drawing from PowerPoint, and its SmartArt parts, may have pictures in them.
+  for (const child of el?.diagram?.drawn?.elements || []) slots.push(...mediaSlots(child));
+  const source = el?.diagram?.source;
+  for (const key of DIAGRAM_PARTS) if (source?.[key]) slots.push([source, key]);
+  for (const refs of Object.values(source?.media || {})) for (const ref of refs) slots.push([ref, 'media']);
   return slots;
+}
+
+/** The SmartArt parts a diagram keeps (see diagram.source). */
+export const DIAGRAM_PARTS = ['data', 'layout', 'style', 'colors', 'drawing'];
+
+/** XML (a SmartArt part) as a data URL, to keep in deck.media. */
+export function xmlDataUrl(xml) {
+  const bytes = new TextEncoder().encode(xml);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return `data:application/xml;base64,${btoa(bin)}`;
+}
+
+/** The XML in a data URL made by xmlDataUrl, or null. */
+export function xmlOfDataUrl(url) {
+  const m = /^data:application\/xml;base64,([a-z0-9+/]*={0,2})$/i.exec(url || '');
+  if (!m) return null;
+  try {
+    return new TextDecoder().decode(Uint8Array.from(atob(m[1]), (c) => c.charCodeAt(0)));
+  } catch {
+    return null;
+  }
 }
 
 /** The deck.media ids an element refers to (a picture, a video and its poster, a fill picture). */
@@ -593,6 +687,7 @@ export function slideText(slide) {
     if (el.text) parts.push(htmlToText(el.text));
     if (el.cells) for (const row of el.cells) for (const c of row) if (c.text) parts.push(htmlToText(c.text));
     if (el.chart?.title) parts.push(el.chart.title);
+    for (const n of el.diagram?.nodes || []) parts.push(n.text);
   }
   return parts.join(' ').replace(/\s+/g, ' ').trim();
 }

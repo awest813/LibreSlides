@@ -9,6 +9,7 @@ import { renderThumb, textStyle } from '../render/render.js';
 import { seriesColor, pointColor, seriesKind, onSecondaryAxis, labelParts, scatterLines, showsMarkers, COMBO_KINDS } from '../render/chart.js';
 import { formatValue } from '../render/number-format.js';
 import { commentsPanel } from './comments.js';
+import { diagramSection } from './diagrams.js';
 import { textEffectOf } from './richtext.js';
 import { WARP_GROUPS, mainAdjust } from '../model/warps.js';
 
@@ -304,7 +305,7 @@ export class SidePanel {
     const list = h('ol', { class: 'anim-list' });
     const effectName = { anim: ANIMATIONS, emphasis: EMPHASES, exit: EXITS, motion: MOTIONS };
     animated.forEach(({ el, kind, anim }, i) => {
-      const name = (canHoldText(el) && slideText({ elements: [el] })) || ({ image: 'Picture', line: 'Line', table: 'Table', shape: 'Shape', text: 'Text box', chart: 'Chart', media: el.kind === 'audio' ? 'Sound' : 'Video' }[el.type]) || 'Object';
+      const name = (canHoldText(el) && slideText({ elements: [el] })) || ({ image: 'Picture', line: 'Line', table: 'Table', shape: 'Shape', text: 'Text box', chart: 'Chart', diagram: 'Diagram', media: el.kind === 'audio' ? 'Sound' : 'Video' }[el.type]) || 'Object';
       const effect = effectName[kind].find((x) => x.id === anim.effect)?.name;
       list.append(h('li', { class: `anim-item${app.selection.includes(el.id) ? ' is-selected' : ''}` },
         h('button', { type: 'button', class: 'anim-name', onclick: () => app.setSelection([el.id]) }, h('b', {}, name.slice(0, 40)), h('small', {}, `${effect}${anim.start && anim.start !== 'click' ? ` · ${anim.start} previous` : ''}`)),
@@ -360,7 +361,7 @@ export class SidePanel {
           h('button', { type: 'button', class: 'btn', onclick: () => app.align('middle', { toSlide: true }) }, 'Center vertically'))));
     }
 
-    if (els.every((e) => e.type !== 'line')) {
+    if (els.every((e) => e.type !== 'line' && e.type !== 'diagram')) {
       const fillable = els.some((e) => e.type === 'shape' || e.type === 'text' || e.type === 'table');
       const look = h('div', { class: 'pf-stack' });
       if (fillable) look.append(colorButton(el.type === 'table' ? 'Header colour' : 'Fill', el.fill, theme, (v) => app.setElementProp('fill', v), { allowNone: true }));
@@ -441,6 +442,8 @@ export class SidePanel {
     }
 
     if (single && el.type === 'chart' && el.chart) out.push(...chartSections(el, theme, upd));
+    // A diagram's text and layout first: they're what it's edited for.
+    if (single && el.type === 'diagram' && el.diagram) out.unshift(diagramSection(this, el));
 
     out.push(section('Arrange', checkbox('Lock position', els.every((e) => e.locked), (v) => upd((e) => { e.locked = v; }))));
     return out;

@@ -4,6 +4,7 @@ import { shapePath, customPath, textInset } from '../model/shapes.js';
 import { cellBorder, cellMargin } from '../model/tables.js';
 import { renderChart } from './chart.js';
 import { renderMedia } from './media.js';
+import { diagramChildren } from '../model/diagram-layout.js';
 import { fontStack } from '../model/fonts.js';
 import { registerDeckFonts } from './deck-fonts.js';
 import { renderWarp } from './warp.js';
@@ -279,8 +280,10 @@ export function renderElement(el, ctx) {
   if (el.type === 'line') {
     const minX = Math.min(el.x1, el.x2);
     const minY = Math.min(el.y1, el.y2);
-    Object.assign(div.style, { left: `${minX}px`, top: `${minY}px`, width: `${Math.abs(el.x2 - el.x1)}px`, height: `${Math.abs(el.y2 - el.y1)}px` });
-    const svg = svgEl('svg', { class: 'el-svg', overflow: 'visible', width: '100%', height: '100%' });
+    const [lw, lh] = [Math.abs(el.x2 - el.x1), Math.abs(el.y2 - el.y1)];
+    Object.assign(div.style, { left: `${minX}px`, top: `${minY}px`, width: `${lw}px`, height: `${lh}px` });
+    // At least 1px each way: browsers don't draw an SVG of no width or height (a level or upright line).
+    const svg = svgEl('svg', { class: 'el-svg', overflow: 'visible', width: Math.max(1, lw), height: Math.max(1, lh) });
     const [x1, y1, x2, y2] = [el.x1 - minX, el.y1 - minY, el.x2 - minX, el.y2 - minY];
     const sa = strokeAttrs({ ...el.stroke, color: el.stroke?.color === 'none' ? 'theme:text' : el.stroke?.color }, theme);
     // A wide invisible stroke makes thin lines easy to click.
@@ -363,7 +366,16 @@ export function renderElement(el, ctx) {
   if (el.type === 'table') div.append(renderTable(el, ctx));
   if (el.type === 'chart') div.append(renderChart(el, ctx));
   if (el.type === 'media') div.append(renderMedia(el, ctx));
+  if (el.type === 'diagram') div.append(renderDiagram(el, ctx));
   return div;
+}
+
+/** A diagram: the shapes it's drawn with (see model/diagram-layout.js), inside its box. */
+function renderDiagram(el, ctx) {
+  const box = document.createElement('div');
+  box.className = 'el-diagram-shapes';
+  for (const child of diagramChildren(el)) box.append(renderElement(child, ctx));
+  return box;
 }
 
 function renderTable(el, ctx) {

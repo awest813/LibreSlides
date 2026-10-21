@@ -12,13 +12,14 @@ import { readMedia } from './pptx-media.js';
 import { readEmbeddedFonts } from './pptx-fonts.js';
 import { readComments } from './pptx-comments.js';
 import { readSections } from './pptx-sections.js';
+import { readDiagram } from './pptx-diagram.js';
 import { EMU_PER_PT, kids, kid, path, desc, attr, rid, SCHEME_ALIAS, colorOf, alphaOf, blend, Package, addMediaTo } from './ooxml.js';
 
 /**
  * PowerPoint (.pptx) reader. Brings in what LibreSlides can edit: text boxes
  * and placeholders with their formatting, shapes, pictures (with their crop),
  * lines and arrows, freeforms and preset shapes, tables, charts, video and
- * sound, groups, SmartArt (as the shapes PowerPoint drew it with), links,
+ * sound, groups, SmartArt (as diagrams, drawn as PowerPoint drew them), links,
  * animations, comments, backgrounds, speaker notes, transitions and skipped
  * slides. Positions, text styles and the graphics on layouts and masters are
  * resolved onto each slide.
@@ -597,7 +598,7 @@ function tableBorders(cells, look) {
 /** A line end's type (a:headEnd / a:tailEnd) as LibreSlides': true (a triangle), a style name, or false. */
 const arrowOf = (type) => (!type || type === 'none' ? false : ['arrow', 'stealth', 'diamond', 'oval'].includes(type) ? type : true);
 
-/** Make elements read from one PowerPoint group (or SmartArt diagram) a LibreSlides group. */
+/** Make elements read from one PowerPoint group a LibreSlides group. */
 function groupElements(els) {
   if (els.length < 2) return;
   const groupId = uid();
@@ -1026,39 +1027,35 @@ async function readSlide(pkg, slidePath, ctx, deck) {
   };
 
   /**
-   * SmartArt: PowerPoint saves a drawn copy of the diagram (dsp:drawing) next to
-   * its data, made of ordinary shapes placed relative to the graphic frame.
-   * Those become editable shapes. Without one, the diagram's text comes in as a list.
+   * SmartArt: a diagram, its outline read from the diagram's data (see
+   * pptx-diagram.js). PowerPoint saves a drawn copy of it (dsp:drawing), made
+   * of ordinary shapes placed relative to the graphic frame: that's what it
+   * shows until it's edited, so it looks as it did in PowerPoint.
    */
   async function readSmartArt(node, group, part) {
     const frame = xfrmOf(node);
     if (!frame) return;
-    const dm = part.rels[rid(desc(node, 'relIds')[0], 'dm')];
-    const data = dm && (await pkg.doc(dm.path));
-    // The data names its drawing; older files only have one drawing per slide to go on.
-    const drawingId = attr(desc(data, 'dataModelExt')[0], 'relId');
-    const drawings = Object.values(part.rels).filter((r) => r.type === 'diagramDrawing');
-    const drawingRel = part.rels[drawingId] || (drawings.length === 1 ? drawings[0] : null);
-    const drawing = drawingRel && (await pkg.doc(drawingRel.path));
+    const read = await readDiagram({ pkg, node, rels: part.rels, scheme: ctx.scheme, font: ctx.fonts.minor, deck });
+    if (!read) return;
+    const { diagram, drawingPath } = read;
+    const g = group ? { sx: group.sx, sy: group.sy, ox: group.ox + frame.x * group.sx, oy: group.oy + frame.y * group.sy } : { sx: 1, sy: 1, ox: frame.x, oy: frame.y };
+    const box = { x: g.ox * k + ctx.ox, y: g.oy * k + ctx.oy, w: frame.w * g.sx * k, h: frame.h * g.sy * k };
+    const drawing = drawingPath && (await pkg.doc(drawingPath));
     const tree = drawing && desc(drawing, 'spTree')[0];
     if (tree && (kids(tree, 'sp').length || kids(tree, 'grpSp').length)) {
-      const inFrame = { sx: 1, sy: 1, ox: frame.x, oy: frame.y };
-      const g = group ? { sx: group.sx, sy: group.sy, ox: group.ox + frame.x * group.sx, oy: group.oy + frame.y * group.sy } : inFrame;
+      // The drawn shapes, in the diagram's box (its corner at 0, 0).
       const from = slide.elements.length;
-      await walk(tree, g, { rels: await pkg.rels(drawingRel.path), isSlide: true, inner: true });
-      if (!group) groupElements(slide.elements.slice(from));
-      return;
+      await walk(tree, g, { rels: await pkg.rels(drawingPath), isSlide: true, inner: true });
+      const elements = slide.elements.splice(from).map((el) => {
+        delete el.groupId;
+        if (el.type === 'line') Object.assign(el, { x1: el.x1 - box.x, y1: el.y1 - box.y, x2: el.x2 - box.x, y2: el.y2 - box.y });
+        else Object.assign(el, { x: el.x - box.x, y: el.y - box.y });
+        return el;
+      });
+      if (elements.length) diagram.drawn = { w: box.w, h: box.h, elements };
     }
-    // The text of the diagram's points, in order, as a bulleted list over the frame.
-    const items = desc(data, 'pt').filter((pt) => !attr(pt, 'type') || attr(pt, 'type') === 'node')
-      .map((pt) => desc(pt, 't').filter((t) => t.parentElement?.localName === 'r').map((t) => t.textContent).join('').trim()).filter(Boolean);
-    if (!items.length) return;
-    const b = group ? { x: group.ox + frame.x * group.sx, y: group.oy + frame.y * group.sy, w: frame.w * group.sx, h: frame.h * group.sy } : frame;
-    slide.elements.push({
-      id: uid(), type: 'text', x: b.x * k + ctx.ox, y: b.y * k + ctx.oy, w: b.w * k, h: b.h * k, rot: 0, fill: 'none', stroke: null, bullets: true,
-      text: `<ul>${items.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>`,
-      style: { size: Math.round(18 * k), font: ctx.fonts.minor, color: defaultText },
-    });
+    if (!diagram.nodes.length && !diagram.drawn) return;
+    slide.elements.push({ id: uid(), type: 'diagram', ...box, rot: 0, diagram });
   }
 
   // "Hide background graphics" on the slide hides the layout's and the master's; on the layout, the master's.

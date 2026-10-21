@@ -339,19 +339,23 @@ describe('PowerPoint pictures in shapes and SmartArt', () => {
     zip.file('ppt/diagrams/drawing1.xml', `<dsp:drawing xmlns:dsp="http://schemas.microsoft.com/office/drawing/2008/diagram" ${ns}><dsp:spTree><dsp:nvGrpSpPr><dsp:cNvPr id="0" name=""/><dsp:cNvGrpSpPr/></dsp:nvGrpSpPr><dsp:grpSpPr/>${drawing}</dsp:spTree></dsp:drawing>`);
   });
 
-  it('brings in SmartArt\'s drawn shapes, in its frame', async () => {
+  it('brings in SmartArt as a diagram drawn with PowerPoint\'s shapes, in its frame', async () => {
     const back = await withSmartArt('<dsp:sp modelId="{1}"><dsp:nvSpPr><dsp:cNvPr id="0" name=""/><dsp:cNvSpPr/></dsp:nvSpPr><dsp:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/></a:xfrm><a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="4472C4"/></a:solidFill></dsp:spPr>'
       + '<dsp:txBody><a:bodyPr/><a:p><a:r><a:rPr sz="1800"/><a:t>First</a:t></a:r></a:p></dsp:txBody><dsp:txXfrm><a:off x="914400" y="0"/><a:ext cx="1828800" cy="914400"/></dsp:txXfrm></dsp:sp>');
-    const [circle, label] = back.slides[0].elements;
-    expect(circle).toMatchObject({ type: 'shape', shape: 'ellipse', fill: '#4472c4', text: '', x: 72, y: 72, w: 72, h: 72 });
-    expect(label).toMatchObject({ type: 'text', fill: 'none', x: 144, y: 72, w: 144, h: 72 });
+    const [diagram] = back.slides[0].elements;
+    expect(diagram).toMatchObject({ type: 'diagram', x: 72, y: 72, w: 288, h: 144 });
+    // The drawn shapes are in the diagram's box.
+    const [circle, label] = diagram.diagram.drawn.elements;
+    expect(circle).toMatchObject({ type: 'shape', shape: 'ellipse', fill: '#4472c4', text: '', x: 0, y: 0, w: 72, h: 72 });
+    expect(label).toMatchObject({ type: 'text', fill: 'none', x: 72, y: 0, w: 144, h: 72 });
     expect(htmlToText(label.text)).toBe('First');
   });
 
-  it('lists SmartArt\'s text when there\'s no drawn copy', async () => {
-    const [list] = (await withSmartArt('')).slides[0].elements;
-    expect(list).toMatchObject({ type: 'text', x: 72, y: 72, w: 288, h: 144 });
-    expect(list.text).toBe('<ul><li>First</li><li>Second</li></ul>');
+  it('lays out SmartArt\'s text itself when there\'s no drawn copy', async () => {
+    const [diagram] = (await withSmartArt('')).slides[0].elements;
+    expect(diagram).toMatchObject({ type: 'diagram', x: 72, y: 72, w: 288, h: 144, diagram: { layout: 'list' } });
+    expect(diagram.diagram.nodes.map((n) => [n.text, n.level])).toEqual([['First', 0], ['Second', 0]]);
+    expect(diagram.diagram.drawn).toBeUndefined();
   });
 });
 
