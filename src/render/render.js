@@ -494,6 +494,9 @@ export function renderThumb(slide, deck, width) {
   frame.className = 'slide-thumb';
   frame.style.width = `${width}px`;
   frame.style.height = `${Math.round(h * scale)}px`;
+  // The browser lays out and paints a thumbnail only once it's on screen: a long
+  // filmstrip holds a whole slide's worth of DOM per slide.
+  frame.style.contentVisibility = 'auto';
   const s = renderSlide(slide, deck);
   s.style.transform = `scale(${scale})`;
   s.style.transformOrigin = '0 0';

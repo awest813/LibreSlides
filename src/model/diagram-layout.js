@@ -19,8 +19,19 @@ const LINE = 1.2; // line height, in ems
 const PAD = { x: 7.2, y: 3.6 }; // a text box's margins (render.js .el-textbox)
 const BULLET_INDENT = 1.25; // ems per list level (app.css)
 
+const glyphWidths = new Map();
+
 /** About how wide a character is, in ems (erring wide, as the fonts LibreSlides offers are). */
 function glyphWidth(ch) {
+  let w = glyphWidths.get(ch);
+  if (w === undefined) {
+    w = guessWidth(ch);
+    if (glyphWidths.size < 5000) glyphWidths.set(ch, w);
+  }
+  return w;
+}
+
+function guessWidth(ch) {
   if (/[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/u.test(ch) || ch.length > 1) return 1.05;
   if (/[iljtfrI.,:;'|!()[\] ]/.test(ch)) return 0.36;
   if (/[mwMW@%]/.test(ch)) return 0.95;

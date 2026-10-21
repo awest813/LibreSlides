@@ -226,11 +226,15 @@ const DATE_FORMATS = [
   { hour: 'numeric', minute: '2-digit', hour12: true }, { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true },
 ];
 
+const dateFormatters = [];
+
 /** What a field shows on slide number `n` (from 1). */
 export function fieldText(type, n, date = new Date()) {
   if (type === 'slidenum') return String(n);
   const i = Math.max(1, +type.slice(8) || 1) - 1;
-  return new Intl.DateTimeFormat(undefined, DATE_FORMATS[i]).format(date);
+  // Made once each: every slide drawn (every thumbnail) fills its fields.
+  dateFormatters[i] ||= new Intl.DateTimeFormat(undefined, DATE_FORMATS[i]);
+  return dateFormatters[i].format(date);
 }
 
 export const ANIM_KINDS = ['anim', 'emphasis', 'exit', 'motion'];
