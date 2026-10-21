@@ -272,3 +272,11 @@ kbd { font: 12px var(--font-ui); background: var(--surface-2); border: 1px solid
 .toast-error { background: #a4262c; }
 .toast-success { background: #0e700e; }
 .toast-action { border: 0; background: transparent; color: #9cc3ff; font-weight: 600; padding: 0; }
+
+/* ------------------------------------------------------------------ reduced motion */
+/* Menus, toasts and folding sections appear without sliding or fading (the slideshow has its own setting). */
+@media (prefers-reduced-motion: reduce) {
+  .popover { animation: none; }
+  .toast { transform: none; transition: none; }
+  .btn, .template-thumb, .deck-card, .film-section-chevron, .show-controls { transition: none; }
+}

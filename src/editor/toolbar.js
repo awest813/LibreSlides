@@ -1,4 +1,4 @@
-import { h, showPopover, menu, closePopover, shortcutLabel } from '../ui/dom.js';
+import { h, showPopover, menu, closePopover, shortcutLabel, rovingFocus } from '../ui/dom.js';
 import { icon } from '../ui/icons.js';
 import { openColorPicker } from '../ui/color-picker.js';
 import { FONTS, FONT_SIZES, fontStack, embedFontsSetting, setEmbedFontsSetting } from '../model/fonts.js';
@@ -171,17 +171,33 @@ export class Toolbar {
     this.menuButtons = {};
     const bar = h('div', { class: 'menubar', role: 'menubar', 'aria-label': 'Menu' });
     const names = Object.keys(menus);
+    const buttons = [];
     for (const name of names) {
       const b = h('button', { type: 'button', class: 'menubar-item', role: 'menuitem', 'aria-haspopup': 'menu', 'aria-expanded': 'false', onmousedown: keep }, name);
-      b.addEventListener('click', () => showPopover(b, menu(menus[name](), { iconFn }), { label: name }));
+      b.addEventListener('click', () => {
+        const m = menu(menus[name](), { iconFn });
+        // With a menu open, Left and Right open the menu beside it, as in desktop apps.
+        m.addEventListener('keydown', (e) => {
+          if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+          e.preventDefault();
+          const next = buttons[(buttons.indexOf(b) + (e.key === 'ArrowRight' ? 1 : buttons.length - 1)) % buttons.length];
+          next.click();
+          next.tabIndex = 0;
+          b.tabIndex = -1;
+        });
+        showPopover(b, m, { label: name });
+      });
+      // Down (or Up) opens a menu from the keyboard, as Enter and Space do.
       b.addEventListener('keydown', (e) => {
-        if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-        const next = this.menuButtons[names[(names.indexOf(name) + (e.key === 'ArrowRight' ? 1 : names.length - 1)) % names.length]];
-        next.focus();
+        if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+        e.preventDefault();
+        if (!b.classList.contains('is-open')) b.click();
       });
       this.menuButtons[name] = b;
+      buttons.push(b);
       bar.append(b);
     }
+    rovingFocus(bar, () => buttons);
     // Moving the pointer across the bar while a menu is open switches menus, as in desktop apps.
     bar.addEventListener('pointerover', (e) => {
       const b = e.target.closest('.menubar-item');
@@ -287,8 +303,9 @@ export class Toolbar {
     grid.addEventListener('keydown', (e) => {
       const at = e.target.closest?.('button');
       if (!at) return;
-      const step = { ArrowRight: [0, 1], ArrowLeft: [0, -1], ArrowDown: [1, 0], ArrowUp: [-1, 0] }[e.key];
-      if (!step) return;
+      const steps = { ArrowRight: [0, 1], ArrowLeft: [0, -1], ArrowDown: [1, 0], ArrowUp: [-1, 0] };
+      if (!Object.hasOwn(steps, e.key)) return;
+      const step = steps[e.key];
       e.preventDefault();
       const r = Math.max(0, Math.min(ROWS - 1, +at.dataset.r + step[0]));
       const c = Math.max(0, Math.min(COLS - 1, +at.dataset.c + step[1]));
@@ -438,16 +455,8 @@ export class Toolbar {
       this.undoBtn, this.redoBtn, this.zoomBtn, sep(),
       this.selectBtn, this.textBtn, this.imageBtn, this.shapeBtn, this.lineBtn, this.tableBtn, this.chartBtn, sep(),
       ...Object.values(groups));
-    // Arrow keys move between toolbar controls (one tab stop).
-    bar.addEventListener('keydown', (e) => {
-      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-      if (e.target === this.sizeInput) return;
-      const items = [...bar.querySelectorAll('button, input')].filter((b) => b.offsetParent);
-      const i = items.indexOf(e.target);
-      if (i < 0) return;
-      e.preventDefault();
-      items[(i + (e.key === 'ArrowRight' ? 1 : items.length - 1)) % items.length].focus();
-    });
+    // The buttons are one tab stop that the arrow keys move along; the font size box is a stop of its own.
+    this.syncFocus = rovingFocus(bar, () => [...bar.querySelectorAll('button')]);
     return bar;
   }
 
@@ -504,12 +513,12 @@ export class Toolbar {
     this.bulletBtn.disabled = !editing && !has(canHoldText);
     this.numberBtn.disabled = this.bulletBtn.disabled;
     this.undoBtn.disabled = !app.history.canUndo && !editing;
-    this.redoBtn.disabled = !app.history.canRedo && !editing;
+    this.redoBtn.disabled = !app.history.canRedo;
     this.zoomBtn.querySelector('.tb-text').textContent = app.canvas.zoom === 'fit' ? 'Fit' : `${Math.round(app.canvas.scale * 100)}%`;
 
     const tool = app.canvas.tool;
-    this.selectBtn.classList.toggle('is-active', !tool);
-    this.textBtn.classList.toggle('is-active', tool?.type === 'text');
+    press(this.selectBtn, !tool);
+    press(this.textBtn, tool?.type === 'text');
     this.shapeBtn.classList.toggle('is-active', tool?.type === 'shape');
     this.lineBtn.classList.toggle('is-active', tool?.type === 'line');
 
@@ -525,16 +534,23 @@ export class Toolbar {
       if (f) {
         this.fontBtn.querySelector('.tb-text').textContent = f.font;
         if (document.activeElement !== this.sizeInput) this.sizeInput.value = f.size ? String(Math.round(f.size * 10) / 10) : '';
-        this.boldBtn.classList.toggle('is-active', !!f.bold);
-        this.italicBtn.classList.toggle('is-active', !!f.italic);
-        this.underlineBtn.classList.toggle('is-active', !!f.underline);
-        this.bulletBtn.classList.toggle('is-active', !!f.bullets);
-        this.numberBtn.classList.toggle('is-active', !!f.numbers);
+        press(this.boldBtn, f.bold);
+        press(this.italicBtn, f.italic);
+        press(this.underlineBtn, f.underline);
+        press(this.bulletBtn, f.bullets);
+        press(this.numberBtn, f.numbers);
         this.colorBtn.setColor(f.colorCss || '#000');
         this.alignBtn.innerHTML = icon({ left: 'alignLeft', center: 'alignCenter', right: 'alignRight', justify: 'alignJustify' }[f.align] || 'alignLeft') + icon('chevronDown', 'icon tb-caret');
       }
     }
+    this.syncFocus(); // the toolbar's tab stop may have been hidden or disabled
   }
+}
+
+/** Show a toggle button as on or off, to the eye and to screen readers. */
+function press(button, on) {
+  button.classList.toggle('is-active', !!on);
+  button.setAttribute('aria-pressed', String(!!on));
 }
 
 /** Small outline of a shape for the shape picker. */

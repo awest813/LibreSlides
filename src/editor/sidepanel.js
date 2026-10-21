@@ -1,4 +1,4 @@
-import { h } from '../ui/dom.js';
+import { h, rovingFocus } from '../ui/dom.js';
 import { icon } from '../ui/icons.js';
 import { openColorPicker } from '../ui/color-picker.js';
 import { THEMES, resolveColor, backgroundBaseColor } from '../model/themes.js';
@@ -149,12 +149,13 @@ export class SidePanel {
     this.current = null;
     this.key = '';
     this.activeComment = null; // the comment thread highlighted here and on the slide
-    this.title = h('h2', {});
-    this.body = h('div', { class: 'panel-body' });
-    this.tabs = h('div', { class: 'panel-tabs', role: 'tablist' }, ...Object.entries(TAB_LABELS).map(([id, name]) => {
-      const t = h('button', { type: 'button', role: 'tab', class: 'panel-tab', dataset: { tab: id }, onclick: () => this.open(id) }, name);
-      return t;
-    }));
+    const ids = `panel-${Math.random().toString(36).slice(2)}`;
+    this.title = h('h2', { id: `${ids}-title` });
+    this.body = h('div', { class: 'panel-body', id: `${ids}-body`, role: 'tabpanel', 'aria-labelledby': `${ids}-title` });
+    this.tabs = h('div', { class: 'panel-tabs', role: 'tablist', 'aria-label': 'Side panel' }, ...Object.entries(TAB_LABELS).map(([id, name]) => (
+      h('button', { type: 'button', role: 'tab', class: 'panel-tab', 'aria-controls': this.body.id, dataset: { tab: id }, onclick: () => this.open(id) }, name))));
+    // One tab stop: the arrow keys move between the tabs and open them.
+    rovingFocus(this.tabs, () => [...this.tabs.children], { onMove: (t) => this.open(t.dataset.tab) });
     this.el = h('aside', { class: 'sidepanel', hidden: true, 'aria-label': 'Side panel' },
       h('header', { class: 'panel-header' }, this.title, h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close panel', html: icon('close'), onclick: () => this.close() })),
       this.tabs, this.body);
@@ -189,6 +190,7 @@ export class SidePanel {
     for (const t of this.tabs.children) {
       t.setAttribute('aria-selected', String(t.dataset.tab === this.current));
       t.classList.toggle('is-active', t.dataset.tab === this.current);
+      t.tabIndex = t.dataset.tab === this.current ? 0 : -1;
     }
     // The tabs scroll sideways when the panel is narrow: keep the open one in view.
     const tab = this.tabs.querySelector('.is-active')?.getBoundingClientRect();

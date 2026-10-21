@@ -307,6 +307,60 @@ describe('editor: keyboard', () => {
     expect(ed.slide.elements[0].style?.strike).toBeUndefined();
   });
 
+  it('moves through the menu bar with the arrow keys, and between open menus', () => {
+    const ed = openEditor(deckWith());
+    const items = [...ed.toolbar.menubar.querySelectorAll('.menubar-item')];
+    expect(items.filter((b) => b.tabIndex === 0)).toEqual([items[0]]); // one tab stop
+    items[0].focus();
+    key(items[0], { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(items[1]);
+    key(items[1], { key: 'ArrowDown' });
+    expect(items[1].getAttribute('aria-expanded')).toBe('true');
+    expect(document.activeElement.closest('.popover')).toBeTruthy();
+    key(document.activeElement, { key: 'ArrowRight' });
+    expect(items[2].getAttribute('aria-expanded')).toBe('true');
+    expect(items[1].getAttribute('aria-expanded')).toBe('false');
+    // Tab leaves the menu from its button.
+    key(document.activeElement, { key: 'Tab' });
+    expect(document.querySelector('.popover')).toBeNull();
+    expect(document.activeElement).toBe(items[2]);
+    expect(items[2].tabIndex).toBe(0);
+  });
+
+  it('makes the toolbar one tab stop that the arrow keys move along, skipping hidden controls', () => {
+    const box = newTextBox(0, 0);
+    const ed = openEditor(deckWith(box));
+    const stops = () => [...ed.toolbar.toolbar.querySelectorAll('button')].filter((b) => b.tabIndex === 0);
+    expect(stops()).toHaveLength(1);
+    const first = stops()[0];
+    first.focus();
+    key(first, { key: 'End' });
+    const last = document.activeElement;
+    expect(last.closest('[hidden]')).toBeNull();
+    expect(stops()).toEqual([last]);
+    // Selecting text shows the text controls, with Bold reported as on or off.
+    ed.setSelection([box.id]);
+    expect(ed.toolbar.boldBtn.getAttribute('aria-pressed')).toBe('false');
+    ed.toggleTextProp('bold');
+    expect(ed.toolbar.boldBtn.getAttribute('aria-pressed')).toBe('true');
+    // Hiding the focused control's group moves the tab stop to a visible one.
+    ed.setSelection([]);
+    expect(stops()).toHaveLength(1);
+    expect(stops()[0].closest('[hidden]')).toBeNull();
+  });
+
+  it('opens the side panel’s tabs with the arrow keys', () => {
+    const ed = openEditor(deckWith());
+    ed.openPanel('design');
+    const tab = ed.panel.tabs.querySelector('[aria-selected="true"]');
+    expect(tab.tabIndex).toBe(0);
+    tab.focus();
+    key(tab, { key: 'ArrowRight' });
+    expect(ed.panel.current).toBe('transition');
+    expect(document.activeElement.dataset.tab).toBe('transition');
+    expect(ed.panel.body.getAttribute('role')).toBe('tabpanel');
+  });
+
   it('starts one slideshow when F5 repeats while it loads', async () => {
     const ed = openEditor(deckWith());
     await Promise.all([ed.present(), ed.present(), ed.present({ fromStart: true })]);
