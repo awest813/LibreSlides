@@ -62,6 +62,7 @@ function runProps(rPr, ctx) {
   if (attr(rPr, 'spc') != null) p.letterSpacing = Math.round((+attr(rPr, 'spc') / 100) * ctx.k * 10) / 10 || 0;
   const link = linkOf(kid(rPr, 'hlinkClick'), ctx.rels);
   if (link) p.link = link;
+  if (kid(rPr, 'hlinkClick') && !('color' in p)) Object.assign(p, linkColor(kid(rPr, 'hlinkClick'), ctx));
   return p;
 }
 
@@ -115,6 +116,15 @@ function textEffects(rPr, ctx) {
     p.shadow = shadows.join(', ') || null;
   }
   return p;
+}
+
+/**
+ * A link's text colour, for a run without one of its own: the theme's link
+ * colour, unless the link says to keep the text's (PowerPoint 365's ahyp:hlinkClr).
+ */
+function linkColor(hlink, ctx) {
+  const keepText = desc(hlink, 'hlinkClr').some((c) => attr(c, 'val') === 'tx');
+  return !keepText && ctx.scheme?.hlink ? { color: `#${ctx.scheme.hlink.toLowerCase()}` } : {};
 }
 
 /**
