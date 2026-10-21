@@ -311,8 +311,12 @@ async function addElement(pptx, s, el, deck, theme) {
     const t = textStyle({ ...el, type: 'text' }, theme);
     const base = { fontFace: t.font, fontSize: t.size, color: toHex(resolveColor(t.color, theme)) || '000000' };
     const header = toHex(resolveColor(el.fill || 'theme:accent1', theme));
-    const rows = el.cells.map((row, r) => row.map((cell) => {
+    // Cells covered by a merged one are left out; pptxgenjs works out the rest from the spans.
+    const rows = el.cells.map((row, r) => row.filter((cell) => !cell.merged).map((cell) => {
       const options = {};
+      if (cell.rowSpan > 1) options.rowspan = cell.rowSpan;
+      if (cell.colSpan > 1) options.colspan = cell.colSpan;
+      if (cell.valign) options.valign = cell.valign;
       if (cell.fill) options.fill = { color: toHex(resolveColor(cell.fill, theme)) };
       else if (el.header && r === 0 && header) {
         options.fill = { color: header };
@@ -324,7 +328,8 @@ async function addElement(pptx, s, el, deck, theme) {
     }));
     const border = lineOpts(el.stroke, theme);
     s.addTable(rows, {
-      x: g.x, y: g.y, w: g.w, colW: (el.colWidths || []).map((f) => f * g.w), rowH: g.h / el.cells.length,
+      x: g.x, y: g.y, w: g.w, colW: (el.colWidths || []).map((f) => f * g.w),
+      rowH: el.rowHeights?.length === el.cells.length ? el.rowHeights.map((f) => f * g.h) : g.h / el.cells.length,
       ...base, valign: 'middle', margin: 4,
       border: border.type === 'none' ? { type: 'none' } : { type: 'solid', pt: border.width, color: border.color },
     });

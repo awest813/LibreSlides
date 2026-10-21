@@ -1,5 +1,6 @@
 import DOMPurify from 'dompurify';
 import { PATH_ARGS } from '../model/shapes.js';
+import { normalizeTable } from '../model/tables.js';
 
 /**
  * Text in slides is HTML. Anything that comes from outside (opened files,
@@ -50,12 +51,23 @@ export function sanitizeElement(el) {
   if (el.text) el.text = sanitizeHtml(el.text);
   if (el.type === 'table' || el.cells != null) {
     el.cells = (Array.isArray(el.cells) ? el.cells : []).filter(Array.isArray).map((row) => row.map((c) => (isObject(c) ? c : { text: '' })));
+    // A rectangular grid (merged cells keep their place in it).
+    const cols = Math.max(1, ...el.cells.map((row) => row.length));
+    for (const row of el.cells) while (row.length < cols) row.push({ text: '' });
     for (const row of el.cells) {
       for (const c of row) {
         c.text = sanitizeHtml(c.text);
         if (c.fill != null) c.fill = safeColor(c.fill);
+        if (c.valign != null && !['top', 'middle', 'bottom'].includes(c.valign)) delete c.valign;
       }
     }
+    for (const key of ['colWidths', 'rowHeights']) {
+      const list = el[key];
+      const n = key === 'colWidths' ? cols : el.cells.length;
+      if (list != null && !(Array.isArray(list) && list.length === n && list.every((v) => Number.isFinite(v) && v > 0))) delete el[key];
+    }
+    if (!el.colWidths) el.colWidths = Array.from({ length: cols }, () => 1 / cols);
+    if (el.cells.length) normalizeTable(el);
   }
   if (el.paths != null) {
     // Freeform outlines: known commands with the right number of finite coordinates, within reason.

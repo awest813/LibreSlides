@@ -367,6 +367,12 @@ export class Toolbar {
       tb('trash', 'Delete row or column', (b) => showPopover(b, menu([
         { label: 'Delete row', run: () => app.tableOp('deleteRow') },
         { label: 'Delete column', run: () => app.tableOp('deleteCol') },
+      ])), { haspopup: true }),
+      tb('merge', 'Merge cells', (b) => showPopover(b, menu([
+        { heading: 'The cell with the cursor' },
+        { label: 'Merge with the cell on the right', run: () => app.tableOp('mergeRight') },
+        { label: 'Merge with the cell below', run: () => app.tableOp('mergeDown') },
+        { label: 'Unmerge', run: () => app.tableOp('unmerge') },
       ])), { haspopup: true }));
 
     // Any selection

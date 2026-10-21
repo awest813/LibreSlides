@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import { uid, newDeck, SIZES } from '../model/deck.js';
 import { SHAPES } from '../model/shapes.js';
+import { normalizeTable } from '../model/tables.js';
 import { isDarkColor } from '../model/themes.js';
 import { readChart } from './pptx-chart.js';
 import { readMedia } from './pptx-media.js';
@@ -265,6 +266,68 @@ function cropOf(blipFill) {
   const crop = { l: side('l'), t: side('t'), r: side('r'), b: side('b') };
   if (crop.l + crop.r >= 0.99 || crop.t + crop.b >= 0.99) return null;
   return Object.values(crop).some((v) => v > 0.0005) ? crop : null;
+}
+
+// ------------------------------------------------------------------ table styles
+
+// PowerPoint's default table style ("Medium Style 2 – Accent 1"), for files that use it without including it.
+const DEFAULT_TABLE_STYLE = `<a:tblStyle xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" styleId="{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}">
+<a:wholeTbl><a:tcTxStyle><a:schemeClr val="dk1"/></a:tcTxStyle><a:tcStyle><a:tcBdr><a:insideH><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:insideH></a:tcBdr>
+<a:fill><a:solidFill><a:schemeClr val="accent1"><a:tint val="20000"/></a:schemeClr></a:solidFill></a:fill></a:tcStyle></a:wholeTbl>
+<a:band1H><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"><a:tint val="40000"/></a:schemeClr></a:solidFill></a:fill></a:tcStyle></a:band1H>
+<a:band1V><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"><a:tint val="40000"/></a:schemeClr></a:solidFill></a:fill></a:tcStyle></a:band1V>
+<a:lastCol><a:tcTxStyle b="on"><a:schemeClr val="lt1"/></a:tcTxStyle><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:fill></a:tcStyle></a:lastCol>
+<a:firstCol><a:tcTxStyle b="on"><a:schemeClr val="lt1"/></a:tcTxStyle><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:fill></a:tcStyle></a:firstCol>
+<a:lastRow><a:tcTxStyle b="on"><a:schemeClr val="lt1"/></a:tcTxStyle><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:fill></a:tcStyle></a:lastRow>
+<a:firstRow><a:tcTxStyle b="on"><a:schemeClr val="lt1"/></a:tcTxStyle><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:fill></a:tcStyle></a:firstRow>
+</a:tblStyle>`;
+
+/**
+ * How a table style colours each cell: { cell(r, c) → { fill, color, bold }, border },
+ * or null when the table has no style LibreSlides can find.
+ */
+function tableLook(tblPr, ctx, rows, cols) {
+  const id = path(tblPr, 'tableStyleId')?.textContent.trim();
+  let style = id && ctx.tableStyles?.get(id);
+  if (!style && id === '{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}') style = new DOMParser().parseFromString(DEFAULT_TABLE_STYLE, 'application/xml').documentElement;
+  if (!style) return null;
+  const on = (name) => isTrue(attr(tblPr, name));
+  const partLook = (name) => {
+    const p = kid(style, name);
+    if (!p) return null;
+    const tx = kid(p, 'tcTxStyle');
+    const fill = path(p, 'tcStyle', 'fill');
+    return {
+      fill: fill && (kid(fill, 'noFill') ? 'none' : colorOf(kid(fill, 'solidFill'), ctx.scheme)),
+      color: colorOf(tx, ctx.scheme) || colorOf(kid(tx, 'fontRef'), ctx.scheme),
+      bold: attr(tx, 'b') === 'on' ? true : attr(tx, 'b') === 'off' ? false : undefined,
+    };
+  };
+  const looks = Object.fromEntries(['wholeTbl', 'band1H', 'band2H', 'band1V', 'band2V', 'lastCol', 'firstCol', 'lastRow', 'firstRow'].map((n) => [n, partLook(n)]));
+  const ln = path(style, 'wholeTbl', 'tcStyle', 'tcBdr', 'insideH', 'ln') || path(style, 'wholeTbl', 'tcStyle', 'tcBdr', 'bottom', 'ln');
+  return {
+    border: ln ? lineOf(ln, ctx.scheme, ctx.k) || { color: 'none', width: 1, dash: 'solid' } : { color: 'none', width: 1, dash: 'solid' },
+    cell(r, c) {
+      const head = on('firstRow') ? 1 : 0;
+      const parts = ['wholeTbl'];
+      // Later parts win, in PowerPoint's order.
+      if (on('bandRow') && r >= head && !(on('lastRow') && r === rows - 1)) parts.push((r - head) % 2 ? 'band2H' : 'band1H');
+      if (on('bandCol')) parts.push((c - (on('firstCol') ? 1 : 0)) % 2 ? 'band2V' : 'band1V');
+      if (on('lastCol') && c === cols - 1) parts.push('lastCol');
+      if (on('firstCol') && c === 0) parts.push('firstCol');
+      if (on('lastRow') && r === rows - 1) parts.push('lastRow');
+      if (on('firstRow') && r === 0) parts.push('firstRow');
+      const out = {};
+      for (const p of parts) {
+        const l = looks[p];
+        if (!l) continue;
+        if (l.fill) out.fill = l.fill === 'none' ? null : l.fill;
+        if (l.color) out.color = l.color;
+        if (l.bold !== undefined) out.bold = l.bold;
+      }
+      return out;
+    },
+  };
 }
 
 /** Closest LibreSlides shape for PowerPoint presets it doesn't draw itself. */
@@ -600,26 +663,40 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         const rows = kids(tbl, 'tr');
         const sample = { ...runProps(desc(rows[0], 'rPr')[0], tctx), ...runProps(desc(rows[rows.length - 1], 'rPr')[0], tctx) };
         const tableStyle = { size: Math.round(sample.size || 18 * k), color: sample.color || defaultText, font: sample.font, bold: false };
-        const cells = rows.map((tr) => kids(tr, 'tc').map((tc) => {
+        // The table style's colours, written into the cells so the table looks the same and stays that way.
+        const look = tableLook(tblPr, ctx, rows.length, cols.length);
+        const cells = rows.map((tr, r) => kids(tr, 'tc').map((tc, c) => {
           const body = kid(tc, 'txBody');
+          const tcPr = kid(tc, 'tcPr');
+          const part = look?.cell(r, c) || {};
           // Formatting is relative to the table's, so a header's white bold text is kept.
-          const t = body ? textBody(body, { ...tctx, fontScale: 1 }, { defaults: tableStyle, base: tableStyle }) : { html: '' };
+          const defaults = { ...tableStyle, ...(part.color && { color: part.color }), ...(part.bold && { bold: true }) };
+          const t = body ? textBody(body, { ...tctx, fontScale: 1 }, { defaults, base: tableStyle }) : { html: '' };
           const cell = { text: body?.textContent.trim() ? t.html : '' };
-          const fill = colorOf(kid(kid(tc, 'tcPr'), 'solidFill'), ctx.scheme);
+          const fill = kid(tcPr, 'noFill') ? null : colorOf(kid(tcPr, 'solidFill'), ctx.scheme) || part.fill;
           if (fill) cell.fill = fill;
+          if (+attr(tc, 'gridSpan') > 1) cell.colSpan = +attr(tc, 'gridSpan');
+          if (+attr(tc, 'rowSpan') > 1) cell.rowSpan = +attr(tc, 'rowSpan');
+          if (isTrue(attr(tc, 'hMerge')) || isTrue(attr(tc, 'vMerge'))) cell.merged = true;
+          const anchor = attr(tcPr, 'anchor');
+          if (anchor === 'ctr' || anchor === 'b' || anchor === 't') cell.valign = { ctr: 'middle', b: 'bottom', t: 'top' }[anchor];
           return cell;
         }));
         if (!cells.length) continue;
         const width = Math.max(...cells.map((r) => r.length));
         for (const row of cells) while (row.length < width) row.push({ text: '' });
-        slide.elements.push({
+        const heights = rows.map((tr) => +attr(tr, 'h') || 0);
+        const allHeights = heights.reduce((s, v) => s + v, 0);
+        const table = {
           id: uid(), type: 'table', x: b.x, y: b.y, w: b.w, h: b.h, rot: 0,
-          header: attr(tblPr, 'firstRow') === '1' && !cells[0].some((c) => c.fill),
-          banded: attr(tblPr, 'bandRow') === '1' || undefined,
+          header: !look && attr(tblPr, 'firstRow') === '1' && !cells[0].some((c) => c.fill),
+          banded: (!look && attr(tblPr, 'bandRow') === '1') || undefined,
           cells, colWidths: cols.length === width ? cols.map((w) => w / total) : Array.from({ length: width }, () => 1 / width),
-          fill: `#${ctx.scheme.accent1 || '4472c4'}`, stroke: { color: '#94a3b8', width: 1, dash: 'solid' },
+          fill: `#${(ctx.scheme.accent1 || '4472c4').toLowerCase()}`, stroke: look?.border || { color: '#94a3b8', width: 1, dash: 'solid' },
           style: { size: tableStyle.size, color: tableStyle.color, font: tableStyle.font },
-        });
+        };
+        if (allHeights && heights.every((v) => v > 0)) table.rowHeights = heights.map((v) => v / allHeights);
+        slide.elements.push(normalizeTable(table));
       }
     }
   };
@@ -713,7 +790,9 @@ export async function importPptx(buffer, fallbackTitle = 'Presentation') {
   const core = await pkg.doc('docProps/core.xml');
   const titleEl = core && desc(core, 'title')[0];
   const deck = newDeck({ title: titleEl?.textContent?.trim() || fallbackTitle, size, slides: [] });
-  const ctx = { k, ox, oy, scheme, fonts, txStyles, defaultTextStyle, fontScale: 1 };
+  const stylesRel = Object.values(presRels).find((r) => r.type === 'tableStyles');
+  const tableStyles = new Map(desc(stylesRel ? await pkg.doc(stylesRel.path) : null, 'tblStyle').map((s) => [attr(s, 'styleId'), s]));
+  const ctx = { k, ox, oy, scheme, fonts, txStyles, defaultTextStyle, tableStyles, fontScale: 1 };
   await readEmbeddedFonts({ pkg, pres, presRels, deck });
 
   const ids = desc(desc(pres, 'sldIdLst')[0], 'sldId');

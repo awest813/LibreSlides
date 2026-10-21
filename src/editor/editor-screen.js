@@ -13,6 +13,7 @@ import {
   slideSize, newSlide, layoutElements, cloneSlide, cloneElement, canHoldText, boxOf, moveElement, addMedia, newImage, newTable,
   htmlToText, SIZES, uid,
 } from '../model/deck.js';
+import { anchorOf, insertRow, insertCol, deleteRow, deleteCol, mergeCells, unmergeCell } from '../model/tables.js';
 import { themeById, resolveColor } from '../model/themes.js';
 import { FONT_SIZES } from '../model/fonts.js';
 import { textStyle } from '../render/render.js';
@@ -1116,30 +1117,35 @@ export class EditorScreen {
     let r = el.cells.length - 1;
     let c = el.cells[0].length - 1;
     if (this.canvas.editing) {
-      const sel = document.getSelection();
-      const node = sel?.anchorNode?.nodeType === 3 ? sel.anchorNode.parentElement : sel?.anchorNode;
+      // Where the cursor was in the table (a menu may have taken the focus since).
+      const at = this.canvas.savedRange?.startContainer || document.getSelection()?.anchorNode;
+      const node = at?.nodeType === 3 ? at.parentElement : at;
       const td = node?.closest?.('td');
       if (td) { r = +td.dataset.r; c = +td.dataset.c; }
       this.canvas.endEdit();
     } else if (op === 'rowAbove' || op === 'colLeft') { r = 0; c = 0; }
     const rowH = el.h / el.cells.length;
     const cols = el.cells[0].length;
+    // Rows and columns are added next to the whole merged block the cursor is in.
+    const a = anchorOf(el, r, c);
     this.change(() => {
       if (op === 'rowAbove' || op === 'rowBelow') {
-        el.cells.splice(op === 'rowAbove' ? r : r + 1, 0, Array.from({ length: cols }, () => ({ text: '' })));
+        insertRow(el, op === 'rowAbove' ? a.r : a.r + (a.cell.rowSpan || 1));
         el.h += rowH;
       } else if (op === 'colLeft' || op === 'colRight') {
-        const at = op === 'colLeft' ? c : c + 1;
-        for (const row of el.cells) row.splice(at, 0, { text: '' });
-        el.colWidths = Array.from({ length: cols + 1 }, () => 1 / (cols + 1));
+        insertCol(el, op === 'colLeft' ? a.c : a.c + (a.cell.colSpan || 1));
+        if (!el.colWidths || el.colWidths.length !== cols + 1) el.colWidths = Array.from({ length: cols + 1 }, () => 1 / (cols + 1));
       } else if (op === 'deleteRow') {
         if (el.cells.length === 1) return;
-        el.cells.splice(r, 1);
+        deleteRow(el, r);
         el.h -= rowH;
       } else if (op === 'deleteCol') {
         if (cols === 1) return;
-        for (const row of el.cells) row.splice(c, 1);
-        el.colWidths = Array.from({ length: cols - 1 }, () => 1 / (cols - 1));
+        deleteCol(el, c);
+      } else if (op === 'mergeRight' || op === 'mergeDown') {
+        mergeCells(el, r, c, op === 'mergeRight' ? 'right' : 'down');
+      } else if (op === 'unmerge') {
+        unmergeCell(el, r, c);
       }
     });
   }

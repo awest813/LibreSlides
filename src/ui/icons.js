@@ -9,6 +9,7 @@ import {
   AlignEndVertical, AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalDistributeCenter,
   AlignVerticalDistributeCenter, RotateCw, RotateCcw, FlipHorizontal2, FlipVertical2, StickyNote, Timer, Pause, Grid3x3, Magnet,
   PanelRight, ArrowUp, ArrowDown, ListCollapse, LayoutTemplate, Type, SquareDashed, MonitorPlay, Save,
+  TableCellsMerge,
 } from 'lucide';
 
 const ICONS = {
@@ -21,7 +22,7 @@ const ICONS = {
   trash: Trash2, plus: Plus, close: X, chevronDown: ChevronDown, chevronUp: ChevronUp, chevronLeft: ChevronLeft,
   chevronRight: ChevronRight, check: Check, keyboard: Keyboard, info: Info, fullscreen: Maximize, exitFullscreen: Minimize,
   square: Square, home: House, more: Ellipsis, rename: Pencil, clock: Clock, rows: Rows3, columns: Columns3,
-  rowAbove: BetweenHorizontalStart, rowBelow: BetweenHorizontalEnd, colLeft: BetweenVerticalStart, colRight: BetweenVerticalEnd,
+  merge: TableCellsMerge, rowAbove: BetweenHorizontalStart, rowBelow: BetweenHorizontalEnd, colLeft: BetweenVerticalStart, colRight: BetweenVerticalEnd,
   select: MousePointer2, shapes: Shapes, line: Slash, arrow: MoveUpRight, fill: PaintBucket, borderColor: PenLine,
   arrange: Layers, animate: Sparkles, format: SlidersHorizontal, theme: Palette, present: Presentation, play: Play,
   eye: Eye, eyeOff: EyeOff, toFront: BringToFront, toBack: SendToBack,

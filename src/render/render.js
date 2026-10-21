@@ -227,8 +227,13 @@ function renderTable(el, ctx) {
   const headerFill = resolveColor(el.fill || 'theme:accent1', theme);
   el.cells.forEach((row, r) => {
     const tr = document.createElement('tr');
+    if (el.rowHeights?.[r]) tr.style.height = `${el.rowHeights[r] * 100}%`;
     row.forEach((cell, c) => {
+      if (cell.merged) return; // covered by a merged cell
       const td = document.createElement('td');
+      if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan;
+      if (cell.colSpan > 1) td.colSpan = cell.colSpan;
+      if (cell.valign) td.style.verticalAlign = cell.valign === 'bottom' ? 'bottom' : cell.valign === 'top' ? 'top' : 'middle';
       td.style.border = border;
       td.dataset.r = r;
       td.dataset.c = c;
