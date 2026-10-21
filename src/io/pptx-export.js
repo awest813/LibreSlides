@@ -81,9 +81,15 @@ function runStyle(node, root, base) {
     if (st.backgroundColor) s.highlight = toHex(st.backgroundColor) || s.highlight;
     if (st.fontSize && /px|pt$/.test(st.fontSize)) s.fontSize = parseFloat(st.fontSize);
     if (st.fontFamily) s.fontFace = st.fontFamily.split(',')[0].replace(/["']/g, '').trim();
+    if (st.letterSpacing && parseFloat(st.letterSpacing)) s.charSpacing = parseFloat(st.letterSpacing);
+    if (st.textTransform === 'uppercase') s.caps = 'all';
+    if (/small-caps/.test(st.fontVariant || '')) s.caps = 'small';
   }
   return s;
 }
+
+// pptxgenjs can't write capitals: runs carry these languages, swapped for cap="…" afterwards (see fixRuns).
+const CAPS_LANG = { all: 'x-ls-caps-all', small: 'x-ls-caps-small' };
 
 function toRunOptions(s) {
   const o = {};
@@ -98,7 +104,26 @@ function toRunOptions(s) {
   if (s.subscript) o.subscript = true;
   if (s.superscript) o.superscript = true;
   if (s.hyperlink) o.hyperlink = s.hyperlink;
+  if (s.charSpacing) o.charSpacing = s.charSpacing;
+  if (s.caps) o.lang = CAPS_LANG[s.caps];
   return o;
+}
+
+// CSS numbering styles as PowerPoint's.
+const NUMBER_STYLES = { 'lower-alpha': 'alphaLcPeriod', 'upper-alpha': 'alphaUcPeriod', 'lower-roman': 'romanLcPeriod', 'upper-roman': 'romanUcPeriod' };
+
+/** A list's bullet for pptxgenjs: numbered (with its style and first number), or a bullet character of its own. */
+function listBullet(list) {
+  const type = list.style?.listStyleType || '';
+  if (list.tagName === 'OL') {
+    const b = { type: 'number' };
+    if (NUMBER_STYLES[type]) b.style = NUMBER_STYLES[type];
+    if (+list.getAttribute('start') > 1) b.numberStartAt = +list.getAttribute('start');
+    return b;
+  }
+  // A string bullet ('– '): its first character.
+  const ch = /^["'](.)/u.exec(type)?.[1];
+  return ch && ch.codePointAt(0) <= 0xffff ? { characterCode: ch.codePointAt(0).toString(16).padStart(4, '0').toUpperCase() } : true;
 }
 
 /** Paragraphs of an HTML fragment as pptxgenjs text runs. */
@@ -147,9 +172,10 @@ export function htmlToRuns(html, base = {}) {
     return ['left', 'center', 'right', 'justify'].includes(a) ? a : null;
   };
   const visitList = (list, level) => {
+    const bullet = listBullet(list);
     for (const li of list.children) {
       if (li.tagName !== 'LI') continue;
-      collect(li, { bullet: list.tagName === 'OL' ? { type: 'number' } : true, indentLevel: level, align: blockAlign(li) });
+      collect(li, { bullet, indentLevel: level, align: blockAlign(li) });
       for (const sub of li.children) if (sub.tagName === 'UL' || sub.tagName === 'OL') visitList(sub, level + 1);
     }
   };
@@ -388,6 +414,12 @@ async function addElement(pptx, s, el, deck, theme, marks) {
     fit: 'none',
     isTextBox: el.type === 'text',
   });
+  // Text box layout (see render.js textLayout).
+  const box = el.style || {};
+  if (box.inset) opts.margin = [box.inset.l, box.inset.r, box.inset.b, box.inset.t];
+  if (box.wrap === false) opts.wrap = false;
+  if (box.vertical) opts.vert = box.vertical;
+  if (box.columns > 1) marks.columns.set(mark(), { n: box.columns, gap: box.columnGap });
   s.addText(htmlToRuns(el.text, {}), opts);
   addExtras();
 }
@@ -424,6 +456,8 @@ const TRANSITION_XML = {
  * otherwise). Keep the first <a:pPr> of each paragraph and drop the rest.
  */
 export function fixParagraphs(slideXml) {
+  // Capitals (see CAPS_LANG).
+  slideXml = slideXml.replace(/lang="x-ls-caps-(all|small)"(?: altLang="en-US")?/g, 'lang="en-US" cap="$1"');
   return slideXml.replace(/<a:p>([\s\S]*?)<\/a:p>/g, (para, inner) => {
     let first = true;
     const body = inner.replace(/<a:pPr\b[^>]*\/>|<a:pPr\b[^>]*>[\s\S]*?<\/a:pPr>/g, (pPr, at) => {
@@ -471,6 +505,14 @@ function replaceShapeFill(xml, name, fillXml) {
 /** Turn the solid fills of the shapes named for gradients (and a gradient background) into real gradients. */
 export function applyGradients(xml, marks) {
   if (!marks) return xml;
+  // Text in columns.
+  for (const [name, { n, gap }] of marks.columns || []) {
+    const at = xml.indexOf(`name="${name}"`);
+    const end = xml.indexOf('</p:sp>', at);
+    if (at < 0 || end < 0) continue;
+    const block = xml.slice(at, end).replace('<a:bodyPr', `<a:bodyPr numCol="${Math.round(n)}"${gap != null ? ` spcCol="${Math.round(gap * 12700)}"` : ''}`);
+    xml = xml.slice(0, at) + block + xml.slice(end);
+  }
   for (const [name, grad] of marks.gradients) xml = replaceShapeFill(xml, name, grad);
   // Preset shapes' adjust values.
   for (const [name, adj] of marks.presets || []) {
@@ -619,7 +661,7 @@ export async function buildPptx(deck) {
   const allMarks = [];
   for (const slide of deck.slides) {
     const s = pptx.addSlide();
-    const marks = { count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), timeline: [], groups: [], background: null };
+    const marks = { count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), timeline: [], groups: [], background: null };
     marks.groupSizes = slide.elements.reduce((m, e) => (e.groupId ? m.set(e.groupId, (m.get(e.groupId) || 0) + 1) : m), new Map());
     allMarks.push(marks);
     const bg = slide.background || theme.background;

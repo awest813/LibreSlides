@@ -11,7 +11,7 @@ import { FONT_FACES } from '../model/fonts.js';
  */
 const TEXT_CONFIG = {
   ALLOWED_TAGS: ['p', 'div', 'br', 'span', 'b', 'strong', 'i', 'em', 'u', 's', 'strike', 'sub', 'sup', 'ul', 'ol', 'li', 'a', 'font'],
-  ALLOWED_ATTR: ['style', 'href', 'color', 'face', 'size'],
+  ALLOWED_ATTR: ['style', 'href', 'color', 'face', 'size', 'start'],
   ALLOW_DATA_ATTR: false,
 };
 
@@ -139,6 +139,16 @@ export function sanitizeElement(el) {
   if (el.style && typeof el.style === 'object') {
     if (el.style.color != null) el.style.color = safeColor(el.style.color);
     if (typeof el.style.font === 'string') el.style.font = el.style.font.replace(/[^\p{L}\p{N}\s-]/gu, '').slice(0, 64);
+    // Text box layout (see render.js textLayout): only what draws safely.
+    const s = el.style;
+    if (s.inset != null) {
+      if (isObject(s.inset)) s.inset = Object.fromEntries(['l', 't', 'r', 'b'].map((k) => [k, Number.isFinite(s.inset[k]) ? Math.max(0, Math.min(500, s.inset[k])) : 0]));
+      else delete s.inset;
+    }
+    if (s.vertical != null && !['vert', 'vert270', 'eaVert'].includes(s.vertical)) delete s.vertical;
+    if (s.wrap != null && s.wrap !== false) delete s.wrap;
+    if (s.columns != null) s.columns = Math.max(1, Math.min(16, Math.round(+s.columns) || 1));
+    if (s.columnGap != null && !Number.isFinite(s.columnGap)) delete s.columnGap;
   }
   return el;
 }

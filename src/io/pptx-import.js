@@ -47,6 +47,11 @@ function runProps(rPr, ctx) {
     else if (face === '+mn-lt') p.font = ctx.fonts.minor;
     else if (face && !face.startsWith('+')) p.font = face;
   }
+  // Raised or lowered (superscript, subscript), capitals and letter spacing.
+  const baseline = +attr(rPr, 'baseline') || 0;
+  if (baseline) p.baseline = baseline > 0 ? 'sup' : 'sub';
+  if (attr(rPr, 'cap') === 'all' || attr(rPr, 'cap') === 'small') p.caps = attr(rPr, 'cap');
+  if (attr(rPr, 'spc') != null) p.letterSpacing = Math.round((+attr(rPr, 'spc') / 100) * ctx.k * 10) / 10 || 0;
   const link = rid(kid(rPr, 'hlinkClick'), 'id');
   const target = link && ctx.rels?.[link];
   if (target?.external && /^(https?:|mailto:)/i.test(target.path)) p.link = target.path;
@@ -63,8 +68,13 @@ function paraProps(pPr, ctx) {
   const align = ALIGN[attr(pPr, 'algn')];
   if (align) p.align = align;
   if (kid(pPr, 'buNone')) p.bullet = 'none';
-  else if (kid(pPr, 'buAutoNum')) p.bullet = 'ol';
-  else if (kid(pPr, 'buChar') || kid(pPr, 'buBlip')) p.bullet = 'ul';
+  else if (kid(pPr, 'buAutoNum')) {
+    p.bullet = 'ol';
+    p.numbering = { type: attr(kid(pPr, 'buAutoNum'), 'type'), start: +attr(kid(pPr, 'buAutoNum'), 'startAt') || 1 };
+  } else if (kid(pPr, 'buChar') || kid(pPr, 'buBlip')) {
+    p.bullet = 'ul';
+    p.bulletChar = attr(kid(pPr, 'buChar'), 'char') || undefined;
+  }
   const ln = path(pPr, 'lnSpc', 'spcPct');
   if (ln) p.lineHeight = (+attr(ln, 'val') / 100000) * 1.2; // "single" spacing is about 1.2 lines
   for (const side of ['spcAft', 'spcBef']) {
@@ -118,9 +128,9 @@ function textBody(txBody, ctx, { chain = [], defaults = {}, base: fixedBase = nu
   const first = paras.flatMap((p) => p.runs).find((r) => !r.br);
   const base = fixedBase || (first ? { ...first.props } : { ...defaults, ...(paras[0]?.props.run || {}) });
   const out = [];
-  const listStack = []; // open list tags
+  const listStack = []; // open lists: { tag, attrs }
   const closeLists = (depth) => {
-    while (listStack.length > depth) out.push(`</li></${listStack.pop()}>`);
+    while (listStack.length > depth) out.push(`</li></${listStack.pop().tag}>`);
   };
   for (const { lvl, props, runs } of paras) {
     const bullet = runs.some((r) => !r.br) && (props.bullet === 'ul' || props.bullet === 'ol') ? props.bullet : null;
@@ -128,12 +138,18 @@ function textBody(txBody, ctx, { chain = [], defaults = {}, base: fixedBase = nu
     const style = props.align && !uniform ? ` style="text-align: ${props.align}"` : '';
     if (bullet) {
       const depth = lvl + 1;
+      const attrs = listStyle(props);
       if (listStack.length > depth) closeLists(depth);
+      // A list of another kind (numbered after bulleted, another bullet) at this level starts afresh.
+      const same = listStack[depth - 1];
+      if (same && (same.tag !== bullet || same.attrs !== attrs)) closeLists(depth - 1);
       if (listStack.length === depth) out.push(`</li><li${style}>${inner}`);
       else {
         while (listStack.length < depth) {
-          out.push(`<${bullet}><li${listStack.length === depth - 1 ? style : ''}>`);
-          listStack.push(bullet);
+          // The innermost list takes the paragraph's bullet or numbering style.
+          const innermost = listStack.length === depth - 1;
+          out.push(`<${bullet}${innermost ? attrs : ''}><li${innermost ? style : ''}>`);
+          listStack.push({ tag: bullet, attrs: innermost ? attrs : '' });
         }
         out.push(inner);
       }
@@ -154,6 +170,45 @@ function textBody(txBody, ctx, { chain = [], defaults = {}, base: fixedBase = nu
   };
 }
 
+// PowerPoint's numbering styles as CSS list styles (the punctuation around the number isn't kept).
+const numberingCss = (type = '') => (/^alphaLc/.test(type) ? 'lower-alpha' : /^alphaUc/.test(type) ? 'upper-alpha'
+  : /^romanLc/.test(type) ? 'lower-roman' : /^romanUc/.test(type) ? 'upper-roman' : null);
+
+/** A list's own bullet character, numbering style and first number, as attributes. */
+function listStyle(props) {
+  if (props.bullet === 'ol') {
+    const css = numberingCss(props.numbering?.type);
+    const start = props.numbering?.start > 1 ? ` start="${props.numbering.start}"` : '';
+    return `${css ? ` style="list-style-type: ${css}"` : ''}${start}`;
+  }
+  // Round bullets are the default; others (dashes, arrows, ticks…) are shown as they are.
+  const ch = props.bulletChar;
+  if (!ch || ch === '•' || /['"\\<>&;]/.test(ch)) return '';
+  return ` style="list-style-type: '${ch} '"`;
+}
+
+// PowerPoint's default text box margins, in EMU (0.1 in at the sides, 0.05 in at the top and bottom).
+const DEFAULT_INSETS = { l: 91440, t: 45720, r: 91440, b: 45720 };
+
+/** A text box's margins, wrapping, vertical text and columns (see render.js textLayout) from its a:bodyPr attributes. */
+function textLayoutOf(bodyAttr, k) {
+  const out = {};
+  const ins = { l: bodyAttr('lIns'), t: bodyAttr('tIns'), r: bodyAttr('rIns'), b: bodyAttr('bIns') };
+  if (Object.entries(ins).some(([side, v]) => v != null && +v !== DEFAULT_INSETS[side])) {
+    out.inset = Object.fromEntries(Object.entries(ins).map(([side, v]) => [side, Math.round(((v != null ? +v : DEFAULT_INSETS[side]) / 12700) * k * 10) / 10]));
+  }
+  if (bodyAttr('wrap') === 'none') out.wrap = false;
+  const vert = bodyAttr('vert');
+  if (vert === 'vert' || vert === 'vert270' || vert === 'eaVert') out.vertical = vert;
+  else if (vert === 'wordArtVert' || vert === 'mongolianVert') out.vertical = 'eaVert';
+  const cols = +bodyAttr('numCol') || 1;
+  if (cols > 1) {
+    out.columns = Math.min(16, cols);
+    if (bodyAttr('spcCol') != null) out.columnGap = Math.round((+bodyAttr('spcCol') / 12700) * k * 10) / 10;
+  }
+  return out;
+}
+
 /** A font name made safe to put in a style attribute. */
 const cssFont = (name) => String(name).replace(/["'\\;<>{}()]/g, '').trim();
 
@@ -170,8 +225,12 @@ function spanFor(text, props, base) {
   if (!!props.underline !== !!base.underline || !!props.strike !== !!base.strike) {
     css.push(`text-decoration: ${[props.underline && 'underline', props.strike && 'line-through'].filter(Boolean).join(' ') || 'none'}`);
   }
+  // Kept on every run: the box's own style has nothing for these.
+  if (props.caps) css.push(props.caps === 'small' ? 'font-variant: small-caps' : 'text-transform: uppercase');
+  if (props.letterSpacing) css.push(`letter-spacing: ${props.letterSpacing}px`);
   let html = esc(text);
   if (css.length) html = `<span style="${css.join('; ')}">${html}</span>`;
+  if (props.baseline) html = `<${props.baseline}>${html}</${props.baseline}>`;
   return props.link ? `<a href="${esc(props.link)}">${html}</a>` : html;
 }
 
@@ -619,7 +678,11 @@ async function readSlide(pkg, slidePath, ctx, deck) {
           font: isTitle ? ctx.fonts.major : ctx.fonts.minor,
           color: fill && fill !== 'none' && prst !== 'rect' ? '#ffffff' : defaultText,
         };
-        const anchor = attr(bodyPr, 'anchor') || (inherited && attr(path(inherited.sp, 'txBody', 'bodyPr'), 'anchor')) || (masterMatch && attr(path(masterMatch.sp, 'txBody', 'bodyPr'), 'anchor')) || (isTitle ? 'ctr' : 't');
+        // Text box settings: the shape's own, else its layout's or master's placeholder's.
+        const bodyPrs = [bodyPr, inherited && path(inherited.sp, 'txBody', 'bodyPr'), masterMatch && path(masterMatch.sp, 'txBody', 'bodyPr')];
+        const bodyAttr = (name) => bodyPrs.map((b) => attr(b, name)).find((v) => v != null) ?? null;
+        const anchor = bodyAttr('anchor') || (isTitle ? 'ctr' : 't');
+        const layout = textLayoutOf(bodyAttr, k);
         const text = txBody ? textBody(txBody, lctx, { chain, defaults }) : { html: '', base: defaults };
         const hasText = !!txBody?.textContent.trim();
         const { base } = text;
@@ -638,6 +701,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
             valign: anchor === 'ctr' ? 'middle' : anchor === 'b' ? 'bottom' : 'top',
             lineHeight: Math.round((text.lineHeight || 1.2) * 100) / 100,
             spacing: Math.round((text.spacing || 0) * 100) / 100,
+            ...layout,
           },
         };
         if (fadeAll) el.opacity = Math.round(alpha * 100) / 100;

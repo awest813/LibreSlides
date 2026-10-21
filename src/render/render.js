@@ -89,6 +89,24 @@ export function applyTextStyle(box, el, theme) {
   return t;
 }
 
+/**
+ * Text box options from PowerPoint: margins (`inset` { l, t, r, b } in
+ * points), no wrapping, vertical text ('vert' turned a quarter clockwise,
+ * 'vert270' anticlockwise, 'eaVert' East Asian, upright) and columns.
+ */
+function textLayout(box, body, s) {
+  if (s.inset) box.style.padding = `${s.inset.t}px ${s.inset.r}px ${s.inset.b}px ${s.inset.l}px`;
+  if (s.wrap === false) box.style.whiteSpace = 'pre';
+  if (s.vertical) {
+    box.style.writingMode = 'vertical-rl';
+    box.style.textOrientation = s.vertical === 'eaVert' ? 'upright' : 'sideways';
+    if (s.vertical === 'vert270') box.style.transform = 'rotate(180deg)';
+  }
+  if (s.columns > 1) {
+    Object.assign(body.style, { columnCount: String(s.columns), columnGap: `${s.columnGap ?? 7.2}px`, columnFill: 'auto', height: '100%' });
+  }
+}
+
 function textBox(el, ctx) {
   const box = document.createElement('div');
   box.className = 'el-textbox';
@@ -105,6 +123,7 @@ function textBox(el, ctx) {
   body.className = 'el-text-body';
   if (el.bullets) body.classList.add('has-bullets');
   body.innerHTML = el.text || '';
+  textLayout(box, body, el.style || {});
   if (ctx.editing && el.ph && !el.text) body.dataset.placeholder = PLACEHOLDER_HINTS[el.ph] || '';
   box.append(body);
   return box;

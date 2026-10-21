@@ -67,6 +67,37 @@ describe('PowerPoint text', () => {
     expect(back.slides[0].elements[0].text).toBe('<p>one<br>two<br><br>four</p><p>next</p>');
   });
 
+  it('keeps raised and lowered text, capitals, letter spacing and list styles', async () => {
+    const box = newTextBox(10, 10, 400, 200);
+    box.text = '<p>H<sub>2</sub>O and x<sup>2</sup> <span style="text-transform: uppercase">caps</span> <span style="letter-spacing: 3px">wide</span></p>'
+      + "<ul style=\"list-style-type: '– '\"><li>dash</li></ul><ol style=\"list-style-type: lower-roman\" start=\"3\"><li>three</li></ol>";
+    const xml = await slideXml(deckWith(box));
+    expect(xml).toMatch(/baseline="-\d+"[^>]*>[\s\S]*?<a:t>2<\/a:t>/);
+    expect(xml).toMatch(/baseline="\d+"/);
+    expect(xml).toContain('cap="all"');
+    expect(xml).not.toContain('x-ls-caps');
+    expect(xml).toContain('spc="300"');
+    expect(xml).toContain('<a:buChar char="&#x2013;"/>');
+    expect(xml).toContain('<a:buAutoNum type="romanLcPeriod" startAt="3"/>');
+    const back = (await roundTrip(deckWith(box))).slides[0].elements[0].text;
+    expect(back).toContain('H<sub>2</sub>O');
+    expect(back).toContain('<sup>2</sup>');
+    expect(back).toContain('<span style="text-transform: uppercase">caps</span>');
+    expect(back).toContain('<span style="letter-spacing: 3px">wide</span>');
+    expect(back).toContain("<ul style=\"list-style-type: '– '\"><li>dash</li></ul>");
+    expect(back).toContain('<ol style="list-style-type: lower-roman" start="3"><li>three</li></ol>');
+  });
+
+  it('keeps text box margins, no wrapping, vertical text and columns', async () => {
+    const box = newTextBox(10, 10, 400, 200);
+    box.text = '<p>Side</p>';
+    Object.assign(box.style, { inset: { l: 0, t: 10, r: 20, b: 5 }, wrap: false, vertical: 'vert270', columns: 2, columnGap: 18 });
+    const xml = await slideXml(deckWith(box));
+    expect(xml).toMatch(/<a:bodyPr numCol="2" spcCol="228600"[^>]*wrap="none"[^>]*lIns="0" tIns="127000" rIns="254000" bIns="63500"[^>]*vert="vert270"/);
+    const back = (await roundTrip(deckWith(box))).slides[0].elements[0].style;
+    expect(back).toMatchObject({ inset: { l: 0, t: 10, r: 20, b: 5 }, wrap: false, vertical: 'vert270', columns: 2, columnGap: 18 });
+  });
+
   it('keeps plain text plain next to bold text', async () => {
     const box = newTextBox(10, 10);
     box.text = '<p><b>12k</b></p><p>Weekly active users</p>';
