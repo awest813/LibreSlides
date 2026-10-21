@@ -757,7 +757,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
    */
   const pictureElement = async (node, box, rels, data = null) => {
     const blipFill = kid(node, 'blipFill');
-    const blip = desc(blipFill, 'blip')[0];
+    const blip = desc(blipFill || node, 'blip')[0];
     if (!data) {
       const target = rels[rid(blip, 'embed')];
       data = target && !target.external ? await pkg.dataUrl(target.path) : null;
