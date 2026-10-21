@@ -63,21 +63,26 @@ export function openDialog({ title, body, buttons = [{ label: 'Close', value: nu
       restoreLostFocus();
       resolve(result);
     });
+    // A click on the backdrop dismisses, but not the end of a drag (selecting text) that began inside.
+    let downOnBackdrop = false;
+    dlg.addEventListener('pointerdown', (e) => { downOnBackdrop = e.target === dlg; });
     dlg.addEventListener('click', (e) => {
-      if (e.target === dlg) {
+      if (e.target === dlg && downOnBackdrop) {
         result = null;
         dlg.close();
       }
     });
     document.body.append(dlg);
     dlg.showModal();
-    const focusEl = initialFocus ? form.querySelector(initialFocus) : form.querySelector('input, select, textarea');
+    // The first field; without one, the main button (so Enter does it) unless it's a dangerous one, then the first.
+    const focusEl = initialFocus ? form.querySelector(initialFocus)
+      : form.querySelector('input, select, textarea') || footer.querySelector('.btn-primary:not(.btn-danger)') || footer.querySelector('.btn');
     focusEl?.focus();
     if (focusEl?.select) focusEl.select();
   });
 }
 
-export async function confirmDialog(message, { title = 'LibreWord', confirmLabel = 'OK', danger = false } = {}) {
+export async function confirmDialog(message, { title = 'LibreSlides', confirmLabel = 'OK', danger = false } = {}) {
   const value = await openDialog({
     title,
     body: h('p', {}, message),

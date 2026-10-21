@@ -32,6 +32,13 @@ export const getDb = () => {
       if (!db.objectStoreNames.contains('content')) db.createObjectStore('content', { keyPath: 'id' });
     },
     blocked: () => globalThis.dispatchEvent?.(new CustomEvent('libreslides:db-blocked')),
+    // A newer version in another tab wants to upgrade: get out of its way. This tab
+    // can't reopen the database at its old version, so it needs a reload.
+    blocking: (_oldVersion, _newVersion, event) => {
+      event.target.close();
+      dbPromise = null;
+      globalThis.dispatchEvent?.(new CustomEvent('libreslides:db-outdated'));
+    },
     terminated: () => { dbPromise = null; },
   }).catch((err) => {
     dbPromise = null;

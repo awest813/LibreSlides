@@ -70,14 +70,15 @@ export function firstPos(deck, from = 0) {
 
 // ------------------------------------------------------------------ animation effects
 
-function entrance(effect, W, H) {
+/** Keyframes for an entrance; `to` is the element's own opacity, where fades end. */
+function entrance(effect, W, H, to = 1) {
   switch (effect) {
-    case 'fade': case 'appear': return [{ opacity: 0 }, { opacity: 1 }];
-    case 'fly-up': return [{ transform: `translateY(${H}px)`, opacity: 0 }, { transform: 'translateY(0)', opacity: 1 }];
-    case 'fly-left': return [{ transform: `translateX(${-W}px)`, opacity: 0 }, { transform: 'translateX(0)', opacity: 1 }];
-    case 'fly-right': return [{ transform: `translateX(${W}px)`, opacity: 0 }, { transform: 'translateX(0)', opacity: 1 }];
-    case 'zoom': return [{ transform: 'scale(0.3)', opacity: 0 }, { transform: 'scale(1)', opacity: 1 }];
-    case 'spin': return [{ transform: 'rotate(-200deg) scale(0.3)', opacity: 0 }, { transform: 'rotate(0) scale(1)', opacity: 1 }];
+    case 'fade': case 'appear': return [{ opacity: 0 }, { opacity: to }];
+    case 'fly-up': return [{ transform: `translateY(${H}px)`, opacity: 0 }, { transform: 'translateY(0)', opacity: to }];
+    case 'fly-left': return [{ transform: `translateX(${-W}px)`, opacity: 0 }, { transform: 'translateX(0)', opacity: to }];
+    case 'fly-right': return [{ transform: `translateX(${W}px)`, opacity: 0 }, { transform: 'translateX(0)', opacity: to }];
+    case 'zoom': return [{ transform: 'scale(0.3)', opacity: 0 }, { transform: 'scale(1)', opacity: to }];
+    case 'spin': return [{ transform: 'rotate(-200deg) scale(0.3)', opacity: 0 }, { transform: 'rotate(0) scale(1)', opacity: to }];
     case 'wipe': return [{ clipPath: 'inset(0 100% 0 0)' }, { clipPath: 'inset(0 0 0 0)' }];
     default: return null;
   }
@@ -169,7 +170,8 @@ export class Player {
     this.layer = layer;
     this.frame.append(layer);
     const tr = this.deck.slides[pos.i].transition;
-    const forward = prev && pos.i > prev.i && pos.step === 0;
+    // Arriving at a slide (at its first position: past an automatic first build) plays its transition.
+    const forward = prev && pos.i > prev.i && pos.step === minStep(this.deck.slides[pos.i]);
     const frames = anim && forward && tr ? transitionFrames(tr.type) : null;
     for (const a of this.running || []) a.finish();
     this.running = [];
@@ -190,7 +192,7 @@ export class Player {
       const el = node.querySelector(`:scope > .el[data-id="${CSS.escape(it.id)}"]`);
       if (!el) continue;
       el.style.visibility = '';
-      const frames = entrance(it.effect, w, H);
+      const frames = entrance(it.effect, w, H, +(el.style.opacity || 1));
       if (!frames) continue;
       const duration = it.effect === 'appear' ? 1 : it.duration * 1000;
       el.animate(frames, { duration, delay: (it.delay + extraDelay) * 1000, easing: 'cubic-bezier(.2,.7,.3,1)', fill: 'backwards', composite: frames[0].transform ? 'add' : 'replace' });
@@ -233,7 +235,7 @@ export function startSlideshow(deck, { start = 0, onExit = null, remote = null }
   let ended = false;
   let typed = '';
   let idle;
-  const ctl = { active: true, exit: () => exit(), get pos() { return pos; }, go: (p, how) => show(p, how) };
+  const ctl = { active: true, exit: () => exit(), get pos() { return pos; }, go: (p, how) => show(p, how), blank: (color) => blank(color) };
 
   function show(p, how = 'auto') {
     if (!p) return;
@@ -272,11 +274,14 @@ export function startSlideshow(deck, { start = 0, onExit = null, remote = null }
   }
   function toggleNotes() { notesBox.hidden = !notesBox.hidden; }
   function toggleFs() {
-    if (document.fullscreenElement) document.exitFullscreen?.();
-    else enterFullscreen(root);
+    if (document.fullscreenElement) {
+      delete root.dataset.wasFs; // leaving full screen on purpose doesn't end the show
+      document.exitFullscreen?.();
+    } else enterFullscreen(root);
   }
+  /** Black or white out the screen (again to bring the slide back; no colour: back). */
   function blank(color) {
-    if (!curtain.hidden && curtain.dataset.color === color) curtain.hidden = true;
+    if (!color || (!curtain.hidden && curtain.dataset.color === color)) curtain.hidden = true;
     else {
       curtain.hidden = false;
       curtain.dataset.color = color;
@@ -299,10 +304,9 @@ export function startSlideshow(deck, { start = 0, onExit = null, remote = null }
   function onKey(e) {
     if (!ctl.active) return;
     const k = e.key;
-    if (e.ctrlKey || e.metaKey || e.altKey) {
-      if (k === 'Enter' || (k.toLowerCase() === 'f' && e.ctrlKey)) return;
-    }
     e.stopPropagation();
+    // Ctrl, ⌘ and Alt combinations are the browser's (new window, print, back…), not slideshow keys.
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (ended && k !== 'Escape' && !['ArrowLeft', 'ArrowUp', 'PageUp', 'Backspace', 'p', 'P'].includes(k)) {
       e.preventDefault();
       exit();
@@ -340,18 +344,29 @@ export function startSlideshow(deck, { start = 0, onExit = null, remote = null }
   };
   document.addEventListener('keydown', onKey, true);
   document.addEventListener('fullscreenchange', onFsChange);
+  // With the screen blacked or whited out, the first click only brings the slide back.
+  const uncover = () => {
+    if (curtain.hidden) return false;
+    curtain.hidden = true;
+    return true;
+  };
   root.addEventListener('click', (e) => {
     if (e.target.closest('a[href], .show-controls, .show-notes')) return;
-    next();
+    if (!uncover()) next();
   });
   root.addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    prev();
+    if (!uncover()) prev();
   });
-  root.addEventListener('pointermove', () => {
+  const showPointer = () => {
     root.classList.add('show-pointer');
     clearTimeout(idle);
     idle = setTimeout(() => root.classList.remove('show-pointer'), 2200);
+  };
+  root.addEventListener('pointermove', showPointer);
+  // Touch screens have no pointer moving about: a tap shows the controls too.
+  root.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'touch') showPointer();
   });
 
   show(pos, nav ? 'cut' : 'auto');
@@ -376,8 +391,12 @@ const fmtTime = (ms) => {
 export function startPresenterView(deck, { start = 0, onExit = null } = {}) {
   const channel = new BroadcastChannel(`libreslides-show-${deck.id}`);
   const url = `${location.pathname}${location.search}#/show/${encodeURIComponent(deck.id)}`;
-  const audience = window.open(url, `libreslides-audience-${deck.id}`, 'popup,width=1024,height=600');
-  if (!audience) toast('Your browser blocked the audience window. Allow pop-ups for this site to present on a second screen.', { type: 'error', timeout: 8000 });
+  let audience = null;
+  const openAudience = () => {
+    audience = window.open(url, `libreslides-audience-${deck.id}`, 'popup,width=1024,height=600');
+    if (!audience) toast('Your browser blocked the audience window. Allow pop-ups for this site to present on a second screen.', { type: 'error', timeout: 8000 });
+  };
+  openAudience();
 
   let pos = firstPos(deck, start);
   const currentHost = h('div', { class: 'pv-current' });
@@ -416,7 +435,8 @@ export function startPresenterView(deck, { start = 0, onExit = null } = {}) {
         h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Restart timer', html: icon('rotateCcw'), onclick: () => { started = Date.now(); if (pausedAt) pausedAt = Date.now(); } }),
         clockEl),
       h('div', { class: 'pv-actions' },
-        h('button', { type: 'button', class: 'btn', onclick: () => audience?.focus?.() }, 'Show audience window'),
+        // Opens it again if it was closed; it asks where the show is when it starts.
+        h('button', { type: 'button', class: 'btn', onclick: () => (!audience || audience.closed ? openAudience() : audience.focus?.()) }, 'Show audience window'),
         h('button', { type: 'button', class: 'btn btn-primary', onclick: () => exit() }, 'End show'))),
     h('div', { class: 'pv-main' },
       h('div', { class: 'pv-left' }, currentHost,
@@ -457,6 +477,7 @@ export function startPresenterView(deck, { start = 0, onExit = null } = {}) {
     channel.postMessage({ type: 'end' });
     channel.close();
     document.removeEventListener('keydown', onKey, true);
+    window.removeEventListener('pagehide', onPageHide);
     player.destroy();
     root.remove();
     onExit?.(pos.i);
@@ -473,17 +494,40 @@ export function startPresenterView(deck, { start = 0, onExit = null } = {}) {
     }
   };
 
+  // The same keys as the slideshow (see startSlideshow).
+  let typed = '';
   function onKey(e) {
     if (!ctl.active || e.target.closest?.('input, textarea')) return;
     const k = e.key;
-    const run = (fn) => { e.preventDefault(); e.stopPropagation(); fn(); };
-    if (['ArrowRight', 'ArrowDown', ' ', 'PageDown', 'n', 'N'].includes(k) || (k === 'Enter' && !e.target.closest('button'))) run(() => go(nextPos(deck, pos)));
+    e.stopPropagation();
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    // Space and Enter press the focused button (pause, notes size…) instead.
+    if ((k === ' ' || k === 'Enter') && e.target.closest?.('button')) return;
+    if (/^\d$/.test(k)) {
+      typed += k;
+      return;
+    }
+    const run = (fn) => { e.preventDefault(); fn(); };
+    if (k === 'Enter' && typed) {
+      const vis = visibleIndices(deck);
+      const i = vis[Math.min(vis.length, Math.max(1, +typed)) - 1];
+      typed = '';
+      if (i != null) run(() => go({ i, step: minStep(deck.slides[i]) }, 'cut'));
+      return;
+    }
+    typed = '';
+    if (['ArrowRight', 'ArrowDown', ' ', 'Enter', 'PageDown', 'n', 'N'].includes(k)) run(() => go(nextPos(deck, pos)));
     else if (['ArrowLeft', 'ArrowUp', 'Backspace', 'PageUp', 'p', 'P'].includes(k)) run(() => go(prevPos(deck, pos), 'cut'));
     else if (k === 'Home') run(() => go(firstPos(deck, 0), 'cut'));
+    else if (k === 'End') run(() => { const vis = visibleIndices(deck); go({ i: vis[vis.length - 1], step: buildSteps(deck.slides[vis[vis.length - 1]]).length }, 'cut'); });
+    else if (k === 'b' || k === 'B' || k === '.') run(() => channel.postMessage({ type: 'blank', color: '#000' }));
+    else if (k === 'w' || k === 'W' || k === ',') run(() => channel.postMessage({ type: 'blank', color: '#fff' }));
     else if (k === 'Escape') run(exit);
-    else e.stopPropagation();
   }
+  // Closing or reloading this window ends the show in the audience window too.
+  const onPageHide = () => channel.postMessage({ type: 'end' });
   document.addEventListener('keydown', onKey, true);
+  window.addEventListener('pagehide', onPageHide);
   const ctl = { active: true, exit };
   go(pos, 'cut');
   return ctl;
@@ -511,7 +555,10 @@ export function runAudience(deck) {
   setTimeout(() => hint.remove(), 8000);
   channel.onmessage = (e) => {
     const m = e.data;
-    if (m.type === 'state') ctl.go(m.pos, m.how);
+    if (m.type === 'state') {
+      ctl.blank(null); // moving on brings the slide back, as in the slideshow
+      ctl.go(m.pos, m.how);
+    } else if (m.type === 'blank') ctl.blank(m.color);
     else if (m.type === 'end') {
       channel.close();
       window.close();
@@ -541,7 +588,7 @@ export function previewOnStage(app, { animations = false, transition = false } =
     // From the previous slide (or black) into this one.
     if (i > 0) player.go({ i: i - 1, step: buildSteps(app.deck.slides[i - 1]).length }, 'cut');
     else player.pos = { i: -1, step: 0 };
-    requestAnimationFrame(() => player.go({ i, step: 0 }));
+    requestAnimationFrame(() => player.go({ i, step: minStep(app.slide) }));
     timer = setTimeout(done, ((app.slide.transition?.duration ?? 0.6) + 0.6) * 1000);
   } else if (animations) {
     const steps = buildSteps(app.slide);

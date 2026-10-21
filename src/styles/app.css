@@ -112,7 +112,8 @@
 .workspace { flex: 1; display: flex; min-height: 0; position: relative; }
 .center-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .canvas-wrap { flex: 1; overflow: auto; display: flex; background: var(--canvas); padding: 40px; outline: none; min-height: 0; }
-.stage { position: relative; margin: auto; flex: none; box-shadow: var(--page-shadow); background: #fff; }
+/* touch-action: dragging on the slide moves things instead of scrolling (which would cancel the drag). */
+.stage { position: relative; margin: auto; flex: none; box-shadow: var(--page-shadow); background: #fff; touch-action: none; }
 .stage > .slide { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
 .canvas-wrap .slide > .el:not(.el-line):hover { outline: 1px solid rgba(26, 115, 232, 0.55); outline-offset: -1px; }
 .canvas-wrap.is-drawing, .canvas-wrap.is-drawing .el, .canvas-wrap.is-drawing .stage { cursor: crosshair !important; }
@@ -225,7 +226,7 @@
 
 /* ------------------------------------------------------------------ start screen */
 .template-row { grid-template-columns: repeat(auto-fill, 220px); gap: 18px; }
-.template-thumb { aspect-ratio: auto; width: 220px; height: 124px; border-radius: 6px; }
+.template-thumb { width: 220px; height: 124px; border-radius: 6px; }
 .template-thumb.is-import { display: grid; place-items: center; }
 .import-inner { display: grid; justify-items: center; gap: 8px; }
 .deck-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, 222px); gap: 18px; }
@@ -332,7 +333,6 @@ dialog.dialog { z-index: 3600; }
   .pv-main { grid-template-columns: 1fr; }
   .template-row, .deck-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
   .template-thumb { width: 100%; height: auto; aspect-ratio: 16 / 9; }
-  .template-thumb .slide-thumb { transform: scale(0.68); transform-origin: 0 0; }
   .start-inner { padding: 16px; }
   .doc-toolbar { flex: 1; justify-content: flex-end; }
   .doc-filter { width: auto; flex: 1; }

@@ -295,7 +295,7 @@ export class Toolbar {
 
     // Fill and border
     this.fillBtn = swatchButton('fill', 'Fill colour', (b) => openColorPicker(b, { theme: app.theme, allowNone: true, current: app.firstSelected()?.fill, onPick: (v) => app.setElementProp('fill', v) }));
-    this.borderBtn = swatchButton('borderColor', 'Border colour', (b) => openColorPicker(b, { theme: app.theme, allowNone: true, current: app.firstSelected()?.stroke?.color, onPick: (v) => app.setStroke({ color: v, width: Math.max(1, app.firstSelected()?.stroke?.width || 0) || 2 }) }));
+    this.borderBtn = swatchButton('borderColor', 'Border colour', (b) => openColorPicker(b, { theme: app.theme, allowNone: true, current: app.firstSelected()?.stroke?.color, onPick: (v) => app.setStroke({ color: v, width: Math.max(1, app.firstSelected()?.stroke?.width || 2) }) }));
     group('fill', this.fillBtn, this.borderBtn,
       tb('borderWeight', 'Border weight', (b) => this.weightMenu(b), { haspopup: true }),
       tb('borderDash', 'Border dash', (b) => this.dashMenu(b), { haspopup: true }));
