@@ -118,18 +118,24 @@ export function htmlToRuns(html, base = {}) {
   const paragraphs = [];
   const collect = (block, para) => {
     const runs = [];
+    // A <br> is a line break inside the paragraph: the next run starts on a new line (<a:br/>).
+    let breaks = 0;
     const walk = (n) => {
       for (const c of n.childNodes) {
         if (c.nodeType === 3) {
           const text = c.textContent.replace(/​/g, '');
-          if (text) runs.push({ text, options: toRunOptions(runStyle(c, root, base)) });
-        } else if (c.nodeName === 'BR') runs.push({ br: true, options: toRunOptions(runStyle(c, root, base)) });
+          if (!text) continue;
+          const options = toRunOptions(runStyle(c, root, base));
+          if (breaks && !runs.length) runs.push({ text: '', options }); // the paragraph starts with an empty line
+          for (; breaks > 1; breaks--) runs.push({ text: '', options: { ...options, softBreakBefore: true } });
+          runs.push({ text, options: breaks ? { ...options, softBreakBefore: true } : options });
+          breaks = 0;
+        } else if (c.nodeName === 'BR') breaks++;
         else if (c.nodeName !== 'UL' && c.nodeName !== 'OL') walk(c);
       }
     };
     walk(block);
-    // A trailing <br> only keeps an empty line open in the editor.
-    while (runs.length && runs[runs.length - 1].br) runs.pop();
+    // Trailing <br>s only keep an empty line open in the editor.
     paragraphs.push({ runs, para });
   };
   const blockAlign = (el) => {
@@ -157,8 +163,8 @@ export function htmlToRuns(html, base = {}) {
     if (!runs.length) runs.push({ text: '', options: toRunOptions(base) });
     runs.forEach((r, k) => {
       const options = { ...r.options, ...pOpts };
-      if (r.br || (k === runs.length - 1 && i < paragraphs.length - 1)) options.breakLine = true;
-      out.push({ text: r.br ? '' : r.text, options });
+      if (k === runs.length - 1 && i < paragraphs.length - 1) options.breakLine = true;
+      out.push({ text: r.text, options });
     });
   });
   return out;
@@ -268,7 +274,13 @@ async function addElement(pptx, s, el, deck, theme) {
     const data = await exportableImage(deck.media?.[el.media], el.w, el.h);
     if (!data) return;
     const opts = { ...common, data: dataForPptx(data), altText: el.alt || '' };
-    if (el.fit === 'cover' || el.fit === 'contain') {
+    const crop = (!el.fit || el.fit === 'fill') && el.crop;
+    if (crop) {
+      // The whole picture at the size it's shown, and the part of it the box shows.
+      opts.w = g.w / Math.max(0.01, 1 - crop.l - crop.r);
+      opts.h = g.h / Math.max(0.01, 1 - crop.t - crop.b);
+      opts.sizing = { type: 'crop', x: crop.l * opts.w, y: crop.t * opts.h, w: g.w, h: g.h };
+    } else if (el.fit === 'cover' || el.fit === 'contain') {
       // pptxgenjs crops or fits using the picture's own proportions.
       const natural = el.natural?.w ? el.natural : await imageSize(data);
       if (natural?.w && natural?.h) {
@@ -351,14 +363,31 @@ const TRANSITION_XML = {
   flip: '<p:fade thruBlk="1"/>',
 };
 
-/** Add transitions and "skip slide" to the generated XML. */
+/**
+ * pptxgenjs writes paragraph properties before every run of a paragraph, but
+ * PowerPoint only allows them first (it offers to "repair" the file
+ * otherwise). Keep the first <a:pPr> of each paragraph and drop the rest.
+ */
+export function fixParagraphs(slideXml) {
+  return slideXml.replace(/<a:p>([\s\S]*?)<\/a:p>/g, (para, inner) => {
+    let first = true;
+    const body = inner.replace(/<a:pPr\b[^>]*\/>|<a:pPr\b[^>]*>[\s\S]*?<\/a:pPr>/g, (pPr, at) => {
+      const keep = first && at === 0;
+      first = false;
+      return keep ? pPr : '';
+    });
+    return `<a:p>${body}</a:p>`;
+  });
+}
+
+/** Tidy the paragraphs, and add transitions and "skip slide" to the generated XML. */
 async function postProcess(buffer, deck) {
   const zip = await JSZip.loadAsync(buffer);
   for (const [i, slide] of deck.slides.entries()) {
     const path = `ppt/slides/slide${i + 1}.xml`;
     const file = zip.file(path);
     if (!file) continue;
-    let xml = await file.async('string');
+    let xml = fixParagraphs(await file.async('string'));
     const t = slide.transition;
     if (t && TRANSITION_XML[t.type]) {
       const d = t.duration ?? 0.6;

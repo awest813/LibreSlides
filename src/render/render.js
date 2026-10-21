@@ -176,14 +176,25 @@ export function renderElement(el, ctx) {
     img.draggable = false;
     img.className = 'el-img';
     img.style.objectFit = el.fit === 'cover' ? 'cover' : el.fit === 'contain' ? 'contain' : 'fill';
-    if (el.radius) img.style.borderRadius = `${el.radius}px`;
-    if (el.stroke && el.stroke.color !== 'none' && el.stroke.width) {
-      img.style.outline = `${el.stroke.width}px ${el.stroke.dash && el.stroke.dash !== 'solid' ? 'dashed' : 'solid'} ${resolveColor(el.stroke.color, theme)}`;
-      img.style.outlineOffset = `-${el.stroke.width / 2}px`;
+    // A cropped picture (from PowerPoint): the whole picture, positioned so the box shows the kept part.
+    let frame = img;
+    const crop = (!el.fit || el.fit === 'fill') && el.crop;
+    if (crop) {
+      const fw = Math.max(0.01, 1 - crop.l - crop.r);
+      const fh = Math.max(0.01, 1 - crop.t - crop.b);
+      Object.assign(img.style, { position: 'absolute', maxWidth: 'none', width: `${100 / fw}%`, height: `${100 / fh}%`, left: `${(-100 * crop.l) / fw}%`, top: `${(-100 * crop.t) / fh}%` });
+      frame = document.createElement('div');
+      Object.assign(frame.style, { position: 'relative', width: '100%', height: '100%', overflow: 'hidden' });
+      frame.append(img);
     }
-    if (shadow) img.style.filter = shadow;
-    if (el.flipH || el.flipV) img.style.transform = `scale(${el.flipH ? -1 : 1}, ${el.flipV ? -1 : 1})`;
-    div.append(img);
+    if (el.radius) frame.style.borderRadius = `${el.radius}px`;
+    if (el.stroke && el.stroke.color !== 'none' && el.stroke.width) {
+      frame.style.outline = `${el.stroke.width}px ${el.stroke.dash && el.stroke.dash !== 'solid' ? 'dashed' : 'solid'} ${resolveColor(el.stroke.color, theme)}`;
+      frame.style.outlineOffset = `-${el.stroke.width / 2}px`;
+    }
+    if (shadow) frame.style.filter = shadow;
+    if (el.flipH || el.flipV) frame.style.transform = `scale(${el.flipH ? -1 : 1}, ${el.flipV ? -1 : 1})`;
+    div.append(frame);
   }
 
   if (el.type === 'table') div.append(renderTable(el, ctx));

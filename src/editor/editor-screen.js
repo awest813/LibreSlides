@@ -1051,6 +1051,7 @@ export class EditorScreen {
       this.change(() => {
         el.media = media;
         el.natural = { w: img.width, h: img.height };
+        delete el.crop; // the old picture's crop means nothing for the new one
         // Keep the width and position, take the new picture's proportions.
         const cy = el.y + el.h / 2;
         el.h = Math.round((el.w * img.height) / img.width);

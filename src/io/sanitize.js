@@ -10,13 +10,15 @@ const TEXT_CONFIG = {
   ALLOW_DATA_ATTR: false,
 };
 
+const UNSAFE_STYLE = /url\s*\(|expression\s*\(|image(-set)?\s*\(|cross-fade\s*\(|element\s*\(|@import|\\/i;
+
 let hooked = false;
 function ensureHooks() {
   if (hooked) return;
   hooked = true;
   DOMPurify.addHook('afterSanitizeAttributes', (node) => {
-    // No external resources from inline styles; links open in a new tab.
-    if (node.hasAttribute?.('style') && /url\s*\(|expression\s*\(/i.test(node.getAttribute('style'))) node.removeAttribute('style');
+    // No external resources from inline styles (CSS escapes could spell url( in disguise); links open in a new tab.
+    if (node.hasAttribute?.('style') && UNSAFE_STYLE.test(node.getAttribute('style'))) node.removeAttribute('style');
     if (node.tagName === 'A') {
       node.setAttribute('target', '_blank');
       node.setAttribute('rel', 'noopener noreferrer');
@@ -39,10 +41,14 @@ const isImageData = (v) => typeof v === 'string' && /^data:image\/(png|jpe?g|gif
 const COLOR = /^(#[0-9a-f]{3,8}|rgba?\([\d\s.,%/]+\)|theme:[a-z0-9]+|none|transparent)$/i;
 export const safeColor = (v) => (typeof v === 'string' && COLOR.test(v.trim()) ? v.trim() : null);
 
+const isObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+const fraction = (v) => (Number.isFinite(v) ? Math.max(0, Math.min(0.99, v)) : 0);
+
 /** Clean an element from an untrusted source (file, backup, clipboard) in place. */
 export function sanitizeElement(el) {
   if (el.text) el.text = sanitizeHtml(el.text);
-  if (Array.isArray(el.cells)) {
+  if (el.type === 'table' || el.cells != null) {
+    el.cells = (Array.isArray(el.cells) ? el.cells : []).filter(Array.isArray).map((row) => row.map((c) => (isObject(c) ? c : { text: '' })));
     for (const row of el.cells) {
       for (const c of row) {
         c.text = sanitizeHtml(c.text);
@@ -50,23 +56,34 @@ export function sanitizeElement(el) {
       }
     }
   }
+  if (el.crop != null) {
+    if (isObject(el.crop)) for (const side of ['l', 't', 'r', 'b']) el.crop[side] = fraction(el.crop[side]);
+    else delete el.crop;
+  }
   if (el.fill != null) el.fill = safeColor(el.fill) || 'none';
   if (el.stroke && typeof el.stroke === 'object') el.stroke.color = safeColor(el.stroke.color) || 'none';
   if (el.style && typeof el.style === 'object') {
     if (el.style.color != null) el.style.color = safeColor(el.style.color);
-    if (typeof el.style.font === 'string') el.style.font = el.style.font.replace(/[^\w\s-]/g, '').slice(0, 64);
+    if (typeof el.style.font === 'string') el.style.font = el.style.font.replace(/[^\p{L}\p{N}\s-]/gu, '').slice(0, 64);
   }
   return el;
 }
 
 /** Clean every piece of HTML, colour and picture in a deck from an untrusted source. */
 export function sanitizeDeck(deck) {
-  for (const s of deck.slides || []) {
+  // Damaged or hand-edited files: keep only what has the expected shape.
+  if (typeof deck.title !== 'string') deck.title = '';
+  if (!isObject(deck.media)) deck.media = {};
+  deck.slides = (Array.isArray(deck.slides) ? deck.slides : []).filter(isObject);
+  for (const s of deck.slides) {
     s.notes = typeof s.notes === 'string' ? s.notes : '';
-    for (const el of s.elements || []) sanitizeElement(el);
+    s.elements = (Array.isArray(s.elements) ? s.elements : []).filter(isObject);
+    for (const el of s.elements) sanitizeElement(el);
     const bg = s.background;
-    if (bg && typeof bg === 'object') {
+    if (isObject(bg)) {
       for (const key of ['color', 'from', 'to']) if (bg[key] != null) bg[key] = safeColor(bg[key]) || '#ffffff';
+      // The angle goes into CSS as is, so it must be a number.
+      if (bg.angle != null) bg.angle = Number.isFinite(+bg.angle) ? +bg.angle : 180;
     } else s.background = null;
   }
   for (const [id, data] of Object.entries(deck.media || {})) {
