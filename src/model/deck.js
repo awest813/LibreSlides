@@ -8,8 +8,12 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  *
  * deck    { id, title, themeId, size, slides[], media{id: dataUrl}, createdAt, updatedAt,
  *           rev (bumped by each save, see storage/db.js), fonts? (embedded, see fonts.js FONT_FACES),
- *           file? { handle, name, format, lastModified, dirty } (the file on this device it saves to) }
- * slide   { id, layout (LAYOUTS), background|null ({ type: solid|gradient|image, … }, see
+ *           file? { handle, name, format, lastModified, dirty } (the file on this device it saves to),
+ *           importedTheme? { name, colors { dk1, lt1, dk2, lt2, accent1…6, hlink, folHlink: "#rrggbb" },
+ *             dark (bg1 is dk1), fonts { major, minor } } (the theme of the PowerPoint file it came from,
+ *             written back into the files it saves until another theme is chosen; elements carry
+ *             their colours resolved, so it's not drawn from) }
+ * slide   { id, layout (LAYOUTS), background|null ({ type: solid|gradient|image|pattern, … }, see
  *           themes.js backgroundCss; null: the theme's), elements[] (back to front), notes (plain
  *           text), transition { type (TRANSITIONS), duration (s) }, hidden, hideDecor?, section?, comments? }
  * element { id, type: text|shape|image|line|table|chart|media|diagram, x, y, w, h (the unrotated
@@ -82,8 +86,11 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  * Shapes and text boxes may also have a gradient fill, `gradient: { type:
  * 'linear'|'radial', angle (CSS degrees: 90 runs left to right) | cx, cy
  * (centre, fractions of the box), stops: [{ pos 0–1, color, opacity? }] }`,
- * with `fill` holding its first colour, or a picture fill, `fillImage:
- * { media, crop? }`. Tables are { cells, colWidths, rowHeights? (fractions of
+ * with `fill` holding its first colour, a pattern fill, `pattern: { preset,
+ * fg, bg }` (see model/patterns.js; `fill` holding its foreground colour),
+ * or a picture fill, `fillImage: { media, crop?, opacity?, tile? }`
+ * (stretched over the box, or tiled as backgrounds are, see themes.js
+ * backgroundCss). A see-through fill is an "rgba(…)" colour. Tables are { cells, colWidths, rowHeights? (fractions of
  * the box), header? (first row in the table's `fill`), banded?, fill, stroke,
  * style }, cells[row][col] being { text, fill?, valign?, rowSpan?, colSpan?,
  * merged?, borders?, margin? } (see tables.js). A cell's

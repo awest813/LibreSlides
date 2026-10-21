@@ -949,8 +949,9 @@ export class EditorScreen {
       if (e.type === 'line' || e.type === 'image') return;
       e[prop] = value;
       if (prop === 'fill') {
-        // A colour picked for the fill replaces a gradient or picture.
+        // A colour picked for the fill replaces a gradient, pattern or picture.
         delete e.gradient;
+        delete e.pattern;
         delete e.fillImage;
       }
     });
@@ -966,6 +967,7 @@ export class EditorScreen {
       }
       e.gradient = JSON.parse(JSON.stringify(gradient));
       e.fill = gradient.stops[0].color;
+      delete e.pattern;
       delete e.fillImage;
     });
   }
@@ -980,6 +982,7 @@ export class EditorScreen {
       this.updateSelected((e) => {
         if (e.type !== 'shape' && e.type !== 'text') return;
         e.fillImage = { media };
+        delete e.pattern;
         if (!e.fill || e.fill === 'none') e.fill = '#ffffff';
       });
     } catch (err) {

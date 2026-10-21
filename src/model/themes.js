@@ -1,3 +1,5 @@
+import { patternSvg, PATTERN_SIZE } from './patterns.js';
+
 /**
  * Themes set a deck's default background, colours and fonts. Elements refer
  * to theme colours as "theme:accent1", "theme:text"… so switching the theme
@@ -112,13 +114,92 @@ export function resolveColor(value, theme, fallback = 'transparent') {
   return value;
 }
 
-export const backgroundBaseColor = (bg) => (bg?.type === 'gradient' ? bg.from : bg?.color || '#ffffff');
+/** The colour a background mostly is: a gradient's first, a pattern's background, else its colour. */
+export const backgroundBaseColor = (bg) => (bg?.type === 'gradient' ? bg.from : bg?.type === 'pattern' ? bg.pattern?.bg : bg?.color) || '#ffffff';
 
-/** CSS `background` for a background spec ({type: solid|gradient|image}). */
+/**
+ * A gradient background's gradient, as shapes have them (see model/deck.js):
+ * its own (`gradient`: more stops, or from the centre out) or the one its
+ * `from`, `to` and `angle` make.
+ */
+export const backgroundGradient = (bg) => (bg.gradient?.stops?.length > 1 ? bg.gradient
+  : { type: 'linear', angle: bg.angle ?? 180, stops: [{ pos: 0, color: bg.from }, { pos: 1, color: bg.to }] });
+
+/** A gradient background with another first or last colour or angle (its own gradient changed to match). */
+export function editBackgroundGradient(bg, { from, to, angle }) {
+  const out = { ...bg };
+  const g = bg.gradient?.stops?.length > 1 ? { ...bg.gradient, stops: bg.gradient.stops.map((s) => ({ ...s })) } : null;
+  if (from != null) out.from = from;
+  if (to != null) out.to = to;
+  if (angle != null) out.angle = angle;
+  if (g) {
+    if (from != null) g.stops[0].color = from;
+    if (to != null) g.stops[g.stops.length - 1].color = to;
+    if (angle != null) {
+      g.type = 'linear';
+      g.angle = angle;
+      delete g.cx;
+      delete g.cy;
+    }
+    out.gradient = g;
+  }
+  return out;
+}
+
+/** "#rrggbb" seen at `opacity` (0–1), as CSS. */
+export const withOpacity = (color, opacity = 1) => (opacity < 1 && /^#[0-9a-f]{6}$/i.test(color)
+  ? `rgba(${[1, 3, 5].map((i) => parseInt(color.slice(i, i + 2), 16)).join(', ')}, ${Math.round(opacity * 1000) / 1000})` : color);
+
+/** A gradient (see model/deck.js) as a CSS image, radial ones out to the farthest corner. */
+export function gradientCss(g, theme) {
+  const pct = (v) => Math.round(Math.max(0, Math.min(1, v)) * 1000) / 10;
+  const stops = (g.stops || []).map((s) => `${withOpacity(resolveColor(s.color, theme, '#000000'), s.opacity ?? 1)} ${pct(s.pos)}%`).join(', ');
+  return g.type === 'radial'
+    ? `radial-gradient(farthest-corner at ${pct(g.cx ?? 0.5)}% ${pct(g.cy ?? 0.5)}%, ${stops})`
+    : `linear-gradient(${g.angle ?? 180}deg, ${stops})`;
+}
+
+/**
+ * Where a tiled picture's tiles line up, as fractions of the box: OOXML's
+ * alignments (tl, t, tr, l, ctr, r, bl, b, br; top left when unknown).
+ */
+export function tileAlign(align) {
+  const a = ['tl', 't', 'tr', 'l', 'ctr', 'r', 'bl', 'b', 'br'].includes(align) ? align : 'tl';
+  const x = a === 't' || a === 'ctr' || a === 'b' ? 0.5 : a.endsWith('r') ? 1 : 0;
+  const y = a.startsWith('t') ? 0 : a.startsWith('b') ? 1 : 0.5;
+  return { x, y };
+}
+
+/**
+ * CSS `background` for a background spec ({type: solid|gradient|image|pattern}).
+ * A gradient may have a `gradient` of its own (see backgroundGradient). A
+ * picture covers the slide, or is tiled when it has `tile` { w, h (a tile's
+ * size), x, y (its offset from where `align` puts it, see tileAlign), flip?
+ * (none|x|y|xy) } in points. A pattern is `pattern` { preset, fg, bg } (see
+ * model/patterns.js).
+ */
 export function backgroundCss(bg, theme, mediaUrl = (x) => x) {
   if (!bg) bg = theme.background;
-  if (bg.type === 'gradient') return `linear-gradient(${bg.angle ?? 180}deg, ${resolveColor(bg.from, theme)}, ${resolveColor(bg.to, theme)})`;
-  if (bg.type === 'image' && bg.media) return `${resolveColor(bg.color || '#000', theme)} url("${mediaUrl(bg.media)}") center / cover no-repeat`;
+  if (bg.type === 'gradient') {
+    if (bg.gradient?.stops?.length > 1) return gradientCss(bg.gradient, theme);
+    return `linear-gradient(${bg.angle ?? 180}deg, ${resolveColor(bg.from, theme)}, ${resolveColor(bg.to, theme)})`;
+  }
+  if (bg.type === 'image' && bg.media) {
+    const under = resolveColor(bg.color || '#000', theme);
+    const t = bg.tile;
+    if (t?.w > 0 && t?.h > 0) {
+      const a = tileAlign(t.align);
+      const round = (v) => Math.round((v || 0) * 100) / 100;
+      const at = (f, v) => `calc(${f * 100}% + ${round(v)}px)`;
+      return `${under} url("${mediaUrl(bg.media)}") ${at(a.x, t.x)} ${at(a.y, t.y)} / ${round(t.w)}px ${round(t.h)}px repeat`;
+    }
+    return `${under} url("${mediaUrl(bg.media)}") center / cover no-repeat`;
+  }
+  if (bg.type === 'pattern' && bg.pattern) {
+    const back = resolveColor(bg.pattern.bg, theme, '#ffffff');
+    const svg = patternSvg(bg.pattern.preset, resolveColor(bg.pattern.fg, theme, '#000000'), back);
+    return `${back} url("data:image/svg+xml,${encodeURIComponent(svg)}") 0 0 / ${PATTERN_SIZE}px ${PATTERN_SIZE}px repeat`;
+  }
   return resolveColor(bg.color, theme, '#ffffff');
 }
 

@@ -1,7 +1,7 @@
 import { h, rovingFocus } from '../ui/dom.js';
 import { icon } from '../ui/icons.js';
 import { openColorPicker } from '../ui/color-picker.js';
-import { THEMES, backgroundBaseColor } from '../model/themes.js';
+import { THEMES, backgroundBaseColor, editBackgroundGradient } from '../model/themes.js';
 import { SIZES, namedSize, slideSize, LAYOUTS, TRANSITIONS, ANIMATIONS, EMPHASES, EXITS, MOTIONS, slideAnimations, CHART_KINDS, newSlide, fillPlaceholders, canHoldText, slideText } from '../model/deck.js';
 import { SHAPES } from '../model/shapes.js';
 import { BORDER_PRESETS, cellMargin } from '../model/tables.js';
@@ -177,7 +177,10 @@ export class SidePanel {
     const bg = slide.background;
     const bgType = bg?.type || 'theme';
     const bgControls = h('div', { class: 'pf-stack' });
-    bgControls.append(field('Fill', select([['theme', 'Theme default'], ['solid', 'Solid colour'], ['gradient', 'Gradient'], ['image', 'Picture']], bgType, (v) => {
+    // A pattern (from a PowerPoint file) can be kept, or changed for another kind of fill.
+    const bgKinds = [['theme', 'Theme default'], ['solid', 'Solid colour'], ['gradient', 'Gradient'], ['image', 'Picture'], ...(bgType === 'pattern' ? [['pattern', 'Pattern']] : [])];
+    bgControls.append(field('Fill', select(bgKinds, bgType, (v) => {
+      if (v === 'pattern') return;
       if (v === 'theme') app.setBackground(null);
       else if (v === 'solid') app.setBackground({ type: 'solid', color: backgroundBaseColor(theme.background) });
       else if (v === 'gradient') app.setBackground({ type: 'gradient', from: 'theme:accent1', to: 'theme:accent2', angle: 135 });
@@ -187,10 +190,15 @@ export class SidePanel {
     if (bgType === 'gradient') {
       bgControls.append(
         h('div', { class: 'pf-row' },
-          colorButton('From', bg.from, theme, (v) => app.setBackground({ ...bg, from: v })),
-          colorButton('To', bg.to, theme, (v) => app.setBackground({ ...bg, to: v }))),
-        field('Angle', select([[0, 'Bottom to top'], [90, 'Left to right'], [135, 'Diagonal'], [180, 'Top to bottom'], [225, 'Diagonal (reverse)']], bg.angle ?? 180, (v) => app.setBackground({ ...bg, angle: +v }))),
+          colorButton('From', bg.from, theme, (v) => app.setBackground(editBackgroundGradient(bg, { from: v }))),
+          colorButton('To', bg.to, theme, (v) => app.setBackground(editBackgroundGradient(bg, { to: v })))),
+        field('Angle', select([[0, 'Bottom to top'], [90, 'Left to right'], [135, 'Diagonal'], [180, 'Top to bottom'], [225, 'Diagonal (reverse)']], bg.angle ?? 180, (v) => app.setBackground(editBackgroundGradient(bg, { angle: +v })))),
       );
+    }
+    if (bgType === 'pattern') {
+      bgControls.append(h('div', { class: 'pf-row' },
+        colorButton('Foreground', bg.pattern.fg, theme, (v) => app.setBackground({ ...bg, pattern: { ...bg.pattern, fg: v } })),
+        colorButton('Background', bg.pattern.bg, theme, (v) => app.setBackground({ ...bg, pattern: { ...bg.pattern, bg: v } }))));
     }
     if (bgType === 'image') bgControls.append(h('button', { type: 'button', class: 'btn', onclick: () => app.pickBackgroundImage() }, 'Choose another picture…'));
     bgControls.append(

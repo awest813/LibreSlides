@@ -1,0 +1,99 @@
+/**
+ * PowerPoint's pattern fills (a:pattFill), drawn as LibreSlides draws them:
+ * an 8 × 8 tile, each of its cells a point square in the foreground or the
+ * background colour. A pattern fill is { preset, fg, bg } (colours as
+ * elsewhere, see themes.js); presets are the OOXML names (pct50, dnDiag…).
+ * Rows are bytes, the leftmost cell the highest bit.
+ */
+const rows = (...bytes) => bytes;
+const invert = (list) => list.map((b) => ~b & 255);
+// A pattern mirrored left to right (an "up" diagonal from a "down" one).
+const mirror = (list) => list.map((b) => parseInt(b.toString(2).padStart(8, '0').split('').reverse().join(''), 2));
+const twice = (list) => [...list, ...list];
+
+const PCT = {
+  pct5: rows(0x80, 0, 0, 0, 0x08, 0, 0, 0),
+  pct10: rows(0x80, 0, 0x08, 0, 0x80, 0, 0x08, 0),
+  pct20: rows(0x88, 0, 0x22, 0, 0x88, 0, 0x22, 0),
+  pct25: twice(rows(0x88, 0x22, 0x88, 0x22)),
+  pct30: twice(rows(0xaa, 0x44, 0xaa, 0x11)),
+  pct40: twice(rows(0xaa, 0x44, 0xaa, 0x55)),
+  pct50: twice(rows(0xaa, 0x55, 0xaa, 0x55)),
+};
+const DOWN = {
+  dnDiag: rows(0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01),
+  ltDnDiag: twice(rows(0x88, 0x44, 0x22, 0x11)),
+  dkDnDiag: twice(rows(0xcc, 0x66, 0x33, 0x99)),
+  wdDnDiag: rows(0xe0, 0x70, 0x38, 0x1c, 0x0e, 0x07, 0x83, 0xc1),
+  dashDnDiag: rows(0x88, 0x44, 0x22, 0x11, 0, 0, 0, 0),
+};
+
+export const PATTERNS = {
+  ...PCT,
+  pct60: invert(PCT.pct40),
+  pct70: invert(PCT.pct30),
+  pct75: invert(PCT.pct25),
+  pct80: invert(PCT.pct20),
+  pct90: invert(PCT.pct10),
+  horz: rows(0xff, 0, 0, 0, 0, 0, 0, 0),
+  ltHorz: twice(rows(0xff, 0, 0, 0)),
+  narHorz: twice(twice(rows(0xff, 0))),
+  dkHorz: twice(rows(0xff, 0xff, 0, 0)),
+  dashHorz: rows(0xf0, 0, 0, 0, 0x0f, 0, 0, 0),
+  vert: Array(8).fill(0x80),
+  ltVert: Array(8).fill(0x88),
+  narVert: Array(8).fill(0xaa),
+  dkVert: Array(8).fill(0xcc),
+  dashVert: rows(0x80, 0x80, 0x80, 0x80, 0x08, 0x08, 0x08, 0x08),
+  cross: rows(0xff, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80),
+  lgGrid: rows(0xff, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80),
+  smGrid: twice(rows(0xff, 0x88, 0x88, 0x88)),
+  dotGrid: rows(0xaa, 0, 0x80, 0, 0x80, 0, 0x80, 0),
+  ...DOWN,
+  upDiag: mirror(DOWN.dnDiag),
+  ltUpDiag: mirror(DOWN.ltDnDiag),
+  dkUpDiag: mirror(DOWN.dkDnDiag),
+  wdUpDiag: mirror(DOWN.wdDnDiag),
+  dashUpDiag: mirror(DOWN.dashDnDiag),
+  diagCross: rows(0x81, 0x42, 0x24, 0x18, 0x18, 0x24, 0x42, 0x81),
+  openDmnd: rows(0x80, 0x41, 0x22, 0x14, 0x08, 0x14, 0x22, 0x41),
+  solidDmnd: rows(0x10, 0x38, 0x7c, 0xfe, 0x7c, 0x38, 0x10, 0),
+  dotDmnd: rows(0x80, 0, 0x22, 0, 0x08, 0, 0x22, 0),
+  smCheck: twice(rows(0xcc, 0xcc, 0x33, 0x33)),
+  lgCheck: rows(0xf0, 0xf0, 0xf0, 0xf0, 0x0f, 0x0f, 0x0f, 0x0f),
+  smConfetti: rows(0x80, 0x08, 0x40, 0x02, 0x10, 0x01, 0x20, 0x04),
+  lgConfetti: rows(0xb1, 0x30, 0x03, 0x1b, 0xd8, 0xc0, 0x0c, 0x8d),
+  horzBrick: rows(0xff, 0x80, 0x80, 0x80, 0xff, 0x08, 0x08, 0x08),
+  vertBrick: rows(0x88, 0x88, 0x88, 0xf8, 0x88, 0x88, 0x88, 0x8f),
+  diagBrick: rows(0x80, 0x40, 0x20, 0x10, 0x18, 0x24, 0x42, 0x81),
+  plaid: rows(0xaa, 0x55, 0xaa, 0x55, 0xf0, 0xf0, 0xf0, 0xf0),
+  trellis: twice(rows(0xff, 0x66, 0xff, 0x99)),
+  weave: rows(0x88, 0x54, 0x22, 0x45, 0x88, 0x14, 0x22, 0x51),
+  shingle: rows(0x03, 0x84, 0x48, 0x30, 0x0c, 0x02, 0x01, 0x01),
+  wave: twice(rows(0, 0x18, 0xa4, 0x03)),
+  zigZag: twice(rows(0x81, 0x42, 0x24, 0x18)),
+  sphere: rows(0x77, 0x89, 0x8f, 0x8f, 0x77, 0x98, 0xf8, 0xf8),
+  divot: rows(0, 0x08, 0x04, 0x08, 0, 0x80, 0x40, 0x80),
+};
+
+export const PATTERN_SIZE = 8;
+
+/** Whether `name` is a pattern LibreSlides draws (its own names only). */
+export const isPattern = (name) => typeof name === 'string' && Object.hasOwn(PATTERNS, name);
+
+/** SVG path data for the foreground cells of a pattern's tile (unknown ones draw as pct50). */
+export function patternPath(preset) {
+  const bits = PATTERNS[isPattern(preset) ? preset : 'pct50'];
+  let d = '';
+  bits.forEach((row, y) => {
+    for (let x = 0; x < PATTERN_SIZE; x++) if (row & (0x80 >> x)) d += `M${x} ${y}h1v1h-1z`;
+  });
+  return d;
+}
+
+/** A pattern's tile as an SVG document (colours already resolved), for CSS backgrounds. */
+export function patternSvg(preset, fg, bg) {
+  const s = PATTERN_SIZE;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}" viewBox="0 0 ${s} ${s}" shape-rendering="crispEdges">`
+    + `<rect width="${s}" height="${s}" fill="${bg}"/><path d="${patternPath(preset)}" fill="${fg}"/></svg>`;
+}
