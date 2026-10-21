@@ -4,6 +4,7 @@ import { normalizeTable, SIDES, CELL_MARGIN } from '../model/tables.js';
 import { isMediaData } from './media-files.js';
 import { CHART_KINDS, uid, ANIM_KINDS, ANIMATIONS, EMPHASES, EXITS, MOTIONS, FIELD } from '../model/deck.js';
 import { FONT_FACES } from '../model/fonts.js';
+import { cleanWarp } from '../model/warps.js';
 
 /**
  * Text in slides is HTML. Anything that comes from outside (opened files,
@@ -214,6 +215,12 @@ export function sanitizeElement(el) {
     if (s.wrap != null && s.wrap !== false) delete s.wrap;
     if (s.columns != null) s.columns = Math.max(1, Math.min(16, Math.round(+s.columns) || 1));
     if (s.columnGap != null && !Number.isFinite(s.columnGap)) delete s.columnGap;
+    // A WordArt warp: a known preset with adjust values in its range.
+    if (s.warp != null) {
+      const warp = cleanWarp(s.warp);
+      if (warp) s.warp = warp;
+      else delete s.warp;
+    }
   }
   return el;
 }

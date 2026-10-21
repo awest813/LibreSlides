@@ -67,6 +67,12 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  * (a linear-gradient background clipped to the text, with `color` holding
  * its first colour).
  *
+ * A text box (or shape's text) may be bent into a WordArt shape, as
+ * PowerPoint's Text Effects › Transform does: `style.warp = { preset
+ * (textArchUp, textWave1… the OOXML names), adjust?: { adj: number, … }
+ * (in the preset's own units), stretch? (along "follow path" warps too) }`.
+ * See model/warps.js; it's drawn by render/warp.js.
+ *
  * A slide may carry review comments, as PowerPoint's do. They're plain text
  * (never HTML), shown only in the editor, and kept through undo, copies and
  * .pptx files (see io/pptx-comments.js):

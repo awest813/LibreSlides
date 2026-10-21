@@ -10,6 +10,7 @@ import { seriesColor, pointColor, seriesKind, onSecondaryAxis, labelParts, scatt
 import { formatValue } from '../render/number-format.js';
 import { commentsPanel } from './comments.js';
 import { textEffectOf } from './richtext.js';
+import { WARP_GROUPS, mainAdjust } from '../model/warps.js';
 
 const TITLES = { design: 'Design', transition: 'Transition', animate: 'Animate', format: 'Format options', comments: 'Comments' };
 const TAB_LABELS = { design: 'Design', transition: 'Transition', animate: 'Animate', format: 'Format', comments: 'Comments' };
@@ -34,6 +35,14 @@ function numberInput(value, onValue, { step = 1, min = null, max = null, suffix 
 
 function select(options, value, onValue) {
   const s = h('select', {}, ...options.map(([v, label]) => h('option', { value: v, selected: String(v) === String(value) || null }, label)));
+  s.addEventListener('change', () => onValue(s.value));
+  return s;
+}
+
+/** A select of options in groups: [[group label, [[value, label]…]]…], with ungrouped `first` options before them. */
+function groupedSelect(first, groups, value, onValue) {
+  const option = ([v, label]) => h('option', { value: v, selected: String(v) === String(value) || null }, label);
+  const s = h('select', {}, ...first.map(option), ...groups.map(([label, options]) => h('optgroup', { label }, ...options.map(option))));
   s.addEventListener('change', () => onValue(s.value));
   return s;
 }
@@ -76,6 +85,29 @@ function adjustSlider(label, el, key, upd) {
     upd((e) => { setAdjust(e, key, +input.value / 100 || undefined); }, key);
   });
   return field(label, h('div', { class: 'pf-row' }, input, out));
+}
+
+/** The WordArt warp of text boxes (see model/warps.js), and how much it bends, for one. */
+function warpControls(app, els) {
+  const presets = new Set(els.map((e) => e.style?.warp?.preset || 'none'));
+  const value = presets.size === 1 ? [...presets][0] : 'mixed';
+  // A plain warp narrowed at one end comes only from PowerPoint files.
+  const extra = value === 'mixed' ? [['mixed', 'Mixed']] : value === 'textPlain' ? [['textPlain', 'Plain (narrowed)']] : [];
+  const out = [field('Warp', groupedSelect([...extra, ['none', 'None']], WARP_GROUPS, value,
+    (v) => app.setWarp(v === 'none' ? null : { preset: v })))];
+  const amount = els.length === 1 && mainAdjust(els[0].style?.warp);
+  if (amount) {
+    const warp = els[0].style.warp;
+    const input = h('input', { type: 'range', min: String(amount.min), max: String(amount.max), step: 'any', value: String(amount.value) });
+    const pct = () => `${Math.round(((input.value - amount.min) / (amount.max - amount.min || 1)) * 100)}%`;
+    const shown = h('output', {}, pct());
+    input.addEventListener('input', () => {
+      shown.textContent = pct();
+      app.setWarp({ ...warp, adjust: { ...warp.adjust, [amount.name]: +input.value } }, { coalesce: 'warp-amount' });
+    });
+    out.push(field('Amount', h('div', { class: 'pf-row' }, input, shown)));
+  }
+  return out;
 }
 
 /** Gradient fill controls for a shape: on/off, its end colours and its direction. */
@@ -363,7 +395,8 @@ export class SidePanel {
         field('Effect', select([
           ...(effect === 'mixed' ? [['mixed', 'Mixed']] : []),
           ['none', 'None'], ['shadow', 'Shadow'], ['glow', 'Glow'], ['outline', 'Outline'], ['hollow', 'Hollow'], ['gradient', 'Gradient'],
-        ], effect, (v) => app.setTextEffect(v)))));
+        ], effect, (v) => app.setTextEffect(v))),
+        ...(els.every(canHoldText) ? warpControls(app, els) : [])));
     }
 
     if (single && el.type === 'image') {

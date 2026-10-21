@@ -2,6 +2,7 @@ import PptxGenJS from 'pptxgenjs';
 import JSZip from 'jszip';
 import { slideSize, boxOf, htmlToText, ANIM_KINDS, motionPath, FIELD, fieldText } from '../model/deck.js';
 import { cellBorder, cellMargin } from '../model/tables.js';
+import { isPlainWarp } from '../model/warps.js';
 import { themeById, resolveColor, backgroundBaseColor } from '../model/themes.js';
 import { textStyle, themeDecor } from '../render/render.js';
 import { safeFileName } from '../ui/dom.js';
@@ -585,6 +586,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
   if (box.wrap === false) opts.wrap = false;
   if (box.vertical) opts.vert = box.vertical;
   if (box.columns > 1) marks.columns.set(mark(), { n: box.columns, gap: box.columnGap });
+  if (!isPlainWarp(box.warp) && hasText) marks.warps.set(mark(), box.warp);
   // Text with no fill of its own (hollow, outlined WordArt) has a transparent colour.
   const runBase = resolveColor(t.color, theme) === 'transparent' ? { noFill: true } : {};
   s.addText(hasText ? htmlToRuns(withFields(el.text, marks.number), runBase, marks.links) : [{ text: '', options: {} }], opts);
@@ -668,6 +670,12 @@ function replaceShapeFill(xml, name, fillXml) {
   return xml.slice(0, start) + xml.slice(start, end).replace(spPr[0], fixed) + xml.slice(end);
 }
 
+/** A text warp (see model/warps.js) as an a:prstTxWarp. */
+export function warpXml(warp) {
+  const gds = Object.entries(warp.adjust || {}).filter(([k, v]) => /^adj\d*$/.test(k) && Number.isFinite(v)).map(([k, v]) => `<a:gd name="${k}" fmla="val ${Math.round(v)}"/>`).join('');
+  return `<a:prstTxWarp prst="${warp.preset}">${gds ? `<a:avLst>${gds}</a:avLst>` : '<a:avLst/>'}</a:prstTxWarp>`;
+}
+
 /** Turn the solid fills of the shapes named for gradients (and a gradient background) into real gradients. */
 export function applyGradients(xml, marks) {
   if (!marks) return xml;
@@ -687,6 +695,17 @@ export function applyGradients(xml, marks) {
     if (at < 0 || end < 0) continue;
     const gds = Object.entries(adj).filter(([k, v]) => /^adj\d*$/.test(k) && Number.isFinite(v)).map(([k, v]) => `<a:gd name="${k}" fmla="val ${Math.round(v)}"/>`).join('');
     const block = xml.slice(at, end).replace(/<a:avLst\s*\/>|<a:avLst>[\s\S]*?<\/a:avLst>/, `<a:avLst>${gds}</a:avLst>`);
+    xml = xml.slice(0, at) + block + xml.slice(end);
+  }
+  // WordArt text warps: first in the text box's settings, before its autofit.
+  for (const [name, warp] of marks.warps || []) {
+    const at = xml.indexOf(`name="${name}"`);
+    const end = xml.indexOf('</p:sp>', at);
+    if (at < 0 || end < 0) continue;
+    const block = xml.slice(at, end).replace(/<a:bodyPr\b([^>]*?)(\/?)>/, (tag, attrs, empty) => {
+      const stretch = warp.stretch && !/fromWordArt=/.test(attrs) ? ' fromWordArt="1"' : '';
+      return `<a:bodyPr${attrs}${stretch}>${warpXml(warp)}${empty ? '</a:bodyPr>' : ''}`;
+    });
     xml = xml.slice(0, at) + block + xml.slice(end);
   }
   if (marks.background) xml = xml.replace(/<p:bg>[\s\S]*?<\/p:bg>/, `<p:bg><p:bgPr>${marks.background}<a:effectLst/></p:bgPr></p:bg>`);
@@ -901,7 +920,7 @@ export async function buildPptx(deck) {
       const n = { next: index + 2, prev: index, first: 1, last: deck.slides.length }[to] ?? deck.slides.findIndex((x) => x.id === to) + 1;
       return to && n >= 1 && n <= deck.slides.length ? { slide: n } : null;
     };
-    const marks = { number: allMarks.length + 1, links, count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), pictureLooks: new Map(), placeholders: new Map(), tableDashes: new Map(), timeline: [], groups: [], background: null };
+    const marks = { number: allMarks.length + 1, links, count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), warps: new Map(), pictureLooks: new Map(), placeholders: new Map(), tableDashes: new Map(), timeline: [], groups: [], background: null };
     marks.groupSizes = slide.elements.reduce((m, e) => (e.groupId ? m.set(e.groupId, (m.get(e.groupId) || 0) + 1) : m), new Map());
     allMarks.push(marks);
     const bg = slide.background || theme.background;

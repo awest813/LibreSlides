@@ -1,5 +1,5 @@
 import { h } from '../ui/dom.js';
-import { renderSlide, renderElement, fillFields } from '../render/render.js';
+import { renderSlide, renderElement, fillFields, slideNumber } from '../render/render.js';
 import { slideSize, boxOf, moveElement, canHoldText, newTextBox, newShape, newLine, groupOf } from '../model/deck.js';
 import { themeById } from '../model/themes.js';
 import { sanitizeHtml } from '../io/sanitize.js';
@@ -207,7 +207,7 @@ export class SlideCanvas {
   refreshNode(el) {
     const node = this.nodeOf(el.id);
     if (!node) return;
-    const fresh = renderElement(el, { theme: themeById(this.deck.themeId), deck: this.deck, editing: true });
+    const fresh = renderElement(el, { theme: themeById(this.deck.themeId), deck: this.deck, editing: true, slideNo: slideNumber(this.slide, this.deck) });
     fillFields(fresh, this.slide, this.deck);
     if (this.editing?.id === el.id) this.patchLive(node, fresh);
     else node.replaceWith(fresh);
