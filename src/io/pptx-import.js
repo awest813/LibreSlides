@@ -175,7 +175,11 @@ function spanFor(text, props, base) {
 // ------------------------------------------------------------------ shapes
 
 function xfrmOf(spPr) {
-  const x = kid(spPr, 'xfrm');
+  return boxOfXfrm(kid(spPr, 'xfrm'));
+}
+
+/** An a:xfrm (or a SmartArt dsp:txXfrm) as a box in points, with its rotation and flips. */
+function boxOfXfrm(x) {
   if (!x) return null;
   const off = kid(x, 'off');
   const ext = kid(x, 'ext');
@@ -667,6 +671,13 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         } else if (!plainBox) el.shape = SHAPE_IDS.has(prst) ? prst : PRESET_ALIAS[prst] || 'rect';
         if (role && hasText) el.ph = role;
         if (!hasText && (plainBox || (paths && fill === 'none' && !stroke))) continue; // nothing to show
+        // SmartArt can put a shape's text somewhere else (beside an icon, under a picture): a text box of its own there.
+        const txBox = hasText && place(boxOfXfrm(kid(node, 'txXfrm')));
+        if (txBox && ['x', 'y', 'w', 'h'].some((key) => Math.abs(txBox[key] - box[key]) > 2)) {
+          slide.elements.push({ ...el, text: '' });
+          slide.elements.push({ ...el, id: uid(), type: 'text', shape: undefined, paths: undefined, gradient: undefined, shadow: undefined, opacity: undefined, fill: 'none', stroke: null, x: txBox.x, y: txBox.y, w: txBox.w, h: txBox.h, rot: txBox.rot });
+          continue;
+        }
         slide.elements.push(el);
       } else if (name === 'pic') {
         const media = await readMedia({ pkg, node, rels: part.rels, box: place(xfrmOf(kid(node, 'spPr'))), ctx: tctx, deck });
@@ -706,6 +717,10 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         if (/\/chart$/.test(uri)) {
           const chart = await readChart({ pkg, node, rels: part.rels, box: place(xfrmOf(node)), ctx: tctx, deck });
           if (chart) slide.elements.push(chart);
+          continue;
+        }
+        if (/\/diagram$/.test(uri)) {
+          await readSmartArt(node, group, part);
           continue;
         }
         const tbl = desc(node, 'tbl')[0];
@@ -755,6 +770,40 @@ async function readSlide(pkg, slidePath, ctx, deck) {
       }
     }
   };
+
+  /**
+   * SmartArt: PowerPoint saves a drawn copy of the diagram (dsp:drawing) next to
+   * its data, made of ordinary shapes placed relative to the graphic frame.
+   * Those become editable shapes. Without one, the diagram's text comes in as a list.
+   */
+  async function readSmartArt(node, group, part) {
+    const frame = xfrmOf(node);
+    if (!frame) return;
+    const dm = part.rels[rid(desc(node, 'relIds')[0], 'dm')];
+    const data = dm && (await pkg.doc(dm.path));
+    // The data names its drawing; older files only have one drawing per slide to go on.
+    const drawingId = attr(desc(data, 'dataModelExt')[0], 'relId');
+    const drawings = Object.values(part.rels).filter((r) => r.type === 'diagramDrawing');
+    const drawingRel = part.rels[drawingId] || (drawings.length === 1 ? drawings[0] : null);
+    const drawing = drawingRel && (await pkg.doc(drawingRel.path));
+    const tree = drawing && desc(drawing, 'spTree')[0];
+    if (tree && (kids(tree, 'sp').length || kids(tree, 'grpSp').length)) {
+      const inFrame = { sx: 1, sy: 1, ox: frame.x, oy: frame.y };
+      const g = group ? { sx: group.sx, sy: group.sy, ox: group.ox + frame.x * group.sx, oy: group.oy + frame.y * group.sy } : inFrame;
+      await walk(tree, g, { rels: await pkg.rels(drawingRel.path), isSlide: true });
+      return;
+    }
+    // The text of the diagram's points, in order, as a bulleted list over the frame.
+    const items = desc(data, 'pt').filter((pt) => !attr(pt, 'type') || attr(pt, 'type') === 'node')
+      .map((pt) => desc(pt, 't').filter((t) => t.parentElement?.localName === 'r').map((t) => t.textContent).join('').trim()).filter(Boolean);
+    if (!items.length) return;
+    const b = group ? { x: group.ox + frame.x * group.sx, y: group.oy + frame.y * group.sy, w: frame.w * group.sx, h: frame.h * group.sy } : frame;
+    slide.elements.push({
+      id: uid(), type: 'text', x: b.x * k + ctx.ox, y: b.y * k + ctx.oy, w: b.w * k, h: b.h * k, rot: 0, fill: 'none', stroke: null, bullets: true,
+      text: `<ul>${items.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>`,
+      style: { size: Math.round(18 * k), font: ctx.fonts.minor, color: defaultText },
+    });
+  }
 
   // "Hide background graphics" on the slide hides the layout's and the master's; on the layout, the master's.
   const tree = (d) => path(d.documentElement, 'cSld', 'spTree');
