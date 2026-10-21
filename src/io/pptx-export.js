@@ -1017,6 +1017,49 @@ export async function tidyPackage(zip) {
 }
 
 /**
+ * The deck's theme as PowerPoint's (see model/deck.js importedTheme): the
+ * one the deck came with from PowerPoint, else its LibreSlides theme's
+ * colours (text and background as tx1 and bg1, the title as tx2, a dark
+ * theme's swapped by the colour map) and fonts.
+ */
+export function pptxTheme(deck) {
+  if (deck.importedTheme?.colors) return deck.importedTheme;
+  const t = themeById(deck.themeId);
+  const c = (v, fallback) => `#${toHex(resolveColor(v, t, fallback)) || toHex(fallback)}`.toLowerCase();
+  const bg = c(backgroundBaseColor(t.background), '#ffffff');
+  const bg2 = t.background.type === 'gradient' ? c(t.background.to, bg) : bg;
+  const [text, title] = [c(t.colors.text, '#000000'), c(t.colors.title, '#000000')];
+  const accents = Object.fromEntries([1, 2, 3, 4, 5, 6].map((n) => [`accent${n}`, c(t.colors[`accent${n}`], '#4472c4')]));
+  const base = t.dark ? { dk1: bg, lt1: text, dk2: bg2, lt2: title } : { dk1: text, lt1: bg, dk2: title, lt2: bg2 };
+  return {
+    name: t.name, dark: !!t.dark, fonts: { major: t.fonts.title, minor: t.fonts.body },
+    colors: { ...base, ...accents, hlink: accents.accent1, folHlink: accents.accent5 },
+  };
+}
+
+const THEME_COLORS = ['dk1', 'lt1', 'dk2', 'lt2', 'accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6', 'hlink', 'folHlink'];
+
+/** Write the deck's theme (see pptxTheme) into the package: its colour scheme, and a dark one's colour map. */
+async function applyTheme(zip, deck) {
+  const theme = pptxTheme(deck);
+  const themePath = 'ppt/theme/theme1.xml';
+  const file = zip.file(themePath);
+  if (!file) return;
+  const name = xmlText(theme.name || 'LibreSlides');
+  const scheme = `<a:clrScheme name="${name}">${THEME_COLORS.map((n) => `<a:${n}><a:srgbClr val="${toHex(theme.colors[n]) || '000000'}"/></a:${n}>`).join('')}</a:clrScheme>`;
+  const xml = (await file.async('string'))
+    .replace(/<a:clrScheme\b[\s\S]*?<\/a:clrScheme>/, scheme)
+    .replace(/(<a:theme\b[^>]*?\sname=")[^"]*"/, `$1${name}"`);
+  zip.file(themePath, xml);
+  if (!theme.dark) return;
+  // Light text on a dark background: background 1 is dark 1, text 1 is light 1.
+  for (const f of zip.file(/^ppt\/slideMasters\/[^/]+\.xml$/)) {
+    const master = await f.async('string');
+    zip.file(f.name, master.replace(/<p:clrMap\b[^>]*\/>/, '<p:clrMap bg1="dk1" tx1="lt1" bg2="dk2" tx2="lt2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/>'));
+  }
+}
+
+/**
  * Finish the package pptxgenjs wrote: media and charts, then each slide's
  * XML (paragraphs, the shapes' marks, transitions, "skip slide", groups and
  * animations), comments, sections, fonts, and last tidyPackage.
@@ -1047,6 +1090,7 @@ async function postProcess(buffer, deck, allMarks) {
     xml = insertTiming(xml, timingXml(timelineOf(xml, allMarks[i].timeline)));
     zip.file(path, xml);
   }
+  await applyTheme(zip, deck);
   await writeComments(zip, deck);
   await writeSections(zip, deck);
   await embedFonts(zip, deck);
@@ -1063,7 +1107,8 @@ export async function buildPptx(deck) {
   pptx.layout = 'LIBRESLIDES';
   pptx.title = deck.title;
   pptx.company = 'LibreSlides';
-  pptx.theme = { headFontFace: theme.fonts.title, bodyFontFace: theme.fonts.body };
+  const { fonts } = pptxTheme(deck);
+  pptx.theme = { headFontFace: fontFace(fonts.major), bodyFontFace: fontFace(fonts.minor) };
 
   // What each slide needs fixing in the XML pptxgenjs writes (see postProcess).
   const allMarks = [];
