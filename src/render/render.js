@@ -323,6 +323,7 @@ export function renderElement(el, ctx) {
         if (ends && el.arrowStart) svg.append(arrowHead(...ends.start, el.stroke?.width || 2, stroke.stroke, el.arrowStart));
       }
     } else svg.append(svgEl('path', { d: shapePath(el.type === 'shape' ? el.shape : 'rect', el.w, el.h), fill, ...stroke }));
+    if (el.softEdge > 0) softEdges(svg, el.softEdge);
     if (shadow) svg.style.filter = shadow;
     if (el.flipH || el.flipV) svg.style.transform = `scale(${el.flipH ? -1 : 1}, ${el.flipV ? -1 : 1})`;
     div.append(svg);
@@ -358,6 +359,14 @@ export function renderElement(el, ctx) {
     }
     const filters = [...pictureFilters(el.adjust), shadow].filter(Boolean);
     if (filters.length) frame.style.filter = filters.join(' ');
+    if (el.softEdge > 0) {
+      // Soft edges: the picture fades out towards its sides.
+      const r = Math.min(el.softEdge, el.w / 2, el.h / 2);
+      const fade = (dir) => `linear-gradient(${dir}, transparent, #000 ${r}px, #000 calc(100% - ${r}px), transparent)`;
+      frame.style.maskImage = frame.style.webkitMaskImage = `${fade('to right')}, ${fade('to bottom')}`;
+      frame.style.maskComposite = 'intersect';
+      frame.style.webkitMaskComposite = 'source-in';
+    }
     if (el.flipH || el.flipV) frame.style.transform = `scale(${el.flipH ? -1 : 1}, ${el.flipV ? -1 : 1})`;
     div.append(frame);
     if (clip && border) {
@@ -382,6 +391,26 @@ function renderDiagram(el, ctx) {
   box.className = 'el-diagram-shapes';
   for (const child of diagramChildren(el)) box.append(renderElement(child, ctx));
   return box;
+}
+
+let softEdgeIds = 0;
+/**
+ * Soft edges on a shape's SVG: what's drawn is shrunk by half the radius and
+ * feathered over the rest, as PowerPoint's soft edge effect does.
+ */
+function softEdges(svg, radius) {
+  const id = `ls-soft-${++softEdgeIds}`;
+  const filter = svgEl('filter', { id, x: '-10%', y: '-10%', width: '120%', height: '120%' });
+  filter.append(
+    svgEl('feMorphology', { in: 'SourceAlpha', operator: 'erode', radius: radius / 2, result: 'inner' }),
+    svgEl('feGaussianBlur', { in: 'inner', stdDeviation: radius / 3, result: 'soft' }),
+    svgEl('feComposite', { in: 'SourceGraphic', in2: 'soft', operator: 'in' }),
+  );
+  const g = svgEl('g', { filter: `url(#${id})` });
+  g.append(...svg.childNodes);
+  const defs = svgEl('defs');
+  defs.append(filter);
+  svg.append(defs, g);
 }
 
 function renderTable(el, ctx) {

@@ -70,6 +70,9 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  * its X values (a bubble's size is in its series' sizes). `style` { size, color, font } sets its text, and `fill` and
  * `stroke` the chart area's background and border.
  *
+ * Shapes, text boxes and pictures may have `softEdge` (pt): edges that fade
+ * out over that distance (PowerPoint's soft edges effect).
+ *
  * Pictures may have colour adjustments, `adjust: { grayscale?, brightness?,
  * contrast? }` (-1 to 1), and be cropped to a shape, `clip: { shape, paths?,
  * preset? }` as shape elements have (an oval, a PowerPoint preset…).

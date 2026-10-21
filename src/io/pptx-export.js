@@ -453,6 +453,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
       }
     }
     if (el.radius) opts.rounding = el.radius >= Math.min(el.w, el.h) / 2;
+    if (el.softEdge > 0) marks.softEdges.set((opts.objectName ||= `LibreSlides shape ${++marks.count}`), el.softEdge);
     if (opacity < 1) opts.transparency = Math.round((1 - opacity) * 100);
     // Cropped to a shape, or colour adjustments: added to the picture's XML afterwards.
     if (el.clip || el.adjust) {
@@ -532,6 +533,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
   };
   // What pptxgenjs can't write is fixed in its XML afterwards (see postProcess), found by the shape's name.
   const mark = () => (opts.objectName ||= `LibreSlides shape ${++marks.count}`);
+  if (el.softEdge > 0) marks.softEdges.set(mark(), el.softEdge);
   const picture = el.fillImage && (await exportableImage(deck.media?.[el.fillImage.media], el.w, el.h, marks.pngs));
   if (picture) {
     if (opts.fill.type === 'none') opts.fill = { color: 'FFFFFF' };
@@ -808,6 +810,28 @@ function applyPlaceholders(xml, placeholders) {
   return xml;
 }
 
+/** Soft edges (radius in points) on the shapes and pictures named, as a:softEdge, the last effect of their spPr's list. */
+export function applySoftEdges(xml, edges) {
+  for (const [name, radius] of edges || []) {
+    xml = editShape(xml, name, (sp) => {
+      const effect = `<a:softEdge rad="${emu(radius)}"/>`;
+      const spPr = /<p:spPr\b[^>]*>([\s\S]*?)<\/p:spPr>/.exec(sp);
+      if (!spPr) return sp;
+      let inner = spPr[1];
+      if (/<a:effectLst\/>/.test(inner)) inner = inner.replace('<a:effectLst/>', `<a:effectLst>${effect}</a:effectLst>`);
+      else if (inner.includes('</a:effectLst>')) inner = inner.replace('</a:effectLst>', `${effect}</a:effectLst>`);
+      else {
+        // After the outline (or fill, or geometry), before any 3-D settings or extensions.
+        const before = /<a:(scene3d|sp3d|extLst)\b/.exec(inner);
+        const at = before ? before.index : inner.length;
+        inner = `${inner.slice(0, at)}<a:effectLst>${effect}</a:effectLst>${inner.slice(at)}`;
+      }
+      return sp.slice(0, spPr.index) + spPr[0].replace(spPr[1], () => inner) + sp.slice(spPr.index + spPr[0].length);
+    });
+  }
+  return xml;
+}
+
 /** A pictures' colour adjustments (see render.js pictureFilters) and the shape it's cropped to. */
 function applyPictureLooks(xml, looks) {
   for (const [name, { clip, adjust }] of looks || []) {
@@ -1000,6 +1024,7 @@ async function postProcess(buffer, deck, allMarks) {
     let xml = applyPictureLooks(applyGradients(fixParagraphs(await file.async('string')), allMarks[i]), allMarks[i].pictureLooks);
     xml = applyPlaceholders(xml, allMarks[i].placeholders);
     xml = applyTableDashes(xml, allMarks[i].tableDashes);
+    xml = applySoftEdges(xml, allMarks[i].softEdges);
     xml = await applyPictureFills(zip, i + 1, xml, allMarks[i]);
     xml = await applyTextLinks(zip, i + 1, xml, allMarks[i].textLinks);
     xml = await applyDiagrams(zip, i + 1, xml, allMarks[i].diagrams, deck);
@@ -1046,7 +1071,7 @@ export async function buildPptx(deck) {
       const n = { next: index + 2, prev: index, first: 1, last: deck.slides.length }[to] ?? deck.slides.findIndex((x) => x.id === to) + 1;
       return to && n >= 1 && n <= deck.slides.length ? { slide: n } : null;
     };
-    const marks = { number: allMarks.length + 1, links, pngs, count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), warps: new Map(), pictureLooks: new Map(), placeholders: new Map(), tableDashes: new Map(), textLinks: new Map(), diagrams: new Map(), timeline: [], groups: [], background: null };
+    const marks = { number: allMarks.length + 1, links, pngs, count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), warps: new Map(), pictureLooks: new Map(), softEdges: new Map(), placeholders: new Map(), tableDashes: new Map(), textLinks: new Map(), diagrams: new Map(), timeline: [], groups: [], background: null };
     // Diagrams that don't go as SmartArt go as the shapes they're drawn with.
     const elements = slide.elements.flatMap((el) => (el.type === 'diagram' && !exportsAsSmartArt(el, deck.media) ? diagramAsShapes(el) : [el]));
     marks.groupSizes = elements.reduce((m, e) => (e.groupId ? m.set(e.groupId, (m.get(e.groupId) || 0) + 1) : m), new Map());

@@ -112,6 +112,10 @@ function cleanNumbers(el) {
     else delete el.opacity;
   }
   if (el.radius != null && !(Number.isFinite(el.radius) && el.radius >= 0)) delete el.radius;
+  if (el.softEdge != null) {
+    if (Number.isFinite(el.softEdge) && el.softEdge > 0) el.softEdge = Math.min(400, el.softEdge);
+    else delete el.softEdge;
+  }
   if (el.natural != null && !(isObject(el.natural) && [el.natural.w, el.natural.h].every((v) => Number.isFinite(v) && v > 0))) delete el.natural;
   if (el.id != null && !isId(el.id)) el.id = uid();
   if (el.groupId != null && !isId(el.groupId)) delete el.groupId;

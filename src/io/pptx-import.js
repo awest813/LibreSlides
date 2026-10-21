@@ -478,6 +478,12 @@ const shadowOf = (spPr, refs) => {
   return own ? kid(own, 'outerShdw') != null : !!refs.shadow;
 };
 
+/** How far a shape's or picture's soft edges (a:softEdge) fade in, in points; 0 for none. */
+function softEdgeOf(spPr, k) {
+  const rad = +attr(kid(kid(spPr, 'effectLst'), 'softEdge'), 'rad');
+  return rad > 0 ? Math.min(400, Math.round((rad / EMU_PER_PT) * k * 10) / 10) : 0;
+}
+
 /** The part of a picture shown (a:srcRect), as fractions cut from each side; null when uncropped. */
 function cropOf(blipFill) {
   const r = kid(blipFill, 'srcRect');
@@ -769,6 +775,8 @@ async function readSlide(pkg, slidePath, ctx, deck) {
     if (crop) el.crop = crop;
     if (amt != null && +amt < 100000) el.opacity = Math.max(0, Math.round(+amt / 1000) / 100);
     if (spPr && shadowOf(spPr, styleRefs(node, ctx))) el.shadow = true;
+    const soft = softEdgeOf(spPr, k);
+    if (soft) el.softEdge = soft;
     // Cropped to a shape, and colour adjustments.
     const clipName = attr(kid(spPr, 'prstGeom'), 'prst');
     if ((clipName && clipName !== 'rect') || kid(spPr, 'custGeom')) {
@@ -943,6 +951,8 @@ async function readSlide(pkg, slidePath, ctx, deck) {
           if (crop) el.fillImage.crop = crop;
         }
         if (shadowOf(spPr, refs)) el.shadow = true;
+        const soft = softEdgeOf(spPr, k);
+        if (soft) el.softEdge = soft;
         if (paths) {
           Object.assign(el, { shape: 'custom', paths });
           if (outline.textRect) el.textRect = outline.textRect;

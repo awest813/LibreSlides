@@ -5,7 +5,9 @@ import { importPptx } from '../../src/io/pptx-import.js';
 import { chooseAlternate, xml } from '../../src/io/ooxml.js';
 import { vmlImageId } from '../../src/io/pptx-ole.js';
 import { builtInTableStyleXml, BUILT_IN_TABLE_STYLES } from '../../src/io/pptx-table-styles.js';
-import { newDeck, newTextBox } from '../../src/model/deck.js';
+import { newDeck, newTextBox, newShape, newImage } from '../../src/model/deck.js';
+import { renderElement } from '../../src/render/render.js';
+import { themeById } from '../../src/model/themes.js';
 
 const toBuffer = (blob) => (blob.arrayBuffer ? blob.arrayBuffer() : new Response(blob).arrayBuffer());
 // A 1 × 1 PNG.
@@ -161,5 +163,33 @@ describe('tables', () => {
     const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deckWith(t))));
     const slide = await zip.file('ppt/slides/slide1.xml').async('string');
     expect(slide.match(/<a:tcPr[^>]*vert="(\w+)"/g).map((m) => /vert="(\w+)"/.exec(m)[1])).toEqual(['vert', 'vert270', 'eaVert', 'eaVert']);
+  });
+});
+
+describe('soft edges', () => {
+  it('reads, draws and writes back soft edges on shapes and pictures', async () => {
+    const shape = `<p:sp ${NS}><p:nvSpPr><p:cNvPr id="80" name="Soft"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>${xfrm('a:xfrm', 0, 0, 1270000, 1270000)}<a:prstGeom prst="diamond"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="4472C4"/></a:solidFill><a:effectLst><a:softEdge rad="127000"/></a:effectLst></p:spPr></p:sp>`;
+    const deck = await withShapes(shape);
+    const el = deck.slides[0].elements.find((e) => e.type === 'shape');
+    const k = el.w / 100; // the slide's scale
+    expect(el.softEdge / k).toBeCloseTo(10, 1);
+    const node = renderElement(el, { theme: themeById('simple-light'), deck });
+    expect(node.querySelector('filter feMorphology')).toBeTruthy();
+    expect(node.querySelector('g[filter^="url(#"]')).toBeTruthy();
+
+    const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    const box = Object.assign(newShape('rect', 10, 10, 100, 100), { softEdge: 8, shadow: true });
+    const pic = Object.assign(newImage('p', 80, 60), { x: 200, y: 10, softEdge: 5 });
+    const out = deckWith(box, pic);
+    out.media = { p: PNG };
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(out)));
+    const slide = await zip.file('ppt/slides/slide1.xml').async('string');
+    const edges = [...slide.matchAll(/<a:effectLst>([\s\S]*?)<\/a:effectLst>/g)].map((m) => m[1]).filter((e) => e.includes('softEdge'));
+    expect(edges).toHaveLength(2);
+    // The shadow comes first; soft edges are the list's last effect.
+    expect(edges.some((e) => /outerShdw[\s\S]*<a:softEdge rad="101600"\/>$/.test(e))).toBe(true);
+    expect(slide).toContain('<a:softEdge rad="63500"/>');
+    const back = await importPptx(await zip.generateAsync({ type: 'arraybuffer' }), 'x');
+    expect(back.slides[0].elements.map((e) => e.softEdge).filter(Boolean).length).toBe(2);
   });
 });
