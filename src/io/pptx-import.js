@@ -255,19 +255,21 @@ function textBody(txBody, ctx, { chain = [], defaults = {}, base: fixedBase = nu
   const firstRun = paras.find((p) => p.first)?.first;
   const base = fixedBase || (firstRun ? { ...firstRun.props } : { ...defaults, ...(paras[0]?.props.run || {}) });
   const baseSize = base.size || defaults.size || 18;
+  // Shrink on overflow takes this much off the line spacing, and as much off the space between paragraphs.
+  const reduce = Math.max(0, Math.min(0.9, ctx.lnSpcReduction || 0));
   paras.forEach((p, i) => {
     const { props } = p;
-    p.linePx = props.linePx ? round1(props.linePx) : null;
-    p.line = p.linePx ? null : Math.max(0.1, Math.round((props.lineHeight ?? 1.2) * 100) / 100);
+    p.linePx = props.linePx ? round1(props.linePx * (1 - reduce)) : null;
+    p.line = p.linePx ? null : Math.max(0.1, Math.round(((props.lineHeight ?? 1.2) - reduce * 1.2) * 100) / 100);
     // PowerPoint leaves out the first paragraph's space before.
-    p.gap = i ? round1(spacePx(paras[i - 1].props.spcAft, paras[i - 1].size) + spacePx(props.spcBef, p.size)) : 0;
+    p.gap = i ? round1((spacePx(paras[i - 1].props.spcAft, paras[i - 1].size) + spacePx(props.spcBef, p.size)) * (1 - reduce)) : 0;
   });
   const lines = paras.map((p) => p.line).filter((v) => v != null);
-  const lineHeight = lines.length ? commonest(lines) : 1.2;
+  const lineHeight = lines.length ? commonest(lines) : Math.round((1.2 - reduce * 1.2) * 100) / 100;
   // A box of one paragraph keeps the space it would put between paragraphs, for ones added to it.
   const lead = paras[0]?.props || {};
   const gapPx = paras.length > 1 ? commonest(paras.slice(1).map((p) => p.gap))
-    : spacePx(lead.spcAft, paras[0]?.size) + spacePx(lead.spcBef, paras[0]?.size);
+    : (spacePx(lead.spcAft, paras[0]?.size) + spacePx(lead.spcBef, paras[0]?.size)) * (1 - reduce);
   const spacing = Math.round((gapPx / baseSize) * 100) / 100;
 
   const out = [];
@@ -950,8 +952,10 @@ async function readSlide(pkg, slidePath, ctx, deck) {
           stroke = { color: refs.line, width: attr(ln, 'w') ? Math.round((+attr(ln, 'w') / EMU_PER_PT) * k * 10) / 10 : 0.75, dash: 'solid' };
         }
         const bodyPr = kid(txBody, 'bodyPr');
-        const fontScale = +(attr(kid(bodyPr, 'normAutofit'), 'fontScale') || 100000) / 100000;
-        const lctx = { ...tctx, fontScale };
+        // Shrink text on overflow: PowerPoint stores how far it shrank the text and its line spacing.
+        const autofit = kid(bodyPr, 'normAutofit');
+        const fontScale = attr(autofit, 'fontScale') != null ? pctOf(attr(autofit, 'fontScale')) || 1 : 1;
+        const lctx = { ...tctx, fontScale, lnSpcReduction: pctOf(attr(autofit, 'lnSpcReduction')) };
         const isTitle = role === 'title';
         // Text formatting, lowest priority first: the master's text styles (or
         // the presentation's defaults for ordinary text boxes), the master's

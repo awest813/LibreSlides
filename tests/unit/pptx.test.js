@@ -302,6 +302,13 @@ describe('PowerPoint paragraphs, bullets and lists', () => {
     expect(back.style).toMatchObject({ lineHeight: 1.2, spacing: 0.3 });
   });
 
+  it('shrinks line spacing and the space between paragraphs as PowerPoint shrank them', async () => {
+    const paras = para('<a:pPr><a:spcBef><a:spcPts val="1000"/></a:spcBef></a:pPr>', 'One') + para('<a:pPr><a:spcBef><a:spcPts val="1000"/></a:spcBef></a:pPr>', 'Two');
+    const plain = await readBody(paras);
+    const shrunk = await readBody(paras, { bodyPr: '<a:bodyPr><a:normAutofit fontScale="50000" lnSpcReduction="20000"/></a:bodyPr>' });
+    expect(plain.style).toMatchObject({ size: 20, lineHeight: 1.2, spacing: 0.5 });
+    expect(shrunk.style).toMatchObject({ size: 10, lineHeight: 0.96, spacing: 0.8 });
+  });
 
   it('sets East Asian and complex-script text in their own fonts, and keeps them', async () => {
     const rPr = '<a:rPr lang="ja-JP" sz="2000"><a:latin typeface="Calibri"/><a:ea typeface="MS Gothic"/><a:cs typeface="Arial"/></a:rPr>';
