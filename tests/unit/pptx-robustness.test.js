@@ -117,3 +117,23 @@ describe('damaged and hostile PowerPoint files', () => {
     expect(Object.keys(deck.media)).toHaveLength(2);
   });
 });
+
+describe('text that could break the XML of exported files', () => {
+  it('escapes font names (which pptxgenjs writes as they are) and ignores unknown transitions', async () => {
+    const box = Object.assign(newTextBox(10, 10), { text: '<p><span style="font-family: \'A&lt;B&amp;C\'">x</span> y</p>' });
+    box.style = { ...box.style, font: 'F"/><evil/><a:latin typeface="' };
+    const deck = deckWith(box);
+    deck.slides[0].transition = { type: 'constructor', duration: 'slow' };
+    deck.slides[0].notes = 'a bell \u0007 rings';
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deck)));
+    for (const name of Object.keys(zip.files).filter((n) => /\.(xml|rels)$/.test(n))) {
+      const xml = await zip.file(name).async('string');
+      const doc = new DOMParser().parseFromString(xml, 'application/xml');
+      expect(doc.getElementsByTagName('parsererror')).toHaveLength(0);
+      expect(xml).not.toMatch(/<evil|native code|\u0007/);
+    }
+    const back = await importPptx(await zip.generateAsync({ type: 'arraybuffer' }), 'x');
+    // The names come back as names (less what can't go into CSS).
+    expect(back.slides[0].elements[0].text).toContain("font-family: 'F/evil/a:latin typeface='");
+  });
+});

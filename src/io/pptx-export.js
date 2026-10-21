@@ -14,6 +14,7 @@ import { timingXml, insertTiming } from './pptx-timing.js';
 import { writeComments } from './pptx-comments.js';
 import { writeSections } from './pptx-sections.js';
 import { exportsAsSmartArt, writeDiagram } from './pptx-diagram.js';
+import { xmlText } from './ooxml.js';
 import { diagramAsShapes } from '../model/diagram-layout.js';
 
 /**
@@ -41,6 +42,9 @@ export function toHex(css) {
 
 /** A line end (true or a style name) as pptxgenjs's arrow type. */
 const arrowType = (end) => (['arrow', 'stealth', 'diamond', 'oval'].includes(end) ? end : 'triangle');
+
+/** A font name as pptxgenjs takes it: it writes font names into the XML as they are, so they're escaped here. */
+const fontFace = (name) => (name ? xmlText(name) : undefined);
 
 const DASH = { solid: 'solid', dash: 'dash', dot: 'sysDot', dashDot: 'dashDot', longDash: 'lgDash' };
 
@@ -205,7 +209,7 @@ function toRunOptions(s) {
   if (s.color) o.color = s.color;
   if (s.highlight) o.highlight = s.highlight;
   if (s.fontSize) o.fontSize = s.fontSize;
-  if (s.fontFace) o.fontFace = s.fontFace;
+  if (s.fontFace) o.fontFace = fontFace(s.fontFace);
   if (s.subscript) o.subscript = true;
   if (s.superscript) o.superscript = true;
   if (s.hyperlink) o.hyperlink = s.hyperlink;
@@ -486,7 +490,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
 
   if (el.type === 'table') {
     const t = textStyle({ ...el, type: 'text' }, theme);
-    const base = { fontFace: t.font, fontSize: t.size, color: toHex(resolveColor(t.color, theme)) || '000000' };
+    const base = { fontFace: fontFace(t.font), fontSize: t.size, color: toHex(resolveColor(t.color, theme)) || '000000' };
     const header = toHex(resolveColor(el.fill || 'theme:accent1', theme));
     const cols = el.cells[0].length;
     const dashes = []; // borders pptxgenjs can only write solid or dashed: { index (of the cell in the grid), side, dash }
@@ -579,7 +583,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
     return;
   }
   const base = {
-    fontFace: t.font,
+    fontFace: fontFace(t.font),
     fontSize: t.size,
     color: toHex(resolveColor(t.color, theme)) || '000000',
     bold: t.bold || undefined,
@@ -972,8 +976,8 @@ async function postProcess(buffer, deck, allMarks) {
     xml = await applyPictureFills(zip, i + 1, xml, allMarks[i]);
     xml = await applyDiagrams(zip, i + 1, xml, allMarks[i].diagrams, deck);
     const t = slide.transition;
-    if (t && TRANSITION_XML[t.type]) {
-      const d = t.duration ?? 0.6;
+    if (t && Object.hasOwn(TRANSITION_XML, t.type)) {
+      const d = Number.isFinite(t.duration) ? t.duration : 0.6;
       const spd = d < 0.45 ? 'fast' : d < 0.9 ? 'med' : 'slow';
       const tr = `<p:transition spd="${spd}">${TRANSITION_XML[t.type]}</p:transition>`;
       xml = xml.includes('</p:clrMapOvr>') ? xml.replace('</p:clrMapOvr>', `</p:clrMapOvr>${tr}`) : xml.replace('</p:sld>', `${tr}</p:sld>`);

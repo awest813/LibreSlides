@@ -411,8 +411,8 @@ export function addChart(pptx, slide, el, theme, geom, objectName) {
   const text = hex(ink) || '000000';
   const grid = hex(/^#[0-9a-f]{6}$/i.test(ink) ? blend(ink, backgroundBaseColor(theme.background), 0.2) : null) || 'D9D9D9';
   const size = el.style?.size || 12;
-  // Font names go into the chart's XML as they are.
-  const font = (el.style?.font || theme.fonts.body).replace(/[&<>"]/g, '');
+  // pptxgenjs writes font names into the chart's XML as they are.
+  const font = xmlText(el.style?.font || theme.fonts.body);
   const fill = hex(resolveColor(el.fill, theme, null));
   const border = el.stroke?.width && el.stroke.color !== 'none' ? hex(resolveColor(el.stroke.color, theme, null)) : null;
   const grouping = chart.grouping === 'percent' ? 'percentStacked' : chart.grouping === 'stacked' ? 'stacked' : null;
