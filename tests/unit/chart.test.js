@@ -4,7 +4,8 @@ import PptxGenJS from 'pptxgenjs';
 import { buildPptx } from '../../src/io/pptx-export.js';
 import { importPptx } from '../../src/io/pptx-import.js';
 import { sanitizeDeck } from '../../src/io/sanitize.js';
-import { renderChart, niceScale, paletteColor } from '../../src/render/chart.js';
+import { renderChart, niceScale, axisScale, paletteColor } from '../../src/render/chart.js';
+import { formatValue, isDateFormat } from '../../src/render/number-format.js';
 import { newDeck, newChart, slideText } from '../../src/model/deck.js';
 import { themeById } from '../../src/model/themes.js';
 
@@ -37,6 +38,12 @@ async function roundTrip(deck, edit) {
 const chartParts = (zip) => Object.keys(zip.files).filter((f) => /^ppt\/charts\/chart\d+\.xml$/.test(f)).sort((a, b) => parseInt(a.match(/\d+/)[0], 10) - parseInt(b.match(/\d+/)[0], 10));
 const chartsOf = (deck) => deck.slides.flatMap((s) => s.elements.filter((e) => e.type === 'chart'));
 const render = (el) => renderChart(el, { theme });
+
+/** A deck whose first chart part is replaced by `plot` (inside c:plotArea) and `extra` (inside c:chart). */
+const withChartXml = (plot, extra = '') => roundTrip(deckWith(chartEl()), (zip) => zip.file(chartParts(zip)[0],
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+  + `<c:chart>${extra}<c:plotArea>${plot}</c:plotArea></c:chart></c:chartSpace>`));
+const ser = (name, vals, more = '') => `<c:ser><c:idx val="0"/><c:tx><c:v>${name}</c:v></c:tx>${more}<c:val><c:numLit><c:ptCount val="${vals.length}"/>${vals.map((v, i) => `<c:pt idx="${i}"><c:v>${v}</c:v></c:pt>`).join('')}</c:numLit></c:val></c:ser>`;
 
 describe('chart export', () => {
   it('writes a native PowerPoint chart part', async () => {
@@ -128,12 +135,6 @@ describe('reading PowerPoint charts', () => {
     ]);
     expect(slideText(deck.slides[0])).toContain('Traffic');
   });
-
-  /** A deck whose first chart part is replaced by `plot` (inside c:plotArea) and `extra` (inside c:chart). */
-  const withChartXml = (plot, extra = '') => roundTrip(deckWith(chartEl()), (zip) => zip.file(chartParts(zip)[0],
-    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
-    + `<c:chart>${extra}<c:plotArea>${plot}</c:plotArea></c:chart></c:chartSpace>`));
-  const ser = (name, vals, more = '') => `<c:ser><c:idx val="0"/><c:tx><c:v>${name}</c:v></c:tx>${more}<c:val><c:numLit><c:ptCount val="${vals.length}"/>${vals.map((v, i) => `<c:pt idx="${i}"><c:v>${v}</c:v></c:pt>`).join('')}</c:numLit></c:val></c:ser>`;
 
   it('reads 3-D, combination and dated charts as flat ones', async () => {
     const cat = '<c:cat><c:numRef><c:numCache><c:formatCode>m/d/yyyy</c:formatCode><c:ptCount val="2"/><c:pt idx="0"><c:v>45292</c:v></c:pt><c:pt idx="1"><c:v>45323</c:v></c:pt></c:numCache></c:numRef></c:cat>';
@@ -252,5 +253,295 @@ describe('untrusted chart data', () => {
     expect(chart.series).toHaveLength(200);
     expect(chart.series[0].values).toHaveLength(1000);
     expect(chart.series[0].name).toHaveLength(255);
+  });
+});
+
+// ------------------------------------------------------------------ number formats, labels, axes, rings, combinations
+
+/** A number with exactly `d` decimals, as the reader's locale writes it. */
+const num = (v, d = 0, grouping = true) => new Intl.NumberFormat(undefined, { minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: grouping }).format(v);
+const texts = (svg, sel) => [...svg.querySelectorAll(sel)].map((t) => t.textContent);
+const partXml = async (zip, i = 0) => zip.file(chartParts(zip)[i]).async('string');
+
+describe('number formats', () => {
+  it('formats numbers as Excel codes do', () => {
+    expect(formatValue(1234.567, 'General')).toBe(num(1234.567, 2).replace(/0+$/, ''));
+    expect(formatValue(1234.567, '0')).toBe(num(1235, 0, false));
+    expect(formatValue(1234.567, '0.0')).toBe(num(1234.6, 1, false));
+    expect(formatValue(1234.5, '0.00')).toBe(num(1234.5, 2, false));
+    expect(formatValue(1234567.8, '#,##0')).toBe(num(1234568));
+    expect(formatValue(1234.5, '#,##0.00')).toBe(num(1234.5, 2));
+    expect(formatValue(0.123, '0%')).toBe('12%');
+    expect(formatValue(0.1234, '0.0%')).toBe(`${num(12.3, 1)}%`);
+    expect(formatValue(1234, '$#,##0')).toBe(`$${num(1234)}`);
+    expect(formatValue(-1234, '$#,##0')).toBe(`-$${num(1234)}`);
+    expect(formatValue(1234, '#,##0 €')).toBe(`${num(1234)} €`);
+    expect(formatValue(1234, '#,##0\\ "€"')).toBe(`${num(1234)} €`);
+    expect(formatValue(1234, '[$€-407]#,##0')).toBe(`€${num(1234)}`);
+    expect(formatValue(-5, '#,##0;(#,##0)')).toBe('(5)');
+    expect(formatValue(0, '#,##0;-#,##0;"zero"')).toBe('zero');
+    expect(formatValue(1234567, '#,##0,"K"')).toBe(`${num(1235)}K`);
+  });
+
+  it('formats dates', () => {
+    expect(isDateFormat('m/d/yyyy')).toBe(true);
+    expect(isDateFormat('#,##0.00')).toBe(false);
+    expect(isDateFormat('"days" 0')).toBe(false);
+    expect(formatValue(45292, 'm/d/yyyy')).toBe('1/1/2024');
+    expect(formatValue(45292, 'yyyy-mm-dd')).toBe('2024-01-01');
+    expect(formatValue(45292.75, 'h:mm AM/PM')).toBe('6:00 PM');
+    expect(formatValue(45292, 'mmm yy')).toMatch(/24$/);
+  });
+});
+
+describe('chart number formats, labels and axes', () => {
+  const cats = ['North', 'South', 'East'];
+  const sales = (more = {}) => chartEl({ categories: cats, series: [{ name: 'S', values: [1250, 2300, 1800] }], legend: 'none', ...more });
+
+  it('draws ticks and labels in the chart’s number formats', () => {
+    const svg = render(sales({ numberFormat: '$#,##0', labelFormat: '#,##0.0', dataLabels: true }));
+    expect(texts(svg, '.chart-labels > text:not(.chart-label)')).toContain(`$${num(2500)}`);
+    expect(texts(svg, '.chart-label')).toEqual([num(1250, 1), num(2300, 1), num(1800, 1)]);
+  });
+
+  it('shows categories, values and percentages on pie labels', () => {
+    const pie = chartEl({ kind: 'pie', categories: ['A', 'B'], series: [{ name: 'S', values: [3, 1] }], dataLabels: true, labelContent: ['category', 'percent'] });
+    const labels = [...render(pie).querySelectorAll('.chart-label')].map((t) => [...t.querySelectorAll('tspan')].map((s) => s.textContent));
+    expect(labels).toEqual([['A', '75%'], ['B', '25%']]);
+    // Old decks (true / false) show values.
+    expect(texts(render({ ...pie, chart: { ...pie.chart, labelContent: undefined } }), '.chart-label')).toEqual(['3', '1']);
+  });
+
+  it('follows the value axis’s bounds, unit, gridlines and titles', () => {
+    expect(axisScale(0, 2300, 6, { min: 0, max: 4000, unit: 500 })).toMatchObject({ min: 0, max: 4000, step: 500 });
+    expect(axisScale(0, 2300, 6, { max: 3000 })).toMatchObject({ min: 0, max: 3000 });
+    expect(axisScale(0, 0.5, 6, { min: 0, max: 0.6 }, 100)).toMatchObject({ min: 0, max: 60 });
+    // Units too fine for the range fall back to the automatic scale.
+    expect(axisScale(0, 2300, 6, { unit: 0.0001 })).toMatchObject({ step: 500 });
+    const svg = render(sales({ valueAxis: { min: 0, max: 4000, unit: 500, gridlines: false, title: 'Revenue' }, categoryAxis: { title: 'Region' } }));
+    const ticks = texts(svg, '.chart-labels > text');
+    expect(ticks).toContain(num(4000, 0, true));
+    expect(ticks.filter((t) => /^\d/.test(t))).toHaveLength(9);
+    expect(svg.querySelectorAll('.chart-grid line:not(.chart-axis)')).toHaveLength(0);
+    expect(texts(svg, '.chart-axis-title')).toEqual(['Region', 'Revenue']);
+  });
+
+  it('spaces bars by their gap width and overlap', () => {
+    const widths = (more) => [...render(chartEl({ categories: ['a'], series: [{ name: 'A', values: [1] }, { name: 'B', values: [2] }], legend: 'none', ...more })).querySelectorAll('.chart-bar')].map((b) => [+b.getAttribute('x'), +b.getAttribute('width')]);
+    const [[x1, w1], [x2]] = widths({});
+    expect(x2 - x1).toBeCloseTo(w1, 0);
+    const [[a, wide], [b]] = widths({ gapWidth: 0, overlap: 50 });
+    expect(wide).toBeGreaterThan(w1);
+    expect(b - a).toBeCloseTo(wide / 2, 0);
+  });
+
+  it('places data labels where the chart says', () => {
+    const at = (labelPosition) => {
+      const svg = render(sales({ dataLabels: true, labelPosition }));
+      const bar = svg.querySelector('.chart-bar');
+      const y = +svg.querySelector('.chart-label').getAttribute('y');
+      return y - +bar.getAttribute('y');
+    };
+    expect(at('outEnd')).toBeLessThan(0);
+    expect(at('inEnd')).toBeGreaterThan(0);
+    expect(at('inBase')).toBeGreaterThan(at('ctr'));
+    expect(at('ctr')).toBeGreaterThan(at('inEnd'));
+  });
+
+  it('draws a ring per doughnut series, the first innermost', () => {
+    const svg = render(chartEl({ kind: 'doughnut', categories: ['a', 'b'], series: [{ name: 'X', values: [1, 1] }, { name: 'Y', values: [2, 1] }, { name: 'Z', values: [1, 3] }] }));
+    expect(svg.querySelectorAll('.chart-slice')).toHaveLength(6);
+    // Pies still show their first series only.
+    expect(render(chartEl({ kind: 'pie', categories: ['a', 'b'], series: [{ name: 'X', values: [1, 1] }, { name: 'Y', values: [2, 1] }] })).querySelectorAll('.chart-slice')).toHaveLength(2);
+  });
+
+  it('joins scatter points with lines when asked', () => {
+    const scatter = (more) => render(chartEl({ kind: 'scatter', categories: ['1', '2', '3'], series: [{ name: 'S', values: [1, 3, 2] }], ...more }));
+    expect(scatter({}).querySelectorAll('.chart-line')).toHaveLength(0);
+    expect(scatter({ lines: true }).querySelectorAll('.chart-line')).toHaveLength(1);
+    expect(scatter({ lines: true, markers: false }).querySelectorAll('.chart-marker')).toHaveLength(0);
+    expect(scatter({ lines: true, smooth: true }).querySelector('.chart-line').getAttribute('d')).toContain('C');
+  });
+
+  it('stacks lines and draws 100% stacked areas to the top', () => {
+    const data = { categories: ['a', 'b'], series: [{ name: 'A', values: [1, 2] }, { name: 'B', values: [3, 2] }], legend: 'none' };
+    const top = (svg) => Math.min(...[...svg.querySelectorAll('.chart-line')].flatMap((l) => l.getAttribute('d').match(/[\d.]+,[\d.]+/g).map((p) => +p.split(',')[1])));
+    const plain = render(chartEl({ kind: 'line', ...data }));
+    const stacked = render(chartEl({ kind: 'line', grouping: 'stacked', ...data }));
+    expect(texts(stacked, '.chart-labels > text')).toContain('4');
+    expect(top(stacked)).toBeLessThanOrEqual(top(plain));
+    const percent = render(chartEl({ kind: 'area', grouping: 'percent', ...data }));
+    expect(texts(percent, '.chart-labels > text')).toContain('100%');
+  });
+
+  it('draws combination charts with a secondary axis', () => {
+    const svg = render(chartEl({
+      categories: ['a', 'b', 'c'], legend: 'bottom',
+      series: [{ name: 'Units', values: [120, 150, 90] }, { name: 'Margin', values: [0.1, 0.2, 0.15], kind: 'line', secondary: true }],
+      secondaryAxis: { numberFormat: '0%', title: 'Margin' },
+    }));
+    expect(svg.querySelectorAll('.chart-bar')).toHaveLength(3);
+    expect(svg.querySelectorAll('.chart-line')).toHaveLength(1);
+    expect(svg.querySelectorAll('.chart-legend line')).toHaveLength(1);
+    const right = [...svg.querySelectorAll('.chart-labels > text')].filter((t) => t.getAttribute('text-anchor') === 'start').map((t) => t.textContent);
+    expect(right).toContain('20%');
+    expect(texts(svg, '.chart-axis-title')).toEqual(['Margin']);
+  });
+});
+
+describe('exporting chart details', () => {
+  it('writes number formats, axis settings, gap width and label positions', async () => {
+    const zip = await exportZip(deckWith(chartEl({
+      numberFormat: '$#,##0', labelFormat: '0.0', dataLabels: true, labelPosition: 'inEnd', gapWidth: 60, overlap: -20,
+      valueAxis: { min: 0, max: 8, unit: 2, gridlines: false, title: 'Value' }, categoryAxis: { title: 'Kind' },
+    })));
+    const xml = await partXml(zip);
+    expect(xml).toContain('<c:numFmt formatCode="$#,##0" sourceLinked="0"/>');
+    expect(xml).toContain('<c:numFmt formatCode="0.0" sourceLinked="0"/>');
+    expect(xml).toMatch(/<c:max val="8"\/><c:min val="0"\/>/);
+    expect(xml).toContain('<c:majorUnit val="2"/>');
+    expect(xml).not.toContain('<c:majorGridlines>');
+    expect(xml).toContain('<a:t>Value</a:t>');
+    expect(xml).toContain('<a:t>Kind</a:t>');
+    expect(xml).toContain('<c:gapWidth val="60"/>');
+    expect(xml).toContain('<c:overlap val="-20"/>');
+    expect(xml).toContain('<c:dLblPos val="inEnd"/>');
+  });
+
+  it('writes pie percentages, doughnut rings, 100% areas, stacked lines and scatter lines', async () => {
+    const zip = await exportZip(deckWith(
+      chartEl({ kind: 'pie', dataLabels: true, labelContent: ['category', 'percent'], labelPosition: 'outEnd' }),
+      chartEl({ kind: 'doughnut', holeSize: 60 }),
+      chartEl({ kind: 'area', grouping: 'percent' }),
+      chartEl({ kind: 'line', grouping: 'stacked' }),
+      chartEl({ kind: 'scatter', categories: ['1', '2', '3', '4'], lines: true, smooth: true, markers: false }),
+      chartEl({ kind: 'column', dataLabels: true, labelContent: ['category', 'value'] }),
+    ));
+    const [pie, doughnut, area, line, scatter, column] = await Promise.all([0, 1, 2, 3, 4, 5].map((i) => partXml(zip, i)));
+    expect(pie).toMatch(/<c:dLbl>.*?<c:dLblPos val="outEnd"\/>.*?<c:showVal val="0"\/>\s*<c:showCatName val="1"\/>.*?<c:showPercent val="1"\/>/s);
+    expect(doughnut.match(/<c:ser>/g)).toHaveLength(3);
+    expect(doughnut).toContain('<c:holeSize val="60"/>');
+    expect(doughnut).toContain('<c:v>Series 3</c:v>');
+    expect(doughnut).toContain('Sheet1!$D$2:$D$5');
+    expect(area).toContain('<c:grouping val="percentStacked"/>');
+    expect(line).toContain('<c:lineChart><c:grouping val="stacked"/>');
+    expect(scatter).toContain('<c:smooth val="1"/>');
+    expect(scatter).toContain('<c:symbol val="none"/>');
+    expect(scatter).toMatch(/<c:ser>[^]*?<c:spPr><a:solidFill>[^]*?<a:ln w="28575"/);
+    expect(column).toContain('<c:showCatName val="1"/>');
+  });
+
+  it('writes combination charts with a secondary axis', async () => {
+    const zip = await exportZip(deckWith(chartEl({
+      series: [{ name: 'A', values: [1, 2, 3, 4], color: '#112233' }, { name: 'B', values: [2, 3, 4, 5] }, { name: 'C', values: [0.1, 0.2, 0.3, 0.4], kind: 'line', secondary: true, color: '#aa0000' }],
+      markers: true, secondaryAxis: { numberFormat: '0%' },
+    })));
+    const xml = await partXml(zip);
+    expect(xml.match(/<c:barChart>/g)).toHaveLength(1);
+    expect(xml.match(/<c:lineChart>/g)).toHaveLength(1);
+    expect(xml.match(/<c:valAx>/g)).toHaveLength(2);
+    expect(xml).toContain('<c:numFmt formatCode="0%" sourceLinked="0"/>');
+    // The line's markers are its own colour.
+    expect(/<c:lineChart>[\s\S]*<c:marker>[\s\S]*?<a:solidFill><a:srgbClr val="([0-9A-F]+)"/.exec(xml)[1]).toBe('AA0000');
+  });
+
+  it('keeps every new setting through a round trip', async () => {
+    const els = chartsOf(await roundTrip(deckWith(
+      chartEl({ numberFormat: '#,##0.00', dataLabels: true, labelPosition: 'ctr', gapWidth: 80, overlap: 25, valueAxis: { min: 1, max: 9, unit: 2, gridlines: false, title: 'V' }, categoryAxis: { title: 'C' } }),
+      chartEl({ kind: 'pie', dataLabels: true, labelContent: ['category', 'percent'], labelPosition: 'outEnd', legend: 'none', categories: ['A', 'B'], series: [{ name: 'S', values: [1, 2] }] }),
+      chartEl({ kind: 'doughnut', holeSize: 70 }),
+      chartEl({ kind: 'area', grouping: 'percent' }),
+      chartEl({ kind: 'line', grouping: 'stacked', smooth: true }),
+      chartEl({ kind: 'scatter', categories: ['1', '2', '3', '4'], lines: true, markers: false }),
+      chartEl({ series: [{ name: 'A', values: [1, 2, 3, 4] }, { name: 'B', values: [4, 3, 2, 1], kind: 'line', secondary: true }], secondaryAxis: { numberFormat: '0.0', title: 'Right' } }),
+    )));
+    const [column, pie, doughnut, area, line, scatter, combo] = els.map((e) => e.chart);
+    // A pie without a legend keeps its text style (from its data labels).
+    expect(els[1].style).toMatchObject({ size: 12, font: els[0].style.font });
+    expect(column).toMatchObject({ numberFormat: '#,##0.00', dataLabels: true, labelPosition: 'ctr', gapWidth: 80, overlap: 25, valueAxis: { min: 1, max: 9, unit: 2, gridlines: false, title: 'V' }, categoryAxis: { title: 'C' } });
+    expect(column.labelFormat).toBeUndefined();
+    expect(pie).toMatchObject({ dataLabels: true, labelContent: ['category', 'percent'], labelPosition: 'outEnd' });
+    expect(doughnut.holeSize).toBe(70);
+    expect(doughnut.series.map((s) => s.values)).toEqual(chartEl().chart.series.map((s) => s.values));
+    expect(area.grouping).toBe('percent');
+    expect(line).toMatchObject({ grouping: 'stacked', smooth: true });
+    expect(scatter).toMatchObject({ lines: true, markers: false });
+    expect(combo.series.map((s) => [s.name, s.kind, s.secondary])).toEqual([['A', undefined, undefined], ['B', 'line', true]]);
+    expect(combo.secondaryAxis).toEqual({ numberFormat: '0.0', title: 'Right' });
+  });
+});
+
+describe('reading chart details back', () => {
+  it('leaves pie labels at their automatic place', async () => {
+    const [el] = chartsOf(await roundTrip(deckWith(chartEl({ kind: 'pie', dataLabels: true, labelContent: ['percent'] }))));
+    expect(el.chart.labelPosition).toBeUndefined();
+    expect(el.chart.labelContent).toEqual(['percent']);
+  });
+});
+
+describe('reading chart details from PowerPoint', () => {
+  const ax = (tag, id, cross, more = '') => `<c:${tag}><c:axId val="${id}"/><c:scaling><c:orientation val="minMax"/>${tag === 'valAx' && more.includes('SCALE') ? '<c:max val="50"/><c:min val="-10"/>' : ''}</c:scaling>${more.replace('SCALE', '')}<c:crossAx val="${cross}"/></c:${tag}>`;
+  const title = (text) => `<c:title><c:tx><c:rich><a:p><a:r><a:t>${text}</a:t></a:r></a:p></c:rich></c:tx></c:title>`;
+  const cache = (vals, format) => `<c:val><c:numRef><c:numCache><c:formatCode>${format}</c:formatCode><c:ptCount val="${vals.length}"/>${vals.map((v, i) => `<c:pt idx="${i}"><c:v>${v}</c:v></c:pt>`).join('')}</c:numCache></c:numRef></c:val>`;
+
+  it('reads number formats, axis scale, titles, gridlines, gaps and label positions', async () => {
+    const labels = '<c:dLbls><c:numFmt formatCode="0.0" sourceLinked="0"/><c:dLblPos val="inBase"/><c:showVal val="1"/></c:dLbls>';
+    const deck = await withChartXml(
+      `<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:ser><c:idx val="0"/><c:tx><c:v>S</c:v></c:tx>${cache([1, 2], '#,##0 €')}</c:ser>${labels}<c:gapWidth val="40"/><c:overlap val="-10"/><c:axId val="1"/><c:axId val="2"/></c:barChart>`
+      + ax('catAx', 1, 2, title('Month')) + ax('valAx', 2, 1, `SCALE<c:majorGridlines/>${title('Euros')}<c:numFmt formatCode="General" sourceLinked="1"/><c:majorUnit val="5"/>`),
+    );
+    expect(chartsOf(deck)[0].chart).toMatchObject({
+      numberFormat: '#,##0 €', labelFormat: '0.0', labelPosition: 'inBase', gapWidth: 40, overlap: -10, dataLabels: true,
+      valueAxis: { min: -10, max: 50, unit: 5, title: 'Euros' }, categoryAxis: { title: 'Month' },
+    });
+    expect(chartsOf(deck)[0].chart.valueAxis.gridlines).toBeUndefined();
+  });
+
+  it('reads pie percentages and category names, and every doughnut ring', async () => {
+    const pie = await withChartXml(`<c:pieChart><c:varyColors val="1"/>${ser('Fruit', [3, 1])}<c:dLbls><c:showVal val="0"/><c:showCatName val="1"/><c:showPercent val="1"/></c:dLbls></c:pieChart>`);
+    expect(chartsOf(pie)[0].chart).toMatchObject({ dataLabels: true, labelContent: ['category', 'percent'] });
+    const ring = await withChartXml(`<c:doughnutChart><c:varyColors val="1"/>${ser('A', [1, 2])}${ser('B', [3, 4])}<c:holeSize val="75"/></c:doughnutChart>`);
+    const { chart } = chartsOf(ring)[0];
+    expect(chart.series.map((s) => s.values)).toEqual([[1, 2], [3, 4]]);
+    expect(chart.holeSize).toBe(75);
+  });
+
+  it('reads scatter lines and markers, and stacked lines', async () => {
+    const xy = (ln, symbol) => `<c:ser><c:idx val="0"/><c:spPr>${ln}</c:spPr><c:marker><c:symbol val="${symbol}"/></c:marker><c:xVal><c:numLit><c:ptCount val="2"/><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>2</c:v></c:pt></c:numLit></c:xVal><c:yVal><c:numLit><c:ptCount val="2"/><c:pt idx="0"><c:v>3</c:v></c:pt><c:pt idx="1"><c:v>4</c:v></c:pt></c:numLit></c:yVal><c:smooth val="1"/></c:ser>`;
+    const lines = await withChartXml(`<c:scatterChart><c:scatterStyle val="smoothMarker"/>${xy('<a:ln w="19050"/>', 'none')}</c:scatterChart>`);
+    expect(chartsOf(lines)[0].chart).toMatchObject({ kind: 'scatter', lines: true, smooth: true, markers: false });
+    const dots = await withChartXml(`<c:scatterChart><c:scatterStyle val="lineMarker"/>${xy('<a:ln><a:noFill/></a:ln>', 'circle')}</c:scatterChart>`);
+    expect(chartsOf(dots)[0].chart.lines).toBeUndefined();
+    const stacked = await withChartXml(`<c:lineChart><c:grouping val="percentStacked"/>${ser('A', [1, 2])}</c:lineChart>`);
+    expect(chartsOf(stacked)[0].chart.grouping).toBe('percent');
+  });
+
+  it('reads column and line combinations, with a secondary axis', async () => {
+    const deck = await withChartXml(
+      `<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/>${ser('Units', [5, 6])}<c:axId val="1"/><c:axId val="2"/></c:barChart>`
+      + `<c:lineChart><c:grouping val="standard"/>${ser('Rate', [0.1, 0.2], '<c:marker><c:symbol val="circle"/></c:marker>')}<c:axId val="3"/><c:axId val="4"/></c:lineChart>`
+      + ax('catAx', 1, 2) + ax('valAx', 2, 1, '<c:majorGridlines/>') + ax('catAx', 3, 4, '<c:delete val="1"/>') + ax('valAx', 4, 3, `${title('Rate')}<c:numFmt formatCode="0%" sourceLinked="0"/>`),
+    );
+    const { chart } = chartsOf(deck)[0];
+    expect(chart.kind).toBe('column');
+    expect(chart.series.map((s) => [s.name, s.kind, s.secondary])).toEqual([['Units', undefined, undefined], ['Rate', 'line', true]]);
+    expect(chart.secondaryAxis).toEqual({ title: 'Rate', numberFormat: '0%' });
+    expect(chart.markers).toBe(true);
+  });
+});
+
+describe('untrusted chart details', () => {
+  it('keeps well-formed settings and drops the rest', () => {
+    const deck = sanitizeDeck({ slides: [{ elements: [{ type: 'chart', chart: {
+      kind: 'scatter', markers: false, lines: true, smooth: 'yes', numberFormat: '$#,##0', labelFormat: 'x'.repeat(200),
+      labelContent: ['percent', 'nonsense', 'category'], labelPosition: 'middle', gapWidth: 900, overlap: -150, holeSize: 'big',
+      valueAxis: { min: 0, max: Infinity, unit: -1, title: 7, gridlines: 'no', numberFormat: '0%' }, categoryAxis: { title: { x: 1 } }, secondaryAxis: { numberFormat: '0%' },
+      series: [{ name: 'S', values: [1], kind: 'pie', secondary: 'yes' }, { name: 'T', values: [2], kind: 'line', secondary: true }],
+    } }] }] });
+    const { chart } = deck.slides[0].elements[0];
+    expect(chart).toMatchObject({ markers: false, lines: true, numberFormat: '$#,##0', labelContent: ['category', 'percent'], gapWidth: 500, overlap: -100, valueAxis: { min: 0, title: '7' }, secondaryAxis: { numberFormat: '0%' } });
+    for (const key of ['smooth', 'labelFormat', 'labelPosition', 'holeSize', 'categoryAxis']) expect(chart[key]).toBeUndefined();
+    expect(chart.valueAxis).toEqual({ min: 0, title: '7' });
+    expect(chart.series).toEqual([{ name: 'S', values: [1] }, { name: 'T', values: [2], kind: 'line', secondary: true }]);
   });
 });

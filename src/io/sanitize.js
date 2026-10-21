@@ -188,14 +188,49 @@ export function sanitizeChart(chart) {
       };
       if (safeColor(s.color)) ser.color = safeColor(s.color);
       if (Array.isArray(s.pointColors)) ser.pointColors = s.pointColors.slice(0, CHART_LIMITS.points).map((p) => safeColor(p) || null);
+      if (['column', 'line', 'area'].includes(s.kind)) ser.kind = s.kind;
+      if (s.secondary === true) ser.secondary = true;
       return ser;
     }),
     legend: ['right', 'bottom', 'top', 'left', 'none'].includes(c.legend) ? c.legend : 'none',
     dataLabels: c.dataLabels === true,
   };
   if (['clustered', 'stacked', 'percent'].includes(c.grouping)) out.grouping = c.grouping;
-  if (c.markers === true) out.markers = true;
+  if (typeof c.markers === 'boolean' && (c.markers || c.kind === 'scatter')) out.markers = c.markers;
+  for (const key of ['lines', 'smooth']) if (c[key] === true) out[key] = true;
+  for (const key of ['numberFormat', 'labelFormat']) if (chartFormat(c[key])) out[key] = c[key];
+  if (Array.isArray(c.labelContent)) {
+    const parts = LABEL_PARTS.filter((p) => c.labelContent.includes(p));
+    if (parts.length) out.labelContent = parts;
+  }
+  if (LABEL_POSITIONS.includes(c.labelPosition)) out.labelPosition = c.labelPosition;
+  for (const [key, min, max] of [['gapWidth', 0, 500], ['overlap', -100, 100], ['holeSize', 10, 90]]) {
+    if (Number.isFinite(c[key])) out[key] = Math.min(max, Math.max(min, c[key]));
+  }
+  for (const key of ['valueAxis', 'secondaryAxis', 'categoryAxis']) {
+    const axis = chartAxis(c[key], key !== 'categoryAxis', key === 'secondaryAxis');
+    if (axis) out[key] = axis;
+  }
   return out;
+}
+
+/** A number format code: a short line of text (it goes into the chart's XML escaped). */
+const chartFormat = (v) => typeof v === 'string' && v.length > 0 && v.length <= 100 && !/[\u0000-\u001f]/.test(v);
+const LABEL_PARTS = ['category', 'value', 'percent'];
+const LABEL_POSITIONS = ['outEnd', 'inEnd', 'ctr', 'inBase', 'bestFit', 't', 'b', 'l', 'r'];
+
+/** A chart axis's title, (value axes) scale and gridlines and (the secondary one) number format, or null when it sets none. */
+function chartAxis(a, scaled, formatted) {
+  if (!isObject(a)) return null;
+  const out = {};
+  if (chartText(a.title)) out.title = chartText(a.title);
+  if (formatted && chartFormat(a.numberFormat)) out.numberFormat = a.numberFormat;
+  if (scaled) {
+    for (const key of ['min', 'max']) if (Number.isFinite(a[key])) out[key] = a[key];
+    if (Number.isFinite(a.unit) && a.unit > 0) out.unit = a.unit;
+    if (typeof a.gridlines === 'boolean') out.gridlines = a.gridlines;
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 /**

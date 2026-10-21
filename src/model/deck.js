@@ -14,13 +14,22 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  * A chart keeps its data in the element, so it can be edited and exported as
  * a real PowerPoint chart:
  *   chart { kind: column|bar|line|area|pie|doughnut|scatter,
- *           grouping: clustered|stacked|percent (columns, bars and areas),
- *           title, categories[], series[{ name, values[number|null], color?, pointColors? }],
- *           legend: right|bottom|top|left|none, dataLabels, markers (lines) }
- * Series without a colour take the theme's accents in turn; pie and doughnut
- * slices use the first series, coloured by its pointColors. A scatter chart's
- * categories are its X values. `style` { size, color, font } sets its text,
- * and `fill` and `stroke` the chart area's background and border.
+ *           grouping: clustered|stacked|percent (columns, bars, areas and lines),
+ *           title, categories[], series[{ name, values[number|null], color?, pointColors?,
+ *             kind?: column|line|area (combination charts), secondary? (right-hand axis) }],
+ *           legend: right|bottom|top|left|none, dataLabels, markers (lines; scatter unless false),
+ *           numberFormat?, labelFormat? (Excel codes: "#,##0.00", "0%", "$#,##0"…),
+ *           labelContent?: [category, value, percent] (default value), labelPosition?
+ *             (outEnd|inEnd|ctr|inBase|bestFit|t|b|l|r), lines?, smooth? (scatter, lines),
+ *           gapWidth? (0–500, default 150), overlap? (-100–100), holeSize? (10–90, default 50),
+ *           valueAxis?, secondaryAxis? { min?, max?, unit?, title?, gridlines?, numberFormat? (secondary) },
+ *           categoryAxis? { title } }
+ * Every optional field may be missing (older decks): the defaults are PowerPoint's.
+ * Series without a colour take the theme's accents in turn; pie slices use the
+ * first series and doughnuts a ring per series (the first innermost), coloured
+ * by the first series' pointColors. A scatter chart's categories are its X
+ * values. `style` { size, color, font } sets its text, and `fill` and
+ * `stroke` the chart area's background and border.
  *
  * Pictures may have colour adjustments, `adjust: { grayscale?, brightness?,
  * contrast? }` (-1 to 1), and be cropped to a shape, `clip: { shape, paths?,

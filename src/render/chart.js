@@ -1,5 +1,6 @@
 import { resolveColor, isDarkColor } from '../model/themes.js';
 import { fontStack } from '../model/fonts.js';
+import { formatValue, isGeneral, isPercentFormat } from './number-format.js';
 
 /**
  * Charts, drawn as inline SVG filling the element's box at 1px = 1pt. Text
@@ -46,6 +47,24 @@ export const pointColor = (chart, i, theme) => resolveColor(chart.series?.[0]?.p
 
 const contrastText = (fill) => (isDarkColor(fill) ? '#ffffff' : '#262626');
 
+// ------------------------------------------------------------------ kinds
+
+/** Chart kinds whose series can be drawn as one another (a combination chart). */
+export const COMBO_KINDS = ['column', 'line', 'area'];
+
+/** How series `k` is drawn: as its own kind in a combination chart, else as the chart's. */
+export function seriesKind(chart, k) {
+  const own = chart.series?.[k]?.kind;
+  return COMBO_KINDS.includes(chart.kind) && COMBO_KINDS.includes(own) ? own : chart.kind;
+}
+
+/** Whether series `k` is plotted against the secondary value axis (on the right). */
+export const onSecondaryAxis = (chart, k) => COMBO_KINDS.includes(chart.kind) && chart.series?.[k]?.secondary === true;
+
+/** Whether a scatter chart joins its points with lines (and marks them). */
+export const scatterLines = (chart) => chart.lines === true;
+export const showsMarkers = (chart) => (chart.kind === 'scatter' ? chart.markers !== false : chart.markers === true);
+
 // ------------------------------------------------------------------ numbers
 
 const numberFormats = new Map();
@@ -56,6 +75,29 @@ export function formatNumber(v, digits = 2) {
 }
 
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+
+/** What a data label shows: some of the category, the value and (pies) the share. */
+export const LABEL_PARTS = ['category', 'value', 'percent'];
+export function labelParts(chart) {
+  const list = Array.isArray(chart.labelContent) ? LABEL_PARTS.filter((p) => chart.labelContent.includes(p)) : [];
+  return list.length ? list : ['value'];
+}
+
+/**
+ * A data label's text: its parts in PowerPoint's order, in the labels'
+ * number format, on lines of their own in pies and doughnuts (as
+ * LibreOffice shows them) and separated by commas elsewhere.
+ */
+export function labelText(chart, value, category, share = null) {
+  const fmt = chart.labelFormat ?? chart.numberFormat;
+  const out = [];
+  for (const part of labelParts(chart)) {
+    if (part === 'category') out.push(String(category ?? ''));
+    else if (part === 'value') out.push(formatValue(value, fmt));
+    else if (share != null) out.push(formatValue(share, isPercentFormat(fmt) ? fmt : '0%'));
+  }
+  return out.filter((s) => s !== '').join(chart.kind === 'pie' || chart.kind === 'doughnut' ? '\n' : ', ');
+}
 
 /**
  * A rounded scale covering min…max in at most `maxTicks` steps of 1, 2 or 5
@@ -73,7 +115,29 @@ export function niceScale(min, max, maxTicks = 6) {
   const step = [1, 2, 5, 10].map((m) => m * mag).find((s) => s >= rough * 0.999) || 10 * mag;
   const lo = Math.floor(min / step + 1e-9) * step;
   const hi = Math.ceil(max / step - 1e-9) * step;
-  return { min: lo, max: hi === lo ? lo + step : hi, step, digits: Math.max(0, -Math.floor(Math.log10(step) + 1e-9)) };
+  return { min: lo, max: hi === lo ? lo + step : hi, step, digits: stepDigits(step) };
+}
+
+const stepDigits = (step) => Math.min(10, Math.max(0, -Math.floor(Math.log10(step) + 1e-9), (String(+step.toPrecision(12)).split('.')[1] || '').length));
+
+/**
+ * The scale of a value axis: automatic, with the axis's own minimum, maximum
+ * and major unit where it sets them (`k` turns them into the scale's units:
+ * 100 for 100% charts, whose axis runs 0…1 in PowerPoint).
+ */
+export function axisScale(lo, hi, maxTicks, axis = {}, k = 1) {
+  const own = (v) => (isNum(v) ? v * k : null);
+  const min = own(axis?.min);
+  const max = own(axis?.max);
+  const unit = own(axis?.unit) > 0 ? own(axis.unit) : null;
+  const auto = niceScale(min ?? lo, max ?? hi, maxTicks);
+  if (min == null && max == null && !unit) return auto;
+  const step = unit || auto.step;
+  const a = min ?? (unit ? Math.floor(Math.min(lo, max ?? lo) / unit + 1e-9) * unit : auto.min);
+  const b = max ?? (unit ? Math.ceil(Math.max(hi, a + unit) / unit - 1e-9) * unit : auto.max);
+  // A unit too small for the range would draw thousands of gridlines.
+  if (!(b > a) || (b - a) / step > 500) return auto;
+  return { min: a, max: b, step, digits: stepDigits(step) };
 }
 
 const ticksOf = (scale) => {
@@ -81,6 +145,12 @@ const ticksOf = (scale) => {
   for (let v = scale.min; v <= scale.max + scale.step / 1e6; v += scale.step) out.push(Math.abs(v) < scale.step / 1e6 ? 0 : v);
   return out;
 };
+
+/** A tick label of a value axis in its number format (or as a percentage for 100% charts). */
+function tickText(fmt, v, scale, percent) {
+  if (percent) return isPercentFormat(fmt) ? formatValue(v / 100, fmt) : `${formatNumber(v, scale.digits)}%`;
+  return isGeneral(fmt) ? formatNumber(v, scale.digits) : formatValue(v, fmt);
+}
 
 // ------------------------------------------------------------------ text
 
@@ -95,9 +165,13 @@ function fit(s, width, size) {
   return n ? `${s.slice(0, n).trimEnd()}…` : '';
 }
 
+/** A text centred on y; lines broken at "\n" are centred together. */
 function label(x, y, s, { size, anchor = 'middle', fill = null, opacity = null, cls = null, weight = null } = {}) {
-  const t = svgEl('text', { x: r1(x), y: r1(y + size * 0.35), 'font-size': r1(size), 'text-anchor': anchor, fill, 'fill-opacity': opacity, class: cls, 'font-weight': weight });
-  t.textContent = s;
+  const lines = String(s).split('\n');
+  const top = y - ((lines.length - 1) * size * 1.2) / 2;
+  const t = svgEl('text', { x: r1(x), y: r1(top + size * 0.35), 'font-size': r1(size), 'text-anchor': anchor, fill, 'fill-opacity': opacity, class: cls, 'font-weight': weight });
+  if (lines.length === 1) t.textContent = s;
+  else t.append(...lines.map((line, i) => Object.assign(svgEl('tspan', { x: r1(x), dy: i ? r1(size * 1.2) : null }), { textContent: line })));
   return t;
 }
 
@@ -109,11 +183,10 @@ const categoryCount = (chart) => (chart.categories?.length ? chart.categories.le
 /**
  * Each series' segments as { from, to, value } per category: from zero for
  * clustered charts, piled up for stacked ones (bars pile positives up and
- * negatives down; areas add up), as percentages of the category's total for
- * 100% stacked ones.
+ * negatives down; areas and lines add up), as percentages of the category's
+ * total for 100% stacked ones.
  */
-function segments(chart, n, { stacked, percent, separateSigns }) {
-  const series = chart.series || [];
+function segments(series, n, { stacked, percent, separateSigns }) {
   const out = series.map(() => []);
   for (let i = 0; i < n; i++) {
     const total = percent ? series.reduce((t, s) => t + Math.abs(isNum(s.values?.[i]) ? s.values[i] : 0), 0) : 0;
@@ -157,6 +230,42 @@ function valueRange(segs, { zero = true } = {}) {
   return [min, max];
 }
 
+/**
+ * The series drawn together: one layer per kind and value axis, areas under
+ * columns under lines. The chart's grouping stacks the layers of its own kind.
+ */
+function layersOf(chart, n) {
+  const series = chart.series || [];
+  const byKey = new Map();
+  series.forEach((s, k) => {
+    const kind = seriesKind(chart, k);
+    const secondary = onSecondaryAxis(chart, k);
+    const key = `${kind}/${secondary}`;
+    if (!byKey.has(key)) byKey.set(key, { kind, secondary, idx: [] });
+    byKey.get(key).idx.push(k);
+  });
+  const order = ['area', 'column', 'bar', 'line', 'scatter'];
+  const stacking = chart.grouping === 'stacked' || chart.grouping === 'percent';
+  return [...byKey.values()].sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind)).map((layer) => {
+    const stacked = stacking && layer.kind === chart.kind && layer.kind !== 'scatter';
+    const percent = stacked && chart.grouping === 'percent';
+    const segs = segments(layer.idx.map((k) => series[k]), n, { stacked, percent, separateSigns: layer.kind === 'column' || layer.kind === 'bar' });
+    return { ...layer, stacked, percent, segs };
+  });
+}
+
+/** The value range of some layers. */
+function layersRange(layers) {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const l of layers) {
+    const [a, b] = valueRange(l.segs, { zero: l.kind !== 'line' && l.kind !== 'scatter' });
+    lo = Math.min(lo, a);
+    hi = Math.max(hi, b);
+  }
+  return lo === Infinity ? [0, 1] : [lo, hi];
+}
+
 // ------------------------------------------------------------------ legend
 
 function legendEntries(chart, theme) {
@@ -164,8 +273,12 @@ function legendEntries(chart, theme) {
   if (kind === 'pie' || kind === 'doughnut') {
     return (chart.categories || []).map((name, i) => ({ name, color: pointColor(chart, i, theme), mark: 'box' }));
   }
-  const mark = kind === 'line' ? 'line' : kind === 'scatter' ? 'dot' : 'box';
-  return (chart.series || []).map((s, i) => ({ name: s.name || `Series ${i + 1}`, color: seriesColor(chart, i, theme), mark }));
+  const markOf = (k) => {
+    const own = seriesKind(chart, k);
+    if (own === 'scatter') return scatterLines(chart) && !showsMarkers(chart) ? 'line' : 'dot';
+    return own === 'line' ? 'line' : 'box';
+  };
+  return (chart.series || []).map((s, i) => ({ name: s.name || `Series ${i + 1}`, color: seriesColor(chart, i, theme), mark: markOf(i) }));
 }
 
 /** Draw the legend at `pos` inside `area`, returning the area left for the plot. */
@@ -235,33 +348,77 @@ function arcPath(cx, cy, r, inner, a0, a1) {
   return `M${pt(r, a0)}A${r1(r)},${r1(r)} 0 ${large} 1 ${pt(r, a1)}L${pt(inner, a1)}A${r1(inner)},${r1(inner)} 0 ${large} 0 ${pt(inner, a0)}Z`;
 }
 
-function drawPie(g, chart, area, size, theme) {
-  const values = (chart.series?.[0]?.values || []).map((v) => (isNum(v) ? Math.abs(v) : 0));
-  const total = values.reduce((t, v) => t + v, 0);
-  if (!total || area.w <= 0 || area.h <= 0) return;
-  const r = (Math.min(area.w, area.h) / 2) * 0.92;
-  const inner = chart.kind === 'doughnut' ? r * 0.5 : 0;
+/**
+ * Pies, and doughnuts with a ring per series (the first series innermost,
+ * as in PowerPoint). Labels sit inside the slices, or just outside them
+ * when they're placed at the outside end.
+ */
+function drawPie(g, chart, area, size, theme, textOpts) {
+  if (area.w <= 0 || area.h <= 0) return;
+  const doughnut = chart.kind === 'doughnut';
+  const rings = (chart.series || []).slice(0, doughnut ? Infinity : 1);
+  const outside = !doughnut && chart.labelPosition === 'outEnd';
+  const r = (Math.min(area.w, area.h) / 2) * (outside && chart.dataLabels ? 0.75 : 0.92);
+  const hole = doughnut ? r * (Math.min(90, Math.max(10, chart.holeSize ?? 50)) / 100) : 0;
+  const band = (r - hole) / Math.max(1, rings.length);
   const cx = area.x + area.w / 2;
   const cy = area.y + area.h / 2;
   const edge = resolveColor('theme:bg', theme, '#ffffff');
-  let a = -Math.PI / 2;
   const labels = [];
-  values.forEach((v, i) => {
-    if (!v) return;
-    const sweep = (v / total) * Math.PI * 2;
-    const fill = pointColor(chart, i, theme);
-    g.append(svgEl('path', { class: 'chart-slice', d: arcPath(cx, cy, r, inner, a, a + sweep), fill, 'fill-rule': 'evenodd', stroke: edge, 'stroke-width': 1, 'stroke-linejoin': 'round' }));
-    if (chart.dataLabels) {
-      const mid = a + sweep / 2;
-      const at = inner ? (r + inner) / 2 : r * 0.62;
-      labels.push(label(cx + at * Math.cos(mid), cy + at * Math.sin(mid), formatNumber(chart.series[0].values[i]), { size, fill: contrastText(fill), cls: 'chart-label' }));
-    }
-    a += sweep;
+  rings.forEach((s, k) => {
+    const values = (s.values || []).map((v) => (isNum(v) ? Math.abs(v) : 0));
+    const total = values.reduce((t, v) => t + v, 0);
+    if (!total) return;
+    const inner = hole + k * band;
+    const outer = inner + band;
+    // Where labels go along the radius: PowerPoint's centre, inside end or best fit.
+    const at = doughnut ? (inner + outer) / 2 : { ctr: r * 0.5, inEnd: r * 0.8 }[chart.labelPosition] ?? r * 0.62;
+    let a = -Math.PI / 2;
+    values.forEach((v, i) => {
+      if (!v) return;
+      const sweep = (v / total) * Math.PI * 2;
+      const fill = pointColor(chart, i, theme);
+      g.append(svgEl('path', { class: 'chart-slice', d: arcPath(cx, cy, outer, inner, a, a + sweep), fill, 'fill-rule': 'evenodd', stroke: edge, 'stroke-width': 1, 'stroke-linejoin': 'round' }));
+      if (chart.dataLabels) {
+        const mid = a + sweep / 2;
+        const text = labelText(chart, s.values[i], chart.categories?.[i], v / total);
+        if (outside) {
+          const right = Math.cos(mid) >= 0;
+          labels.push(label(cx + (r + size * 0.4) * Math.cos(mid), cy + (r + size * 0.7) * Math.sin(mid), text, { size, anchor: Math.abs(Math.cos(mid)) < 0.2 ? 'middle' : right ? 'start' : 'end', cls: 'chart-label', ...textOpts }));
+        } else labels.push(label(cx + at * Math.cos(mid), cy + at * Math.sin(mid), text, { size, fill: contrastText(fill), cls: 'chart-label' }));
+      }
+      a += sweep;
+    });
   });
   g.append(...labels);
 }
 
 // ------------------------------------------------------------------ axes
+
+/** Axis titles on the left, bottom and right of `area`, returning the area left inside them. */
+function drawAxisTitles(g, { left, bottom, right }, area, size, textOpts) {
+  let { x, y, w, h } = area;
+  const room = size * 1.5;
+  const turned = (cx, cy, s, angle, length) => {
+    const t = label(0, 0, fit(s, length, size), { size, cls: 'chart-axis-title', ...textOpts });
+    t.setAttribute('transform', `translate(${r1(cx)},${r1(cy)}) rotate(${angle})`);
+    g.append(t);
+  };
+  if (bottom && h > room * 2) {
+    g.append(label(x + w / 2, y + h - size * 0.6, fit(bottom, w, size), { size, cls: 'chart-axis-title', ...textOpts }));
+    h -= room;
+  }
+  if (left && w > room * 2) {
+    turned(x + size * 0.6, y + h / 2, left, -90, h);
+    x += room;
+    w -= room;
+  }
+  if (right && w > room * 2) {
+    turned(x + w - size * 0.6, y + h / 2, right, -90, h);
+    w -= room;
+  }
+  return { x, y, w, h };
+}
 
 function drawAxes(g, chart, area, size, theme, textOpts) {
   const kind = chart.kind;
@@ -269,17 +426,29 @@ function drawAxes(g, chart, area, size, theme, textOpts) {
   const series = chart.series || [];
   if (!n || !series.length || area.w <= size || area.h <= size) return;
   const horizontal = kind === 'bar';
-  const stacked = (kind === 'column' || kind === 'bar' || kind === 'area') && (chart.grouping === 'stacked' || chart.grouping === 'percent');
-  const percent = stacked && chart.grouping === 'percent';
-  const segs = segments(chart, n, { stacked, percent, separateSigns: kind !== 'area' });
-  const [vmin, vmax] = valueRange(segs, { zero: kind !== 'line' && kind !== 'scatter' });
+  const layers = layersOf(chart, n);
+  let main = layers.filter((l) => !l.secondary);
+  let second = layers.filter((l) => l.secondary);
+  if (!main.length) [main, second] = [second, []];
+  const percent = main.some((l) => l.percent);
+  const percent2 = second.some((l) => l.percent);
+  const [vmin, vmax] = layersRange(main);
+  const valueAxis = chart.valueAxis || {};
+  const catTitle = chart.categoryAxis?.title || '';
+  area = drawAxisTitles(g, {
+    left: horizontal ? catTitle : valueAxis.title,
+    bottom: horizontal ? valueAxis.title : catTitle,
+    right: second.length ? chart.secondaryAxis?.title : '',
+  }, area, size, textOpts);
+  if (area.w <= size || area.h <= size) return;
+  const gridlines = valueAxis.gridlines !== false;
   const ink = textOpts.fill;
   const muted = { ...textOpts, opacity: 0.75 };
   const grid = svgEl('g', { class: 'chart-grid', stroke: ink, 'stroke-opacity': 0.18, 'stroke-width': 0.75 });
   const plotG = svgEl('g', { class: 'chart-plot' });
   const labelsG = svgEl('g', { class: 'chart-labels' });
   g.append(grid, plotG, labelsG);
-  const valueText = (v, scale) => (percent ? `${formatNumber(v, 0)}%` : formatNumber(v, scale.digits));
+  const valueText = (v, scale, pct = percent, fmt = chart.numberFormat) => tickText(fmt, v, scale, pct);
 
   // Scatter charts have numbers along the bottom too: their categories are X values.
   const xs = kind === 'scatter' ? (chart.categories || []).map((c, i) => (isNum(parseFloat(c)) ? parseFloat(c) : i + 1)) : null;
@@ -290,12 +459,12 @@ function drawAxes(g, chart, area, size, theme, textOpts) {
     const catW = Math.min(area.w * 0.35, Math.max(...cats.map((c) => textWidth(c, size))) + size * 0.6);
     const plot = { x: area.x + catW, y: area.y, w: area.w - catW - size * 0.8, h: area.h - size * 1.7 };
     if (plot.w <= 0 || plot.h <= 0) return;
-    const probe = niceScale(vmin, vmax, 6);
+    const probe = axisScale(vmin, vmax, 6, valueAxis, percent ? 100 : 1);
     const tickW = Math.max(textWidth(valueText(probe.max, probe), size), textWidth(valueText(probe.min, probe), size)) + size * 1.2;
-    const scale = niceScale(vmin, vmax, Math.max(2, Math.min(10, Math.floor(plot.w / tickW))));
+    const scale = axisScale(vmin, vmax, Math.max(2, Math.min(10, Math.floor(plot.w / tickW))), valueAxis, percent ? 100 : 1);
     const X = (v) => plot.x + ((v - scale.min) / (scale.max - scale.min)) * plot.w;
     for (const t of ticksOf(scale)) {
-      grid.append(svgEl('line', { x1: r1(X(t)), y1: r1(plot.y), x2: r1(X(t)), y2: r1(plot.y + plot.h) }));
+      if (gridlines) grid.append(svgEl('line', { x1: r1(X(t)), y1: r1(plot.y), x2: r1(X(t)), y2: r1(plot.y + plot.h) }));
       labelsG.append(label(X(t), plot.y + plot.h + size * 0.9, valueText(t, scale), { size, ...muted }));
     }
     const slot = plot.h / n;
@@ -307,23 +476,37 @@ function drawAxes(g, chart, area, size, theme, textOpts) {
       // The first category is at the bottom, as in PowerPoint.
       labelsG.append(label(plot.x - size * 0.4, plot.y + plot.h - (i + 0.5) * slot, fit(c, catW - size * 0.6, size), { size, anchor: 'end', ...muted }));
     });
-    drawBars(plotG, labelsG, chart, segs, { n, slot, stacked, horizontal, theme, size, textOpts, toPx: X, place: (i) => plot.y + plot.h - (i + 1) * slot });
+    for (const layer of main) drawBars(plotG, labelsG, chart, layer, { n, slot, horizontal, theme, size, textOpts, toPx: X, place: (i) => plot.y + plot.h - (i + 1) * slot });
     return;
   }
 
-  const probe = niceScale(vmin, vmax, Math.max(2, Math.floor(area.h / (size * 2.6))));
+  const ticksFor = (h) => Math.max(2, Math.min(10, Math.floor(h / (size * 2.4))));
+  const probe = axisScale(vmin, vmax, Math.max(2, Math.floor(area.h / (size * 2.6))), valueAxis, percent ? 100 : 1);
   const tickW = Math.max(...ticksOf(probe).map((t) => textWidth(valueText(t, probe), size))) + size * 0.6;
+  // A secondary value axis on the right, with a scale of its own.
+  const [smin, smax] = second.length ? layersRange(second) : [0, 1];
+  const secondAxis = chart.secondaryAxis || {};
+  const secondFormat = secondAxis.numberFormat || 'General';
+  const probe2 = second.length ? axisScale(smin, smax, Math.max(2, Math.floor(area.h / (size * 2.6))), secondAxis, percent2 ? 100 : 1) : null;
+  const tickW2 = probe2 ? Math.max(...ticksOf(probe2).map((t) => textWidth(valueText(t, probe2, percent2, secondFormat), size))) + size * 0.6 : size * 0.5;
   const catH = size * 1.7;
-  const plot = { x: area.x + tickW, y: area.y + size * 0.5, w: area.w - tickW - size * 0.5, h: area.h - catH - size * 0.5 };
+  const plot = { x: area.x + tickW, y: area.y + size * 0.5, w: area.w - tickW - tickW2, h: area.h - catH - size * 0.5 };
   if (plot.w <= 0 || plot.h <= 0) return;
-  const scale = niceScale(vmin, vmax, Math.max(2, Math.min(10, Math.floor(plot.h / (size * 2.4)))));
-  const Y = (v) => plot.y + plot.h - ((v - scale.min) / (scale.max - scale.min)) * plot.h;
+  const scale = axisScale(vmin, vmax, ticksFor(plot.h), valueAxis, percent ? 100 : 1);
+  const toY = (s) => (v) => plot.y + plot.h - ((v - s.min) / (s.max - s.min)) * plot.h;
+  const Y = toY(scale);
   for (const t of ticksOf(scale)) {
-    grid.append(svgEl('line', { x1: r1(plot.x), y1: r1(Y(t)), x2: r1(plot.x + plot.w), y2: r1(Y(t)) }));
+    if (gridlines) grid.append(svgEl('line', { x1: r1(plot.x), y1: r1(Y(t)), x2: r1(plot.x + plot.w), y2: r1(Y(t)) }));
     labelsG.append(label(plot.x - size * 0.4, Y(t), valueText(t, scale), { size, anchor: 'end', ...muted }));
   }
   const y0 = Y(Math.max(scale.min, Math.min(scale.max, 0)));
   grid.append(svgEl('line', { x1: r1(plot.x), y1: r1(y0), x2: r1(plot.x + plot.w), y2: r1(y0), 'stroke-opacity': 0.45, class: 'chart-axis' }));
+  let Y2 = Y;
+  if (probe2) {
+    const scale2 = axisScale(smin, smax, ticksFor(plot.h), secondAxis, percent2 ? 100 : 1);
+    Y2 = toY(scale2);
+    for (const t of ticksOf(scale2)) labelsG.append(label(plot.x + plot.w + size * 0.4, Y2(t), valueText(t, scale2, percent2, secondFormat), { size, anchor: 'start', ...muted }));
+  }
 
   if (xs) {
     // Scatter: a second value scale across.
@@ -331,21 +514,13 @@ function drawAxes(g, chart, area, size, theme, textOpts) {
     const xr = niceScale(xmin, xmax, Math.max(2, Math.min(10, Math.floor(plot.w / (size * 5)))));
     const X = (v) => plot.x + ((v - xr.min) / (xr.max - xr.min)) * plot.w;
     for (const t of ticksOf(xr)) labelsG.append(label(X(t), plot.y + plot.h + size * 0.9, formatNumber(t, xr.digits), { size, ...muted }));
-    series.forEach((s, k) => {
-      const color = seriesColor(chart, k, theme);
-      xs.forEach((x, i) => {
-        const v = s.values?.[i];
-        if (!isNum(v)) return;
-        plotG.append(svgEl('circle', { class: 'chart-marker', cx: r1(X(x)), cy: r1(Y(v)), r: r1(Math.max(2, size * 0.3)), fill: color }));
-        if (chart.dataLabels) labelsG.append(label(X(x), Y(v) - size * 0.9, formatNumber(v), { size, cls: 'chart-label', ...textOpts }));
-      });
-    });
+    for (const layer of main) drawLines(plotG, labelsG, chart, layer, { cx: (i) => X(xs[i]), Y, theme, size, textOpts });
     return;
   }
 
   // Categories along the bottom: in the middle of their slot, or on the
   // gridlines for area charts (which reach from edge to edge).
-  const edgeToEdge = kind === 'area' && n > 1;
+  const edgeToEdge = layers.every((l) => l.kind === 'area') && n > 1;
   const slot = plot.w / (edgeToEdge ? n - 1 : n);
   const cx = (i) => plot.x + (edgeToEdge ? i * slot : (i + 0.5) * slot);
   const widest = Math.max(...cats.map((c) => textWidth(c, size)));
@@ -355,31 +530,42 @@ function drawAxes(g, chart, area, size, theme, textOpts) {
     labelsG.append(label(cx(i), plot.y + plot.h + size * 0.9, fit(c, slot * step - size * 0.3, size), { size, ...muted }));
   });
 
-  if (kind === 'column') {
-    drawBars(plotG, labelsG, chart, segs, { n, slot, stacked, horizontal: false, theme, size, textOpts, toPx: Y, place: (i) => plot.x + i * slot });
-  } else if (kind === 'area') {
-    drawAreas(plotG, labelsG, chart, segs, { cx, Y, y0, stacked, theme, size, textOpts });
-  } else {
-    drawLines(plotG, labelsG, chart, segs, { cx, Y, theme, size, textOpts });
+  for (const layer of layers) {
+    const toPx = layer.secondary && second.length ? Y2 : Y;
+    if (layer.kind === 'column') {
+      drawBars(plotG, labelsG, chart, layer, { n, slot, horizontal: false, theme, size, textOpts, toPx, place: (i) => plot.x + i * slot });
+    } else if (layer.kind === 'area') {
+      drawAreas(plotG, labelsG, chart, layer, { cx, Y: toPx, y0: Math.min(plot.y + plot.h, Math.max(plot.y, toPx(0))), theme, size, textOpts });
+    } else {
+      drawLines(plotG, labelsG, chart, layer, { cx, Y: toPx, theme, size, textOpts });
+    }
   }
 }
 
 /**
  * Columns or bars: `place(i)` is where category i's slot starts (its left
  * edge, or its top edge for bars) and `toPx` turns a value into a position.
+ * Bars are as wide as the chart's gap width leaves them (150% of a bar
+ * between categories by default) and overlap by its overlap.
  */
-function drawBars(g, labels, chart, segs, { n, slot, stacked, horizontal, theme, size, textOpts, toPx, place }) {
-  const series = chart.series;
-  // PowerPoint's default gap between categories is 150% of a bar's width.
-  const barW = slot / ((stacked ? 1 : series.length) + 1.5);
-  const groupW = stacked ? barW : barW * series.length;
-  series.forEach((s, k) => {
+function drawBars(g, labels, chart, layer, { n, slot, horizontal, theme, size, textOpts, toPx, place }) {
+  const { idx, segs, stacked } = layer;
+  const gap = Math.min(500, Math.max(0, chart.gapWidth ?? 150)) / 100;
+  const overlap = stacked ? 1 : Math.min(100, Math.max(-100, chart.overlap ?? 0)) / 100;
+  const m = stacked ? 1 : idx.length;
+  const barW = slot / (m - (m - 1) * overlap + gap);
+  const groupW = barW * (1 + (m - 1) * (1 - overlap));
+  // Where labels go: outside the end by default, or in the middle of stacked bars.
+  const where = stacked
+    ? (['inEnd', 'inBase', 'ctr'].includes(chart.labelPosition) ? chart.labelPosition : 'ctr')
+    : (['inEnd', 'inBase', 'ctr', 'outEnd'].includes(chart.labelPosition) ? chart.labelPosition : 'outEnd');
+  idx.forEach((k, j) => {
     const fill = seriesColor(chart, k, theme);
     for (let i = 0; i < n; i++) {
-      const seg = segs[k][i];
+      const seg = segs[j][i];
       if (!seg || seg.value == null) continue;
       // The first series is on the left of its group, or at the bottom for bars.
-      const offset = (slot - groupW) / 2 + (stacked ? 0 : k * barW);
+      const offset = (slot - groupW) / 2 + (stacked ? 0 : j * barW * (1 - overlap));
       const pos = horizontal ? place(i) + slot - offset - barW : place(i) + offset;
       const a = toPx(seg.from);
       const b = toPx(seg.to);
@@ -389,53 +575,75 @@ function drawBars(g, labels, chart, segs, { n, slot, stacked, horizontal, theme,
         ? { class: 'chart-bar', x: r1(lo), y: r1(pos), width: r1(len), height: r1(barW), fill }
         : { class: 'chart-bar', x: r1(pos), y: r1(lo), width: r1(barW), height: r1(len), fill }));
       if (!chart.dataLabels) continue;
-      const text = formatNumber(seg.value);
+      if (where !== 'outEnd' && stacked && len < size * 1.1) continue;
+      const text = labelText(chart, seg.value, chart.categories?.[i]);
       const mid = pos + barW / 2;
-      if (stacked) {
-        if (len < size * 1.1) continue;
-        labels.append(label(horizontal ? lo + len / 2 : mid, horizontal ? mid : lo + len / 2, text, { size, fill: contrastText(fill), cls: 'chart-label' }));
-      } else if (horizontal) {
-        const neg = seg.to < seg.from;
-        labels.append(label(neg ? lo - size * 0.3 : lo + len + size * 0.3, mid, text, { size, anchor: neg ? 'end' : 'start', cls: 'chart-label', ...textOpts }));
-      } else {
-        const neg = seg.to < seg.from;
-        labels.append(label(mid, neg ? lo + len + size * 0.8 : lo - size * 0.8, text, { size, cls: 'chart-label', ...textOpts }));
-      }
+      // `dir` runs from the bar's base to its end, in pixels.
+      const dir = b !== a ? Math.sign(b - a) : horizontal ? 1 : -1;
+      const inside = where !== 'outEnd';
+      const style = inside ? { fill: contrastText(fill) } : textOpts;
+      const pad = horizontal ? size * 0.3 : size * 0.8;
+      const along = { outEnd: b + dir * pad, inEnd: b - dir * pad, inBase: a + dir * pad, ctr: (a + b) / 2 }[where];
+      if (horizontal) {
+        const forward = where === 'outEnd' || where === 'inBase' ? dir > 0 : dir < 0;
+        labels.append(label(along, mid, text, { size, anchor: where === 'ctr' ? 'middle' : forward ? 'start' : 'end', cls: 'chart-label', ...style }));
+      } else labels.append(label(mid, along, text, { size, cls: 'chart-label', ...style }));
     }
   });
 }
 
-function drawLines(g, labels, chart, segs, { cx, Y, theme, size, textOpts }) {
-  chart.series.forEach((s, k) => {
+/** A line through some points: straight, or a smooth curve through them. */
+function linePath(pts, smooth) {
+  const p = (x, y) => `${r1(x)},${r1(y)}`;
+  if (!smooth || pts.length < 3) return `M${pts.map(([x, y]) => p(x, y)).join('L')}`;
+  // Catmull-Rom splines as cubic Béziers.
+  let d = `M${p(pts[0][0], pts[0][1])}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [p0, p1, p2, p3] = [pts[i - 1] || pts[i], pts[i], pts[i + 1], pts[i + 2] || pts[i + 1]];
+    d += `C${p(p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6)} ${p(p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6)} ${p(p2[0], p2[1])}`;
+  }
+  return d;
+}
+
+/** Lines (and scatter points): `cx(i)` is where category i is across. */
+function drawLines(g, labels, chart, layer, { cx, Y, theme, size, textOpts }) {
+  const scatter = layer.kind === 'scatter';
+  const joined = !scatter || scatterLines(chart);
+  const markers = showsMarkers(chart);
+  const where = ['t', 'b', 'l', 'r', 'ctr'].includes(chart.labelPosition) ? chart.labelPosition : scatter ? 'r' : 't';
+  const at = { t: [0, -0.9, 'middle'], b: [0, 0.9, 'middle'], l: [-0.5, 0, 'end'], r: [0.5, 0, 'start'], ctr: [0, 0, 'middle'] }[where];
+  layer.idx.forEach((k, j) => {
     const color = seriesColor(chart, k, theme);
     // Blank values leave a gap in the line.
     let run = [];
     const runs = [run];
-    segs[k].forEach((seg, i) => {
+    layer.segs[j].forEach((seg, i) => {
       if (!seg || seg.value == null) runs.push((run = []));
-      else run.push([cx(i), Y(seg.to), seg.value]);
+      else run.push([cx(i), Y(seg.to), seg.value, i]);
     });
     for (const pts of runs) {
-      if (pts.length > 1) g.append(svgEl('polyline', { class: 'chart-line', points: pts.map(([x, y]) => `${r1(x)},${r1(y)}`).join(' '), fill: 'none', stroke: color, 'stroke-width': 2.25, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
-      for (const [x, y, v] of pts) {
-        if (chart.markers || pts.length === 1) g.append(svgEl('circle', { class: 'chart-marker', cx: r1(x), cy: r1(y), r: r1(Math.max(2, size * 0.3)), fill: color }));
-        if (chart.dataLabels) labels.append(label(x, y - size * 0.9, formatNumber(v), { size, cls: 'chart-label', ...textOpts }));
+      if (joined && pts.length > 1) g.append(svgEl('path', { class: 'chart-line', d: linePath(pts, chart.smooth === true), fill: 'none', stroke: color, 'stroke-width': 2.25, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+      for (const [x, y, v, i] of pts) {
+        if (markers || (!scatter && pts.length === 1)) g.append(svgEl('circle', { class: 'chart-marker', cx: r1(x), cy: r1(y), r: r1(Math.max(2, size * 0.3)), fill: color }));
+        if (chart.dataLabels) labels.append(label(x + at[0] * size, y + at[1] * size, labelText(chart, v, chart.categories?.[i]), { size, anchor: at[2], cls: 'chart-label', ...textOpts }));
       }
     }
   });
 }
 
-function drawAreas(g, labels, chart, segs, { cx, Y, y0, stacked, theme, size, textOpts }) {
-  chart.series.forEach((s, k) => {
+function drawAreas(g, labels, chart, layer, { cx, Y, y0, theme, size, textOpts }) {
+  const { stacked } = layer;
+  layer.idx.forEach((k, j) => {
+    const segs = layer.segs[j];
     const fill = seriesColor(chart, k, theme);
-    const top = segs[k].map((seg, i) => [cx(i), Y(seg ? seg.to : 0)]);
-    const bottom = stacked ? segs[k].map((seg, i) => [cx(i), Y(seg ? seg.from : 0)]).reverse() : [[top[top.length - 1][0], y0], [top[0][0], y0]];
+    const top = segs.map((seg, i) => [cx(i), Y(seg ? seg.to : 0)]);
+    const bottom = stacked ? segs.map((seg, i) => [cx(i), Y(seg ? seg.from : 0)]).reverse() : [[top[top.length - 1][0], y0], [top[0][0], y0]];
     g.append(svgEl('polygon', { class: 'chart-area', points: [...top, ...bottom].map(([x, y]) => `${r1(x)},${r1(y)}`).join(' '), fill }));
     if (!chart.dataLabels) return;
-    segs[k].forEach((seg, i) => {
+    segs.forEach((seg, i) => {
       if (!seg || seg.value == null) return;
       const y = stacked ? (Y(seg.from) + Y(seg.to)) / 2 : Y(seg.to) - size * 0.9;
-      labels.append(label(cx(i), y, formatNumber(seg.value), { size, cls: 'chart-label', ...(stacked ? { fill: contrastText(fill) } : textOpts) }));
+      labels.append(label(cx(i), y, labelText(chart, seg.value, chart.categories?.[i]), { size, cls: 'chart-label', ...(stacked ? { fill: contrastText(fill) } : textOpts) }));
     });
   });
 }
@@ -474,7 +682,7 @@ export function renderChart(el, ctx) {
   const g = svgEl('g');
   svg.append(g);
   area = drawLegend(g, legendEntries(chart, theme), chart.legend || 'none', area, size, { fill: ink, opacity: 0.85 });
-  if (chart.kind === 'pie' || chart.kind === 'doughnut') drawPie(g, chart, area, size, theme);
+  if (chart.kind === 'pie' || chart.kind === 'doughnut') drawPie(g, chart, area, size, theme, textOpts);
   else drawAxes(g, chart, area, size, theme, textOpts);
   return svg;
 }
