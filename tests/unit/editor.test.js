@@ -301,3 +301,75 @@ describe('editor: fields and text effects', () => {
     expect(ed.slide.elements[0].text).toBe('<p>One <b>two</b></p><ul><li>three</li></ul>');
   });
 });
+
+describe('editor: sections', () => {
+  // jsdom has <dialog> but not its modal methods.
+  HTMLDialogElement.prototype.showModal ||= function showModal() { this.open = true; };
+  HTMLDialogElement.prototype.close ||= function close() {
+    this.open = false;
+    this.dispatchEvent(new Event('close'));
+  };
+  /** Answer the open prompt with `value`. */
+  const answer = async (value) => {
+    const dlg = document.querySelector('dialog');
+    dlg.querySelector('input').value = value;
+    dlg.querySelector('form').dispatchEvent(new Event('submit', { cancelable: true }));
+    if (dlg.open) dlg.close();
+    await new Promise((r) => setTimeout(r));
+  };
+  const headers = (ed) => [...ed.filmstrip.list.querySelectorAll('.film-section-name')].map((e) => e.textContent);
+
+  it('adds, renames and removes sections as undoable steps, with a header for each', async () => {
+    const d = deckWith();
+    d.slides.push(newSlide('blank', d), newSlide('blank', d));
+    const ed = openEditor(d);
+    expect(headers(ed)).toEqual([]);
+    ed.goToSlide(1);
+    const adding = ed.addSection();
+    await answer('  Middle ');
+    await adding;
+    expect(ed.deck.slides.map((s) => s.section)).toEqual([undefined, 'Middle', undefined, undefined]);
+    expect(headers(ed)).toEqual(['Default Section', 'Middle']);
+    // The header row comes right before the section's first slide.
+    expect(ed.filmstrip.list.children[2].classList.contains('film-section')).toBe(true);
+    expect(ed.filmstrip.list.children[3].dataset.id).toBe(ed.deck.slides[1].id);
+
+    const renaming = ed.renameSection(3);
+    await answer('Second half');
+    await renaming;
+    expect(headers(ed)).toEqual(['Default Section', 'Second half']);
+    ed.undo();
+    expect(headers(ed)).toEqual(['Default Section', 'Middle']);
+    ed.removeSection(2);
+    expect(ed.deck.slides.some((s) => s.section)).toBe(false);
+    expect(headers(ed)).toEqual([]);
+    ed.undo();
+    expect(headers(ed)).toEqual(['Default Section', 'Middle']);
+  });
+
+  it('keeps one section name when slides are duplicated, and passes it on when the first slide is deleted', () => {
+    const d = deckWith();
+    d.slides[1].section = 'Two';
+    d.slides.push(newSlide('blank', d));
+    const ed = openEditor(d);
+    ed.goToSlide(1);
+    ed.duplicateSlides();
+    expect(ed.deck.slides.map((s) => s.section)).toEqual([undefined, 'Two', undefined, undefined]);
+    ed.goToSlide(1);
+    ed.deleteSlides();
+    expect(ed.deck.slides.map((s) => s.section)).toEqual([undefined, 'Two', undefined]);
+    expect(headers(ed)).toEqual(['Default Section', 'Two']);
+  });
+
+  it('folds a section away from its header, and unfolds it to show a slide in it', () => {
+    const d = deckWith();
+    d.slides[1].section = 'Two';
+    const ed = openEditor(d);
+    ed.filmstrip.list.querySelectorAll('.film-section-toggle')[1].click();
+    const item = () => ed.filmstrip.items.get(d.slides[1].id);
+    expect(item().classList.contains('in-collapsed')).toBe(true);
+    expect(ed.filmstrip.list.querySelectorAll('.film-section-toggle')[1].getAttribute('aria-expanded')).toBe('false');
+    ed.goToSlide(1);
+    expect(item().classList.contains('in-collapsed')).toBe(false);
+  });
+});

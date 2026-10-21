@@ -12,12 +12,13 @@ import { getDeck, saveDeck, onStorageChange } from '../storage/db.js';
 import {
   slideSize, newSlide, layoutElements, cloneSlide, cloneElement, canHoldText, boxOf, moveElement, addMedia, newImage, newTable, newChart,
   htmlToText, SIZES, customSize, uid, mediaSlots, newMedia, regroup, slideAnimations, ANIM_KINDS, slideTitle, newTextBox, fieldText,
+  sectionAt, setSections, moveSlidesWithSections, removeSlidesWithSections, DEFAULT_SECTION,
 } from '../model/deck.js';
 import { anchorOf, insertRow, insertCol, deleteRow, deleteCol, mergeCells, unmergeCell } from '../model/tables.js';
 import { themeById, resolveColor } from '../model/themes.js';
 import { FONT_SIZES } from '../model/fonts.js';
 import { textStyle } from '../render/render.js';
-import { sanitizeHtml, sanitizeElement } from '../io/sanitize.js';
+import { sanitizeHtml, sanitizeElement, sectionName } from '../io/sanitize.js';
 import { readImageFile } from '../io/images.js';
 import { readMediaFile, mediaTypeOf, isMediaData, LARGE_MEDIA_BYTES } from '../io/media-files.js';
 import { SlideCanvas, aabb } from './canvas.js';
@@ -464,7 +465,7 @@ export class EditorScreen {
     const idx = this.slideIndices();
     const first = idx[0];
     this.change(() => {
-      this.deck.slides = this.deck.slides.filter((s) => !this.slideSelection.has(s.id));
+      this.deck.slides = removeSlidesWithSections(this.deck.slides, this.slideSelection);
       if (!this.deck.slides.length) this.deck.slides.push(newSlide('title', this.deck));
     }, { structure: true, render: false });
     this.goToSlide(Math.min(first, this.deck.slides.length - 1));
@@ -480,17 +481,16 @@ export class EditorScreen {
     this.moveSlidesTo(Math.max(0, Math.min(this.deck.slides.length, target)));
   }
 
-  /** Move the selected slides so they start at position `index` (counted before the move). */
+  /** Move the selected slides so they start at position `index` (counted before the move), keeping sections sensible. */
   moveSlidesTo(index) {
-    const ids = this.slideSelection;
-    const moving = this.deck.slides.filter((s) => ids.has(s.id));
-    const before = this.deck.slides.slice(0, index).filter((s) => !ids.has(s.id));
-    const after = this.deck.slides.slice(index).filter((s) => !ids.has(s.id));
-    const order = [...before, ...moving, ...after];
-    if (order.every((s, i) => s === this.deck.slides[i])) return;
+    const move = moveSlidesWithSections(this.deck.slides, this.slideSelection, index);
+    if (!move) return;
     const currentId = this.slide.id;
-    this.change(() => { this.deck.slides = order; }, { structure: true, render: false });
-    this.goToSlide(order.findIndex((s) => s.id === currentId), { keepSlideSelection: true });
+    this.change(() => {
+      setSections(move.order, move.sections);
+      this.deck.slides = move.order;
+    }, { structure: true, render: false });
+    this.goToSlide(move.order.findIndex((s) => s.id === currentId), { keepSlideSelection: true });
   }
 
   toggleSkip() {
@@ -517,6 +517,60 @@ export class EditorScreen {
     }, { structure: true, render: false });
     this.slideSelection = new Set(copies.map((s) => s.id));
     this.goToSlide(this.slideIndex + 1, { keepSlideSelection: true });
+  }
+
+  // ---------------------------------------------------------------- sections
+
+  async sectionNamePrompt(title, value, confirmLabel) {
+    const r = await promptDialog({ title, fields: [{ name: 'name', label: 'Section name', value }], confirmLabel });
+    return r ? sectionName(r.name) || null : null;
+  }
+
+  /** Start a section at the first selected slide, as PowerPoint's "Add Section" does. */
+  async addSection() {
+    const i = this.slideIndices()[0] ?? this.slideIndex;
+    if (this.deck.slides[i].section) return this.renameSection(i);
+    const { id } = this.deck.slides[i];
+    const name = await this.sectionNamePrompt('Add section', 'Untitled Section', 'Add');
+    const slide = this.deck.slides.find((s) => s.id === id); // the deck may have changed meanwhile
+    if (!name || !slide) return;
+    this.change(() => { slide.section = name; }, { structure: true });
+  }
+
+  /** Rename the section slide `i` is in (naming the slides in no section makes them a section). */
+  async renameSection(i = this.slideIndex) {
+    const group = sectionAt(this.deck.slides, i);
+    if (!group) return;
+    const { id } = this.deck.slides[group.start];
+    const name = await this.sectionNamePrompt('Rename section', group.name || DEFAULT_SECTION, 'Rename');
+    const slide = this.deck.slides.find((s) => s.id === id);
+    if (!name || !slide || name === slide.section) return;
+    this.change(() => { slide.section = name; }, { structure: true });
+  }
+
+  /** Remove the section slide `i` is in, but not its slides: they join the section before. */
+  removeSection(i = this.slideIndex) {
+    const group = sectionAt(this.deck.slides, i);
+    if (!group?.name) return;
+    this.change(() => { delete this.deck.slides[group.start].section; }, { structure: true });
+  }
+
+  removeAllSections() {
+    this.change(() => this.deck.slides.forEach((s) => delete s.section), { structure: true });
+  }
+
+  /** Select the slides of the section slide `i` is in. */
+  selectSection(i) {
+    const group = sectionAt(this.deck.slides, i);
+    if (!group) return;
+    this.slideSelection = new Set(this.deck.slides.slice(group.start, group.end).map((s) => s.id));
+    this.goToSlide(group.start, { keepSlideSelection: true });
+  }
+
+  /** Move a whole section past the one before (-1) or after (1) it. */
+  moveSection(i, delta) {
+    this.selectSection(i);
+    this.moveSlides(delta);
   }
 
   changeSlide(fn) {

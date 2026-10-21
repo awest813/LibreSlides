@@ -60,6 +60,15 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  *   slide.comments = [{ id, author, initials?, date (ISO string), text,
  *     x?, y? (where its marker sits, in slide points; none: on the whole slide),
  *     resolved?, replies?: [{ id, author, initials?, date, text }] }]
+ *
+ * Slides can be grouped into named sections, as in PowerPoint's slide
+ * sorter. The first slide of a section carries its name, `slide.section`
+ * (plain text), and the section runs until the next slide that has one.
+ * Slides before the first such slide are in no section (PowerPoint's
+ * "Default Section"). A section without slides can't be represented, so it
+ * goes: a copied slide doesn't take the name along (see cloneSlide), and
+ * moving or deleting a section's first slide passes the name to the next of
+ * its slides (see moveSlidesWithSections and removeSlidesWithSections).
  */
 export const SIZES = {
   '16:9': { w: 960, h: 540, label: 'Widescreen (16:9)' },
@@ -380,11 +389,107 @@ export function cloneElement(el) {
 export function cloneSlide(slide) {
   const copy = deepCopy(slide);
   copy.id = uid();
+  delete copy.section; // a copy joins the section it's put in
   copy.elements = copy.elements.map((e) => ({ ...e, id: uid() }));
   if (Array.isArray(copy.comments)) {
     copy.comments = copy.comments.map((c) => ({ ...c, id: uid(), ...(c.replies ? { replies: c.replies.map((r) => ({ ...r, id: uid() })) } : {}) }));
   }
   return copy;
+}
+
+// ------------------------------------------------------------------ sections
+
+/** PowerPoint's name for the slides before the first section. */
+export const DEFAULT_SECTION = 'Default Section';
+
+/**
+ * The slides grouped by section, in order: [{ name, start, end }] (indices,
+ * end exclusive). Slides before the first section make a group with no name.
+ */
+export function slideSections(slides) {
+  const out = [];
+  slides.forEach((s, i) => {
+    if (i && !s.section) return;
+    if (out.length) out.at(-1).end = i;
+    out.push({ name: s.section || null, start: i, end: slides.length });
+  });
+  return out;
+}
+
+export const hasSections = (slides) => slides.some((s) => s.section);
+
+/** The section group (see slideSections) that slide `i` is in. */
+export const sectionAt = (slides, i) => slideSections(slides).find((g) => i >= g.start && i < g.end) || null;
+
+/**
+ * Section names by slide id once the slides with `ids` are taken out: a
+ * section whose first slides go passes its name to its first slide that
+ * stays. A section none of whose slides stay keeps it on its first slide.
+ */
+function liftSections(slides, ids) {
+  const names = new Map(slides.map((s) => [s.id, s.section || null]));
+  let pending = null; // the leaving first slide of the section we're in
+  for (const s of slides) {
+    if (ids.has(s.id)) {
+      if (names.get(s.id)) pending = s.id;
+    } else if (names.get(s.id)) pending = null;
+    else if (pending) {
+      names.set(s.id, names.get(pending));
+      names.set(pending, null);
+      pending = null;
+    }
+  }
+  return names;
+}
+
+/** Give slides the section names in `names` (by slide id), in place. */
+export function setSections(slides, names) {
+  for (const s of slides) {
+    if (names.get(s.id)) s.section = names.get(s.id);
+    else delete s.section;
+  }
+}
+
+/** The slides without those in `ids`, with the sections they started passed on to the slides that stay. */
+export function removeSlidesWithSections(slides, ids) {
+  const names = liftSections(slides, ids);
+  const rest = slides.filter((s) => !ids.has(s.id));
+  setSections(rest, names);
+  return rest;
+}
+
+/**
+ * Where the slides with `ids` go when moved to start at position `index`
+ * (counted before the move), keeping sections sensible:
+ * - the slides that stay keep their sections (see liftSections);
+ * - moved slides join the section they're put after, or the first section
+ *   when put at the very top, so a move never makes a section of no name;
+ * - whole sections that move go between sections, never into the middle of
+ *   one (above or below it, by the direction of the move), and after the
+ *   slides that are in no section.
+ * Returns { order, sections } (slides in their new order and section names
+ * by slide id, for setSections), or null when nothing moves.
+ */
+export function moveSlidesWithSections(slides, ids, index) {
+  const moving = slides.filter((s) => ids.has(s.id));
+  if (!moving.length) return null;
+  const names = liftSections(slides, ids);
+  const rest = slides.filter((s) => !ids.has(s.id));
+  const starts = (i) => !!names.get(rest[i].id);
+  let at = slides.slice(0, index).filter((s) => !ids.has(s.id)).length;
+  const from = slides.indexOf(moving[0]); // where the first of them was, among the slides that stay
+  if (moving.some((s) => names.get(s.id))) {
+    if (at < rest.length && !starts(at)) {
+      if (at <= from) while (at > 0 && !starts(at)) at--;
+      if (!starts(at)) while (at < rest.length && !starts(at)) at++;
+    }
+  } else if (at === 0 && rest.length && starts(0)) {
+    names.set(moving[0].id, names.get(rest[0].id));
+    names.set(rest[0].id, null);
+  }
+  const order = [...rest.slice(0, at), ...moving, ...rest.slice(at)];
+  if (order.every((s, i) => s === slides[i])) return null;
+  return { order, sections: names };
 }
 
 // ------------------------------------------------------------------ media
@@ -491,6 +596,7 @@ export function normalizeDeck(deck) {
     s.elements ||= [];
     s.notes ||= '';
     s.transition ||= { type: 'none', duration: 0.6 };
+    if (!s.section) delete s.section;
     for (const el of s.elements) {
       el.id ||= uid();
       el.rot ||= 0;
