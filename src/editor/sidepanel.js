@@ -1,7 +1,7 @@
-import { h } from '../ui/dom.js';
+import { h, rovingFocus } from '../ui/dom.js';
 import { icon } from '../ui/icons.js';
 import { openColorPicker } from '../ui/color-picker.js';
-import { THEMES, resolveColor, backgroundBaseColor } from '../model/themes.js';
+import { THEMES, backgroundBaseColor } from '../model/themes.js';
 import { SIZES, slideSize, LAYOUTS, TRANSITIONS, ANIMATIONS, EMPHASES, EXITS, MOTIONS, slideAnimations, CHART_KINDS, newSlide, fillPlaceholders, canHoldText, slideText } from '../model/deck.js';
 import { SHAPES } from '../model/shapes.js';
 import { BORDER_PRESETS, cellMargin } from '../model/tables.js';
@@ -12,59 +12,11 @@ import { commentsPanel } from './comments.js';
 import { diagramSection } from './diagrams.js';
 import { textEffectOf } from './richtext.js';
 import { WARP_GROUPS, mainAdjust } from '../model/warps.js';
+import { field, section, numberInput, select, groupedSelect, checkbox, colorButton, DASH_STYLES } from './fields.js';
 
 const TITLES = { design: 'Design', transition: 'Transition', animate: 'Animate', format: 'Format options', comments: 'Comments' };
 const TAB_LABELS = { design: 'Design', transition: 'Transition', animate: 'Animate', format: 'Format', comments: 'Comments' };
 
-const field = (label, control, hint = null) => h('label', { class: 'pf' }, h('span', { class: 'pf-label' }, label), control, hint ? h('small', { class: 'pf-hint' }, hint) : null);
-const section = (title, ...children) => h('section', { class: 'panel-section' }, h('h3', {}, title), ...children);
-
-function numberInput(value, onValue, { step = 1, min = null, max = null, suffix = '' } = {}) {
-  const input = h('input', { type: 'number', step, min, max, value: Number.isFinite(value) ? String(Math.round(value * 10) / 10) : '' });
-  let last = input.value;
-  const fire = () => {
-    // Enter fires this, then the change event does too: one undo step.
-    if (input.value === last) return;
-    last = input.value;
-    const n = parseFloat(input.value);
-    if (Number.isFinite(n)) onValue(min != null ? Math.max(min, max != null ? Math.min(max, n) : n) : n);
-  };
-  input.addEventListener('change', fire);
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') fire(); });
-  return suffix ? h('span', { class: 'pf-num' }, input, h('span', { class: 'pf-suffix' }, suffix)) : input;
-}
-
-function select(options, value, onValue) {
-  const s = h('select', {}, ...options.map(([v, label]) => h('option', { value: v, selected: String(v) === String(value) || null }, label)));
-  s.addEventListener('change', () => onValue(s.value));
-  return s;
-}
-
-/** A select of options in groups: [[group label, [[value, label]…]]…], with ungrouped `first` options before them. */
-function groupedSelect(first, groups, value, onValue) {
-  const option = ([v, label]) => h('option', { value: v, selected: String(v) === String(value) || null }, label);
-  const s = h('select', {}, ...first.map(option), ...groups.map(([label, options]) => h('optgroup', { label }, ...options.map(option))));
-  s.addEventListener('change', () => onValue(s.value));
-  return s;
-}
-
-function checkbox(label, checked, onValue) {
-  const input = h('input', { type: 'checkbox', checked: checked || null });
-  input.addEventListener('change', () => onValue(input.checked));
-  return h('label', { class: 'pf-check' }, input, label);
-}
-
-function colorButton(label, value, theme, onPick, opts = {}) {
-  const sw = h('span', { class: 'pf-swatch', style: { background: resolveColor(value, theme, 'transparent') } });
-  const b = h('button', { type: 'button', class: 'btn pf-color', 'aria-label': label, 'aria-haspopup': 'true' }, sw, h('span', {}, label));
-  b.addEventListener('click', () => openColorPicker(b, { theme, current: value, onPick, ...opts }));
-  return b;
-}
-
-/**
- * The right-hand panel: themes and backgrounds, transitions, animations,
- * the detailed format options for the selection and the slide's comments.
- */
 // Line ends, as PowerPoint names them.
 const ARROW_ENDS = [['none', 'None'], ['triangle', 'Arrow'], ['arrow', 'Open arrow'], ['stealth', 'Stealth arrow'], ['diamond', 'Diamond'], ['oval', 'Round']];
 const endValue = (end) => (!end ? 'none' : end === true ? 'triangle' : end);
@@ -135,18 +87,29 @@ function gradientControls(app, el, theme) {
   ];
 }
 
+/** How long an animation takes, with the one it has if it isn't one of these (from a PowerPoint file). */
+function durationOptions(current) {
+  const list = [[0.3, 'Very fast (0.3 s)'], [0.5, 'Fast (0.5 s)'], [0.8, 'Medium (0.8 s)'], [1.2, 'Slow (1.2 s)'], [2, 'Very slow (2 s)']];
+  return list.some(([v]) => v === current) || !Number.isFinite(current) ? list : [...list, [current, `${Math.round(current * 100) / 100} s`]].sort((a, b) => a[0] - b[0]);
+}
+
+/**
+ * The right-hand panel: themes and backgrounds, transitions, animations,
+ * the detailed format options for the selection and the slide's comments.
+ */
 export class SidePanel {
   constructor(app) {
     this.app = app;
     this.current = null;
     this.key = '';
     this.activeComment = null; // the comment thread highlighted here and on the slide
-    this.title = h('h2', {});
-    this.body = h('div', { class: 'panel-body' });
-    this.tabs = h('div', { class: 'panel-tabs', role: 'tablist' }, ...Object.entries(TAB_LABELS).map(([id, name]) => {
-      const t = h('button', { type: 'button', role: 'tab', class: 'panel-tab', dataset: { tab: id }, onclick: () => this.open(id) }, name);
-      return t;
-    }));
+    const ids = `panel-${Math.random().toString(36).slice(2)}`;
+    this.title = h('h2', { id: `${ids}-title` });
+    this.body = h('div', { class: 'panel-body', id: `${ids}-body`, role: 'tabpanel', 'aria-labelledby': `${ids}-title` });
+    this.tabs = h('div', { class: 'panel-tabs', role: 'tablist', 'aria-label': 'Side panel' }, ...Object.entries(TAB_LABELS).map(([id, name]) => (
+      h('button', { type: 'button', role: 'tab', class: 'panel-tab', 'aria-controls': this.body.id, dataset: { tab: id }, onclick: () => this.open(id) }, name))));
+    // One tab stop: the arrow keys move between the tabs and open them.
+    rovingFocus(this.tabs, () => [...this.tabs.children], { onMove: (t) => this.open(t.dataset.tab) });
     this.el = h('aside', { class: 'sidepanel', hidden: true, 'aria-label': 'Side panel' },
       h('header', { class: 'panel-header' }, this.title, h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close panel', html: icon('close'), onclick: () => this.close() })),
       this.tabs, this.body);
@@ -181,6 +144,7 @@ export class SidePanel {
     for (const t of this.tabs.children) {
       t.setAttribute('aria-selected', String(t.dataset.tab === this.current));
       t.classList.toggle('is-active', t.dataset.tab === this.current);
+      t.tabIndex = t.dataset.tab === this.current ? 0 : -1;
     }
     // The tabs scroll sideways when the panel is narrow: keep the open one in view.
     const tab = this.tabs.querySelector('.is-active')?.getBoundingClientRect();
@@ -253,7 +217,7 @@ export class SidePanel {
         ...Object.entries(SIZES).map(([id, s]) => [id, s.label]),
         ...(SIZES[deck.size] ? [] : [[deck.size, slideSize(deck).label]]),
         ['custom', 'Custom…'],
-      ], deck.size, (v) => (v === 'custom' ? app.customSizePrompt() : app.setSize(v))),
+      ], deck.size, (v) => (v === 'custom' ? app.customSizePrompt() : app.setSize(v)), 'Slide size'),
         h('p', { class: 'pf-hint' }, 'Changing the size scales everything on every slide.')),
     ];
   }
@@ -295,7 +259,7 @@ export class SidePanel {
         const on = a.effect && a.effect !== 'none';
         out.push(section(els.length > 1 ? `${title} (${els.length} objects)` : title,
           field('Effect', select(effects.map((x) => [x.id, x.name]), a.effect, (v) => app.setAnimation({ effect: v }, null, kind))),
-          on ? field('Duration', select([[0.3, 'Fast (0.3 s)'], [0.5, 'Medium (0.5 s)'], [0.8, 'Slow (0.8 s)'], [1.2, 'Very slow (1.2 s)'], [2, 'Very slow (2 s)']], a.duration ?? 0.5, (v) => app.setAnimation({ duration: +v }, null, kind))) : null,
+          on ? field('Duration', select(durationOptions(a.duration ?? 0.5), a.duration ?? 0.5, (v) => app.setAnimation({ duration: +v }, null, kind))) : null,
           on ? field('Start', select([['click', 'On click'], ['with', 'With previous'], ['after', 'After previous']], a.start || 'click', (v) => app.setAnimation({ start: v }, null, kind))) : null));
       }
     } else {
@@ -357,8 +321,8 @@ export class SidePanel {
           field('X', numberInput(el.x, (v) => upd((e) => { e.x = v; }), { suffix: 'pt' })),
           field('Y', numberInput(el.y, (v) => upd((e) => { e.y = v; }), { suffix: 'pt' }))),
         h('div', { class: 'pf-row' },
-          h('button', { type: 'button', class: 'btn', onclick: () => app.align('center', { toSlide: true }) }, 'Center horizontally'),
-          h('button', { type: 'button', class: 'btn', onclick: () => app.align('middle', { toSlide: true }) }, 'Center vertically'))));
+          h('button', { type: 'button', class: 'btn', onclick: () => app.align('center', { toSlide: true }) }, 'Centre horizontally'),
+          h('button', { type: 'button', class: 'btn', onclick: () => app.align('middle', { toSlide: true }) }, 'Centre vertically'))));
     }
 
     if (els.every((e) => e.type !== 'line' && e.type !== 'diagram')) {
@@ -371,9 +335,10 @@ export class SidePanel {
           h('button', { type: 'button', class: 'btn', onclick: () => app.pickFillImage() }, el.fillImage ? 'Change fill picture…' : 'Fill with a picture…'),
           el.fillImage ? h('button', { type: 'button', class: 'btn btn-ghost', onclick: () => app.removeFillImage() }, 'Remove picture') : null));
       }
+      const border = el.stroke?.width && el.stroke.color && el.stroke.color !== 'none' ? el.stroke : null;
       look.append(
-        colorButton('Border', el.stroke?.width ? el.stroke.color : 'none', theme, (v) => app.setStroke({ color: v, width: Math.max(1, el.stroke?.width || 2) }), { allowNone: true, noneLabel: 'No border' }),
-        field('Border weight', numberInput(el.stroke?.width || 0, (v) => app.setStroke({ width: v }), { min: 0, max: 50, step: 0.5, suffix: 'pt' })),
+        colorButton('Border', border ? border.color : 'none', theme, (v) => app.setStroke({ color: v, width: Math.max(1, el.stroke?.width || 2) }), { allowNone: true, noneLabel: 'No border' }),
+        field('Border weight', numberInput(border ? border.width : 0, (v) => app.setBorderWeight(v), { min: 0, max: 50, step: 0.5, suffix: 'pt' })),
       );
       const op = h('input', { type: 'range', min: '0', max: '100', value: String(Math.round((el.opacity ?? 1) * 100)) });
       const opOut = h('output', {}, `${op.value}%`);
@@ -452,8 +417,6 @@ export class SidePanel {
 
 // ------------------------------------------------------------------ table cells
 
-const DASH_STYLES = [['solid', 'Solid'], ['dash', 'Dashed'], ['dot', 'Dotted'], ['dashDot', 'Dash dot'], ['longDash', 'Long dash']];
-
 /**
  * Borders and margins for the cells being edited (from the cursor's cell to
  * the end of the selection), or the whole table. The border's colour, weight
@@ -471,10 +434,9 @@ function cellSection(panel, el, theme) {
   const margin = (label, side) => field(label, numberInput(m[side], (v) => app.setCellMargins({ [side]: v }), { min: 0, max: 200, step: 0.5, suffix: 'pt' }));
   return section('Cells',
     field('Borders', borders),
-    h('div', { class: 'pf-row' },
-      colorButton('Border colour', pen.color, theme, (v) => { pen.color = v; panel.update(true); }),
-      numberInput(pen.width, (v) => { pen.width = v; }, { min: 0.25, max: 20, step: 0.25, suffix: 'pt' })),
-    field('Border style', select(DASH_STYLES, pen.dash, (v) => { pen.dash = v; })),
+    colorButton('Border colour', pen.color, theme, (v) => { pen.color = v; panel.update(true); }),
+    field('Border weight', numberInput(pen.width, (v) => { pen.width = v; }, { min: 0.25, max: 20, step: 0.25, suffix: 'pt' })),
+    field('Border dash', select(DASH_STYLES, pen.dash, (v) => { pen.dash = v; })),
     h('div', { class: 'pf-grid' }, margin('Left margin', 'l'), margin('Right margin', 'r'), margin('Top margin', 't'), margin('Bottom margin', 'b')),
     h('p', { class: 'pf-hint' }, 'Applies to the cells you’re typing in (or have selected), or to the whole table.'));
 }
@@ -651,7 +613,7 @@ function chartMore(c, edit) {
         select([['', 'Chart type'], ['column', 'Columns'], ['line', 'Line'], ['area', 'Area']], s.kind && s.kind !== c.kind ? s.kind : '', (v) => edit((ch) => {
           if (v && v !== ch.kind) ch.series[k].kind = v;
           else delete ch.series[k].kind;
-        })),
+        }), `How ${s.name || `series ${k + 1}`} is drawn`),
         checkbox('Secondary axis', s.secondary, (v) => edit((ch) => {
           if (v) ch.series[k].secondary = true;
           else delete ch.series[k].secondary;

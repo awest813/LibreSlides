@@ -215,9 +215,10 @@ audio.el-media-player { display: none; }
 .sidepanel { width: var(--panel-w); flex: none; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--surface); min-height: 0; }
 .panel-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 8px 0 16px; }
 .panel-header h2 { font-size: 15px; margin: 0; }
-.panel-tabs { display: flex; gap: 2px; padding: 6px 10px 0; border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
+.panel-tabs { display: flex; gap: 0; padding: 6px 6px 0; border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
 .panel-tabs::-webkit-scrollbar { display: none; }
-.panel-tab { border: 0; background: transparent; padding: 6px 8px; font-size: 12.5px; border-bottom: 2px solid transparent; color: var(--text-muted); white-space: nowrap; }
+/* The five tabs fit the panel's width without scrolling (the strip still scrolls if they can't, keeping the open tab in view). */
+.panel-tab { flex: 1 1 auto; border: 0; background: transparent; padding: 6px 4px; font-size: 12px; border-bottom: 2px solid transparent; color: var(--text-muted); white-space: nowrap; }
 .panel-tab.is-active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
 .panel-body { flex: 1; overflow: auto; padding: 4px 16px 24px; }
 .panel-section { padding: 12px 0; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px; }
@@ -243,6 +244,7 @@ audio.el-media-player { display: none; }
 .pf-hint { font-size: 12px; color: var(--text-muted); margin: 0; line-height: 1.45; }
 .pf-color { justify-content: flex-start; font-weight: 500; }
 .pf-swatch { width: 18px; height: 18px; border-radius: 3px; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.2); background-image: none; }
+.pf-swatch.is-none { box-shadow: inset 0 0 0 1px var(--border-strong); background: linear-gradient(to top right, transparent 45%, #d33 45%, #d33 55%, transparent 55%); }
 .theme-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
 .theme-card, .layout-card { border: 0; padding: 0; background: transparent; border-radius: 5px; box-shadow: 0 0 0 1px var(--border-strong); overflow: hidden; line-height: 0; justify-self: start; }
 .theme-card:hover, .layout-card:hover { box-shadow: 0 0 0 2px var(--accent); }
@@ -392,6 +394,7 @@ dialog.dialog { z-index: 3600; }
 }
 @media (max-width: 1100px) {
   :root { --panel-w: 270px; }
+  .panel-tab { padding: 6px 2px; font-size: 11.5px; }
   .tb-group[data-group='slide'] .tb-text { display: none; }
 }
 @media (max-width: 900px) {

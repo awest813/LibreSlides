@@ -121,17 +121,28 @@ export function showPopover(anchor, content, { at = null, onClose = null, classN
       const a = anchor;
       closePopover();
       a?.focus?.();
-    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    } else if (e.key === 'Tab' && isMenu) {
+      // Tab leaves a menu: it closes, and focus moves on from its button (or back to the document).
+      const a = anchor?.isConnected ? expanderOf(anchor) || anchor : null;
+      closePopover();
+      if (a) a.focus();
+      else e.preventDefault();
+    } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
       const items = $$('[role="menuitem"]:not([disabled]),[role="menuitemcheckbox"]:not([disabled])', el);
       // Other controls (the table size grid) handle their own arrow keys.
       const active = document.activeElement;
       if (!items.length || (el.contains(active) && active !== el && !items.includes(active))) return;
       e.preventDefault();
       const i = items.indexOf(document.activeElement);
-      const next = e.key === 'ArrowDown' ? (i + 1) % items.length : (i - 1 + items.length) % items.length;
+      const next = { Home: 0, End: items.length - 1, ArrowDown: (i + 1) % items.length, ArrowUp: (i - 1 + items.length) % items.length }[e.key];
       items[next].focus();
     }
   };
+  // A panel (colour picker, shapes…) closes when the keyboard moves on from it.
+  el.addEventListener('focusout', (e) => {
+    const to = e.relatedTarget;
+    if (to && !el.contains(to) && !(anchor && anchor.contains(to)) && openPopover?.el === el) closePopover();
+  });
   const onResize = () => closePopover();
   document.addEventListener('pointerdown', onDown, true);
   document.addEventListener('keydown', onKey, true);
@@ -180,6 +191,7 @@ export function menu(items, { iconFn } = {}) {
         type: 'button',
         class: `menu-item${item.checked ? ' is-checked' : ''}`,
         role: item.checked !== undefined ? 'menuitemcheckbox' : 'menuitem',
+        tabindex: '-1', // the arrow keys move between items; Tab leaves the menu
         'aria-checked': item.checked !== undefined ? String(Boolean(item.checked)) : null,
         disabled: item.disabled || null,
         style: item.style || null,
@@ -195,6 +207,37 @@ export function menu(items, { iconFn } = {}) {
     list.append(btn);
   }
   return list;
+}
+
+/**
+ * Make the controls `items()` of `container` (a toolbar, menu bar or tab
+ * list) a single tab stop that the arrow keys, Home and End move along,
+ * skipping hidden and disabled ones. `onMove(control)` runs after a move.
+ * Returns sync(), to call after controls are shown, hidden or disabled.
+ */
+export function rovingFocus(container, items, { prev = 'ArrowLeft', next = 'ArrowRight', onMove = null } = {}) {
+  const usable = () => items().filter((b) => !b.disabled && !b.closest('[hidden]'));
+  const setCurrent = (cur) => { for (const b of items()) b.tabIndex = b === cur ? 0 : -1; };
+  const sync = () => {
+    const list = usable();
+    setCurrent(list.find((b) => b.tabIndex === 0) || list[0]);
+  };
+  container.addEventListener('focusin', (e) => {
+    if (items().includes(e.target)) setCurrent(e.target);
+  });
+  container.addEventListener('keydown', (e) => {
+    const list = usable();
+    const i = list.indexOf(e.target);
+    if (i < 0 || e.altKey || e.ctrlKey || e.metaKey) return;
+    const moves = { [next]: (i + 1) % list.length, [prev]: (i - 1 + list.length) % list.length, Home: 0, End: list.length - 1 };
+    if (!Object.hasOwn(moves, e.key)) return;
+    const j = moves[e.key];
+    e.preventDefault();
+    list[j].focus();
+    onMove?.(list[j]);
+  });
+  sync();
+  return sync;
 }
 
 // ---------------------------------------------------------------------------

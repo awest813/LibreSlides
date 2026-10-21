@@ -1,4 +1,4 @@
-import { h, toast, debounce, showPopover, menu, setFocusFallback, isPopoverOpen, pickFileInput, closePopover, shortcutLabel, downloadBlob } from '../ui/dom.js';
+import { h, toast, debounce, showPopover, menu, setFocusFallback, isPopoverOpen, pickFileInput, closePopover, shortcutLabel, downloadBlob, escapeHtml } from '../ui/dom.js';
 import { icon, LOGO_SVG } from '../ui/icons.js';
 import { openDialog, promptDialog, confirmDialog } from '../ui/dialog.js';
 import {
@@ -31,7 +31,7 @@ import { startComment } from './comments.js';
 import { pickDiagramLayout, focusDiagramText } from './diagrams.js';
 import { diagramAsShapes } from '../model/diagram-layout.js';
 import { stripInline, exec, execFontSize, caretFormat, highlightAll, effectAll, TEXT_EFFECTS } from './richtext.js';
-import { VERSION, BUILD, diagnostics } from '../diagnostics.js';
+import { showShortcuts, showAbout } from './help.js';
 
 const CLIP_TYPE = 'application/x-libreslides+json';
 const isTextual = (el) => canHoldText(el) || el.type === 'table';
@@ -131,7 +131,7 @@ export class EditorScreen {
       { label: 'Present from beginning', icon: 'play', shortcut: 'F5', run: () => this.present({ fromStart: true }) },
       { label: 'Presenter view', icon: 'presenter', run: () => this.presenterView() },
     ], { iconFn: (n) => icon(n) }), { placement: 'bottom-end' }));
-    this.darkBtn = h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Toggle dark mode', title: 'Dark mode', html: icon(isDark() ? 'sun' : 'moon'), onclick: () => this.toggleDarkUi() });
+    this.darkBtn = h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Dark mode', 'aria-pressed': String(isDark()), title: 'Dark mode', html: icon(isDark() ? 'sun' : 'moon'), onclick: () => this.toggleDarkUi() });
 
     const titlebar = h('header', { class: 'titlebar editor-titlebar' },
       h('button', { type: 'button', class: 'app-logo', 'aria-label': 'All presentations', title: 'All presentations', html: LOGO_SVG('#fff', 'transparent', 28), onclick: () => this.goHome() }),
@@ -209,6 +209,7 @@ export class EditorScreen {
     if (save) await this.flush();
     this.saveSoon.cancel();
     this.thumbSoon.cancel();
+    cancelAnimationFrame(this.uiFrame);
     this.canvas.destroy();
     this.unsubscribe?.();
     this.presentation?.exit?.();
@@ -724,7 +725,12 @@ export class EditorScreen {
     this.change(() => { for (const e of this.selectedElements()) delete e.groupId; });
   }
 
+  /** Select everything on the slide, or all the text of the box (or table cell) being edited. */
   selectAll() {
+    if (this.canvas.restoreSelection()) {
+      document.execCommand('selectAll');
+      return;
+    }
     this.setSelection(this.slide.elements.map((e) => e.id));
   }
 
@@ -777,6 +783,55 @@ export class EditorScreen {
     this.setSelection(copies.map((c) => c.id));
   }
 
+  /** Whether text is selected in the box being edited (what Edit › Cut and Copy act on then). */
+  hasTextSelection() {
+    const r = this.canvas.editing && this.canvas.savedRange;
+    return !!r && !r.collapsed;
+  }
+
+  /**
+   * Edit › Cut, Copy, Paste and Delete (and the same in the context menu):
+   * on the selected text while a box is being edited, as in PowerPoint and
+   * Slides, otherwise on the selected objects.
+   */
+  editCommand(cmd) {
+    if (!this.canvas.editing) {
+      if (cmd === 'cut') this.copySelection({ cut: true });
+      else if (cmd === 'copy') this.copySelection();
+      else if (cmd === 'paste') this.pasteFromMenu();
+      else this.deleteSelection();
+      return;
+    }
+    if (cmd === 'paste') {
+      this.pasteIntoText();
+      return;
+    }
+    this.canvas.execText(() => {
+      if (cmd === 'delete') {
+        document.execCommand('delete');
+        return;
+      }
+      const text = String(document.getSelection() || '');
+      // Allowed from a click in Chromium and Firefox; elsewhere write the text ourselves.
+      if (!document.execCommand(cmd)) {
+        navigator.clipboard?.writeText?.(text).catch(() => {});
+        if (cmd === 'cut') document.execCommand('delete');
+      }
+    });
+  }
+
+  /** Paste plain text at the cursor of the box being edited (from a menu, where the browser can't paste itself). */
+  async pasteIntoText() {
+    let text;
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      toast(`Use ${shortcutLabel('Mod-V')} to paste from other apps.`);
+      return;
+    }
+    if (text) this.canvas.execText(() => exec('insertText', text.replace(/\r\n?/g, '\n')));
+  }
+
   async pasteFromMenu() {
     if (elementClipboard) {
       this.pasteElements(elementClipboard);
@@ -793,7 +848,9 @@ export class EditorScreen {
   pasteText(text) {
     const { w, h: H } = this.size;
     const lines = text.replace(/\r\n?/g, '\n').split('\n');
-    const el = { ...newTextBoxAt(w, H), text: sanitizeHtml(lines.map((l) => `<p>${escapeText(l) || '<br>'}</p>`).join('')) };
+    // A box across the middle of the slide.
+    const el = newTextBox(Math.round(w * 0.15), Math.round(H * 0.4), Math.round(w * 0.7), 60);
+    el.text = sanitizeHtml(lines.map((l) => `<p>${escapeHtml(l) || '<br>'}</p>`).join(''));
     this.addElements([el]);
     requestAnimationFrame(() => this.canvas.autoGrow(el));
   }
@@ -902,6 +959,14 @@ export class EditorScreen {
 
   setStroke(partial) {
     this.updateSelected((e) => { e.stroke = { color: 'theme:text', width: 2, dash: 'solid', ...(e.stroke || {}), ...partial }; });
+  }
+
+  /** Give the selected objects borders this wide; a borderless one also gets a colour, so the border shows. */
+  setBorderWeight(width) {
+    this.updateSelected((e) => {
+      const visible = e.stroke?.color && e.stroke.color !== 'none';
+      e.stroke = { color: 'theme:text', dash: 'solid', ...(e.stroke || {}), width, ...(visible || !width ? {} : { color: 'theme:text' }) };
+    });
   }
 
   setLineEnds(start, end) {
@@ -1420,12 +1485,20 @@ export class EditorScreen {
     if (at) this.change(() => setMargins(at.el, at.range, margin));
   }
 
-  tableOp(op) {
+  /**
+   * Insert, delete, merge or unmerge rows and columns of the selected table
+   * at `cell` ({ r, c }: the one right-clicked), else the cell with the
+   * cursor; with neither, rows and columns go at the edges.
+   */
+  tableOp(op, cell = null) {
     const el = this.selectedElements().find((e) => e.type === 'table');
     if (!el) return;
     let r = el.cells.length - 1;
     let c = el.cells[0].length - 1;
-    if (this.canvas.editing) {
+    if (cell && el.cells[cell.r]?.[cell.c]) {
+      ({ r, c } = cell);
+      this.canvas.endEdit();
+    } else if (this.canvas.editing) {
       // Where the cursor was in the table (a menu may have taken the focus since).
       const at = this.canvas.savedRange?.startContainer || document.getSelection()?.anchorNode;
       const node = at?.nodeType === 3 ? at.parentElement : at;
@@ -1589,6 +1662,7 @@ export class EditorScreen {
   toggleDarkUi() {
     toggleTheme();
     this.darkBtn.innerHTML = icon(isDark() ? 'sun' : 'moon');
+    this.darkBtn.setAttribute('aria-pressed', String(isDark()));
   }
 
   toggleFullscreen() {
@@ -1596,14 +1670,17 @@ export class EditorScreen {
     else document.documentElement.requestFullscreen?.().catch(() => {});
   }
 
-  canvasMenu(at) {
+  /** The slide's context menu, at `at` (screen point); `cell` is the table cell right-clicked, if any. */
+  canvasMenu(at, cell = null) {
     const has = this.selection.length > 0;
+    const els = this.selectedElements();
+    const table = els.length === 1 && els[0].type === 'table';
     const items = has ? [
-      { label: 'Cut', icon: 'cut', shortcut: 'Mod-X', run: () => this.copySelection({ cut: true }) },
-      { label: 'Copy', icon: 'copy', shortcut: 'Mod-C', run: () => this.copySelection() },
-      { label: 'Paste', icon: 'paste', shortcut: 'Mod-V', run: () => this.pasteFromMenu() },
+      { label: 'Cut', icon: 'cut', shortcut: 'Mod-X', run: () => this.editCommand('cut') },
+      { label: 'Copy', icon: 'copy', shortcut: 'Mod-C', run: () => this.editCommand('copy') },
+      { label: 'Paste', icon: 'paste', shortcut: 'Mod-V', run: () => this.editCommand('paste') },
       { label: 'Duplicate', icon: 'duplicate', shortcut: 'Mod-D', run: () => this.duplicateSelection() },
-      { label: 'Delete', icon: 'trash', shortcut: 'Delete', run: () => this.deleteSelection() },
+      { label: 'Delete', icon: 'trash', shortcut: 'Delete', run: () => this.editCommand('delete') },
       'separator',
       { label: 'Bring to front', icon: 'toFront', shortcut: 'Mod-Shift-Up', run: () => this.order('front') },
       { label: 'Send to back', icon: 'toBack', shortcut: 'Mod-Shift-Down', run: () => this.order('back') },
@@ -1611,6 +1688,7 @@ export class EditorScreen {
       this.selectedElements().some((e) => e.groupId) ? { label: 'Ungroup', shortcut: 'Mod-Shift-G', run: () => this.ungroupSelection() } : null,
       this.selectedElements().some((e) => e.type === 'diagram') ? { label: 'Edit diagram text', icon: 'diagram', run: () => this.editDiagramText() } : null,
       this.selectedElements().some((e) => e.type === 'diagram') ? { label: 'Convert to shapes', run: () => this.convertDiagramToShapes() } : null,
+      ...(table ? ['separator', ...this.toolbar.tableItems(cell), ...(cell ? this.toolbar.mergeItems(cell) : [])] : []),
       'separator',
       { label: 'Animate…', icon: 'animate', run: () => this.openPanel('animate') },
       { label: 'Format options…', icon: 'format', run: () => this.openPanel('format') },
@@ -1953,77 +2031,9 @@ export class EditorScreen {
 
   // ---------------------------------------------------------------- dialogs
 
-  showShortcuts() {
-    const rows = [
-      ['Present from this slide / from the beginning', 'Mod-Enter', 'F5'],
-      ['New slide', 'Mod-M'],
-      ['New comment', 'Mod-Alt-M'],
-      ['Duplicate', 'Mod-D'],
-      ['Group / Ungroup', 'Mod-G', 'Mod-Shift-G'],
-      ['Link', 'Mod-K'],
-      ['Undo / Redo', 'Mod-Z', 'Mod-Y'],
-      ['Cut / Copy / Paste', 'Mod-X', 'Mod-C', 'Mod-V'],
-      ['Select all', 'Mod-A'],
-      ['Edit the selected text box (or diagram’s text)', 'Enter'],
-      ['Stop editing text / deselect', 'Escape'],
-      ['Select the next object', 'Tab'],
-      ['Nudge (fine / large steps)', 'Arrow keys', 'Alt-Arrow', 'Shift-Arrow'],
-      ['Bring forward / to front', 'Mod-Up', 'Mod-Shift-Up'],
-      ['Send backward / to back', 'Mod-Down', 'Mod-Shift-Down'],
-      ['Bold / Italic / Underline', 'Mod-B', 'Mod-I', 'Mod-U'],
-      ['Bigger / smaller text', 'Mod-Shift-.', 'Mod-Shift-,'],
-      ['Align left / center / right', 'Mod-Shift-L', 'Mod-Shift-E', 'Mod-Shift-R'],
-      ['Bulleted / numbered list', 'Mod-Shift-8', 'Mod-Shift-7'],
-      ['Previous / next slide', 'Page Up', 'Page Down'],
-      ['Move slide up / down (in the slide list)', 'Mod-Up', 'Mod-Down'],
-      ['Zoom in / out / fit', 'Mod-=', 'Mod--', 'Mod-Alt-0'],
-      ['Keep proportions while resizing; draw straight lines', 'Shift-Drag'],
-      ['Move without snapping', 'Alt-Drag'],
-      ['Print / Open', 'Mod-P', 'Mod-O'],
-    ];
-    const table = h('table', { class: 'shortcut-table' }, h('tbody', {}, ...rows.map(([label, ...keys]) => h('tr', {}, h('td', {}, label), h('td', {}, ...keys.flatMap((kk, i) => [i ? ' ' : null, h('kbd', {}, /^[A-Z][a-z]/.test(kk) && !kk.includes('-') ? kk : shortcutLabel(kk))]))))));
-    const present = h('table', { class: 'shortcut-table' }, h('tbody', {}, ...[
-      ['Next / previous', '→ Space Enter', '← Backspace'],
-      ['First / last slide', 'Home', 'End'],
-      ['Go to slide number', 'Number then Enter'],
-      ['Black / white screen', 'B', 'W'],
-      ['Show speaker notes', 'S'],
-      ['End the slideshow', 'Esc'],
-    ].map(([label, ...keys]) => h('tr', {}, h('td', {}, label), h('td', {}, ...keys.flatMap((kk, i) => [i ? ' ' : null, h('kbd', {}, kk)]))))));
-    openDialog({ title: 'Keyboard shortcuts', className: 'wide', body: h('div', {}, table, h('h3', { class: 'dialog-subhead' }, 'During a slideshow'), present) });
-  }
+  showShortcuts() { showShortcuts(); }
 
   showInstall() { showInstallHelp(); }
 
-  async showAbout() {
-    const report = await diagnostics(this);
-    const pre = h('pre', { class: 'diagnostics' }, report);
-    openDialog({
-      title: 'About LibreSlides',
-      className: 'wide',
-      body: h('div', {},
-        h('p', {}, `LibreSlides ${VERSION} (build ${BUILD}) — a presentation editor that runs entirely in your browser and works offline. Presentations are kept on this device; nothing is uploaded.`),
-        h('details', {}, h('summary', {}, 'Details for a bug report'), pre)),
-      buttons: [
-        { label: 'Copy details', value: 'copy' },
-        { label: 'Close', value: null, primary: true },
-      ],
-      onSubmit: (v) => {
-        if (v === 'copy') {
-          navigator.clipboard?.writeText(report).then(() => toast('Copied'), () => {});
-          return false;
-        }
-        return true;
-      },
-    });
-  }
-}
-
-function escapeText(s) {
-  return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-}
-
-/** A text box in the middle of the slide, for pasted text. */
-function newTextBoxAt(w, H) {
-  return { id: uid(), type: 'text', x: Math.round(w * 0.15), y: Math.round(H * 0.4), w: Math.round(w * 0.7), h: 60, rot: 0, text: '', fill: 'none', stroke: null, style: { size: 18 } };
+  showAbout() { return showAbout(this); }
 }

@@ -98,6 +98,45 @@ describe('editor: undo', () => {
   });
 });
 
+describe('editor: Edit menu while typing', () => {
+  it('cuts the selected text, not the whole box being edited', () => {
+    const box = newTextBox(10, 10);
+    box.text = '<p>Hello world</p>';
+    const ed = openEditor(deckWith(box));
+    ed.setSelection([box.id]);
+    ed.canvas.startEdit(box.id);
+    const text = ed.canvas.editing.bodies[0].querySelector('p').firstChild;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 5);
+    ed.canvas.savedRange = range;
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const exec = vi.spyOn(document, 'execCommand');
+    // The menu offers Cut for the selected text.
+    ed.toolbar.menuButtons.Edit.click();
+    const cut = [...document.querySelectorAll('.popover .menu-item')].find((b) => b.textContent.startsWith('Cut'));
+    expect(cut.disabled).toBe(false);
+    cut.click();
+    expect(ed.slide.elements).toHaveLength(1);
+    expect(ed.canvas.editing?.id).toBe(box.id);
+    expect(exec).toHaveBeenCalledWith('cut');
+    // jsdom can't cut: the text goes to the clipboard and is deleted.
+    expect(writeText).toHaveBeenCalledWith('Hello');
+    expect(exec).toHaveBeenCalledWith('delete');
+    exec.mockRestore();
+    delete navigator.clipboard;
+  });
+
+  it('deletes the selected objects from the menu when nothing is being typed', () => {
+    const shape = newShape('rect', 0, 0);
+    const ed = openEditor(deckWith(shape));
+    ed.setSelection([shape.id]);
+    ed.editCommand('delete');
+    expect(ed.slide.elements).toHaveLength(0);
+  });
+});
+
 describe('editor: changing slides while typing', () => {
   it('applies a layout to a slide whose placeholder is being edited', () => {
     const d = deckWith();
@@ -169,6 +208,48 @@ describe('editor: side panel', () => {
     expect(t().cells[1][1].margin).toBeUndefined();
   });
 
+  it('gives a borderless box a visible border when its border weight is set', () => {
+    const box = newTextBox(0, 0);
+    box.stroke = { color: 'none', width: 2 };
+    const ed = openEditor(deckWith(box));
+    ed.setSelection([box.id]);
+    ed.openPanel('format');
+    const weight = [...ed.panel.body.querySelectorAll('label.pf')].find((l) => l.firstChild.textContent === 'Border weight').querySelector('input');
+    expect(weight.value).toBe('0'); // no border shows
+    expect(ed.panel.body.querySelector('.pf-color .pf-swatch.is-none')).toBeTruthy();
+    weight.value = '3';
+    weight.dispatchEvent(new Event('change'));
+    expect(ed.slide.elements[0].stroke).toMatchObject({ color: 'theme:text', width: 3 });
+    ed.undo();
+    expect(ed.slide.elements[0].stroke).toEqual({ color: 'none', width: 2 });
+  });
+
+  it('shows an animation’s own duration when it isn’t one of the choices', () => {
+    const shape = newShape('rect', 0, 0);
+    shape.anim = { effect: 'fade', duration: 1, start: 'click', order: 1 };
+    const ed = openEditor(deckWith(shape));
+    ed.setSelection([shape.id]);
+    ed.openPanel('animate');
+    const duration = [...ed.panel.body.querySelectorAll('label.pf')].find((l) => l.firstChild.textContent === 'Duration').querySelector('select');
+    expect(duration.selectedOptions[0].textContent).toBe('1 s');
+    const labels = [...duration.options].map((o) => o.textContent);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it('names every control in the panel', () => {
+    const table = newTable(2, 2, 0, 0, 200, 80);
+    const ed = openEditor(deckWith(table));
+    const unnamed = () => [...ed.panel.body.querySelectorAll('input, select, textarea, button')].filter((c) => !c.getAttribute('aria-label') && !c.closest('label') && !c.textContent.trim());
+    ed.openPanel('design');
+    expect(unnamed()).toEqual([]);
+    ed.setSelection([table.id]);
+    ed.openPanel('format');
+    expect(unnamed()).toEqual([]);
+    ed.insertChart();
+    ed.updateSelected((e) => { e.chart.series[1].kind = 'line'; });
+    expect(unnamed()).toEqual([]);
+  });
+
   it('makes one undo step for Enter in a number field, and updates the locked other side', () => {
     const shape = { ...newShape('rect', 0, 0, 200, 100), lockRatio: true };
     const ed = openEditor(deckWith(shape));
@@ -226,6 +307,60 @@ describe('editor: keyboard', () => {
     expect(ed.slide.elements[0].style?.strike).toBeUndefined();
   });
 
+  it('moves through the menu bar with the arrow keys, and between open menus', () => {
+    const ed = openEditor(deckWith());
+    const items = [...ed.toolbar.menubar.querySelectorAll('.menubar-item')];
+    expect(items.filter((b) => b.tabIndex === 0)).toEqual([items[0]]); // one tab stop
+    items[0].focus();
+    key(items[0], { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(items[1]);
+    key(items[1], { key: 'ArrowDown' });
+    expect(items[1].getAttribute('aria-expanded')).toBe('true');
+    expect(document.activeElement.closest('.popover')).toBeTruthy();
+    key(document.activeElement, { key: 'ArrowRight' });
+    expect(items[2].getAttribute('aria-expanded')).toBe('true');
+    expect(items[1].getAttribute('aria-expanded')).toBe('false');
+    // Tab leaves the menu from its button.
+    key(document.activeElement, { key: 'Tab' });
+    expect(document.querySelector('.popover')).toBeNull();
+    expect(document.activeElement).toBe(items[2]);
+    expect(items[2].tabIndex).toBe(0);
+  });
+
+  it('makes the toolbar one tab stop that the arrow keys move along, skipping hidden controls', () => {
+    const box = newTextBox(0, 0);
+    const ed = openEditor(deckWith(box));
+    const stops = () => [...ed.toolbar.toolbar.querySelectorAll('button')].filter((b) => b.tabIndex === 0);
+    expect(stops()).toHaveLength(1);
+    const first = stops()[0];
+    first.focus();
+    key(first, { key: 'End' });
+    const last = document.activeElement;
+    expect(last.closest('[hidden]')).toBeNull();
+    expect(stops()).toEqual([last]);
+    // Selecting text shows the text controls, with Bold reported as on or off.
+    ed.setSelection([box.id]);
+    expect(ed.toolbar.boldBtn.getAttribute('aria-pressed')).toBe('false');
+    ed.toggleTextProp('bold');
+    expect(ed.toolbar.boldBtn.getAttribute('aria-pressed')).toBe('true');
+    // Hiding the focused control's group moves the tab stop to a visible one.
+    ed.setSelection([]);
+    expect(stops()).toHaveLength(1);
+    expect(stops()[0].closest('[hidden]')).toBeNull();
+  });
+
+  it('opens the side panel’s tabs with the arrow keys', () => {
+    const ed = openEditor(deckWith());
+    ed.openPanel('design');
+    const tab = ed.panel.tabs.querySelector('[aria-selected="true"]');
+    expect(tab.tabIndex).toBe(0);
+    tab.focus();
+    key(tab, { key: 'ArrowRight' });
+    expect(ed.panel.current).toBe('transition');
+    expect(document.activeElement.dataset.tab).toBe('transition');
+    expect(ed.panel.body.getAttribute('role')).toBe('tabpanel');
+  });
+
   it('starts one slideshow when F5 repeats while it loads', async () => {
     const ed = openEditor(deckWith());
     await Promise.all([ed.present(), ed.present(), ed.present({ fromStart: true })]);
@@ -258,6 +393,55 @@ describe('editor: charts', () => {
     expect(chart().chart.kind).toBe('column');
     expect(chart().chart.series).toHaveLength(3);
     expect(chart().chart.series[0].values[1]).toBe(9);
+  });
+});
+
+describe('editor: tables', () => {
+  const menuItem = (label) => [...document.querySelectorAll('.popover .menu-item')].find((b) => b.querySelector('.menu-label').textContent === label);
+
+  it('inserts a row at the right-clicked cell from the slide’s context menu', () => {
+    const table = newTable(2, 2, 0, 0, 200, 80);
+    table.cells[0][0].text = '<p>a</p>';
+    table.cells[1][0].text = '<p>b</p>';
+    const ed = openEditor(deckWith(table));
+    const td = ed.canvas.slideEl.querySelector('td[data-r="0"][data-c="0"]');
+    td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    expect(ed.selection).toEqual([table.id]);
+    menuItem('Insert row below').click();
+    const t = ed.slide.elements[0];
+    expect(t.cells.map((row) => row[0].text)).toEqual(['<p>a</p>', '', '<p>b</p>']);
+    ed.undo();
+    expect(ed.slide.elements[0].cells).toHaveLength(2);
+  });
+
+  it('keeps row and column actions in one toolbar menu', () => {
+    const table = newTable(1, 2, 0, 0, 200, 40);
+    const ed = openEditor(deckWith(table));
+    ed.setSelection([table.id]);
+    const group = ed.toolbar.groups.table;
+    expect(group.hidden).toBe(false);
+    expect(group.querySelectorAll('button')).toHaveLength(2);
+    // Lists and indents do nothing to a table until its text is typed in.
+    expect([ed.toolbar.bulletBtn.disabled, ed.toolbar.indentBtn.disabled]).toEqual([true, true]);
+    ed.canvas.startEdit(table.id);
+    expect([ed.toolbar.bulletBtn.disabled, ed.toolbar.indentBtn.disabled]).toEqual([false, false]);
+    ed.canvas.endEdit();
+    group.querySelector('[aria-label="Rows and columns"]').click();
+    expect(menuItem('Delete row').disabled).toBe(true); // the only row
+    menuItem('Insert column right').click();
+    expect(ed.slide.elements[0].cells[0]).toHaveLength(3);
+  });
+
+  it('chooses a table size with the arrow keys', () => {
+    const ed = openEditor(deckWith());
+    ed.toolbar.tableBtn.click();
+    const first = document.querySelector('.table-grid button');
+    first.focus();
+    key(first, { key: 'ArrowRight' });
+    key(document.activeElement, { key: 'ArrowDown' });
+    expect(document.activeElement.getAttribute('aria-label')).toBe('2 by 2 table');
+    document.activeElement.click();
+    expect(ed.slide.elements.at(-1).cells.map((r) => r.length)).toEqual([2, 2]);
   });
 });
 

@@ -1,10 +1,11 @@
-import { h, showPopover, menu, closePopover, shortcutLabel } from '../ui/dom.js';
+import { h, showPopover, menu, closePopover, shortcutLabel, rovingFocus } from '../ui/dom.js';
 import { icon } from '../ui/icons.js';
 import { openColorPicker } from '../ui/color-picker.js';
-import { FONTS, FONT_SIZES, fontStack, embedFontsSetting, setEmbedFontsSetting } from '../model/fonts.js';
+import { FONTS, fontStack, embedFontsSetting, setEmbedFontsSetting } from '../model/fonts.js';
 import { SHAPES, shapePath } from '../model/shapes.js';
-import { LAYOUTS } from '../model/deck.js';
+import { LAYOUTS, canHoldText } from '../model/deck.js';
 import { resolveColor } from '../model/themes.js';
+import { DASH_STYLES } from './fields.js';
 
 const iconFn = (n) => icon(n);
 const keep = (e) => e.preventDefault(); // keep focus (and the text selection) where it is
@@ -70,22 +71,27 @@ export class Toolbar {
         'separator',
         { label: 'Back to all presentations', icon: 'home', run: () => app.goHome() },
       ],
-      Edit: () => [
-        { label: 'Undo', icon: 'undo', shortcut: 'Mod-Z', disabled: !app.history.canUndo, run: () => app.undo() },
-        { label: 'Redo', icon: 'redo', shortcut: 'Mod-Y', disabled: !app.history.canRedo, run: () => app.redo() },
-        'separator',
-        { label: 'Cut', icon: 'cut', shortcut: 'Mod-X', disabled: !app.selection.length, run: () => app.copySelection({ cut: true }) },
-        { label: 'Copy', icon: 'copy', shortcut: 'Mod-C', disabled: !app.selection.length, run: () => app.copySelection() },
-        { label: 'Paste', icon: 'paste', shortcut: 'Mod-V', run: () => app.pasteFromMenu() },
-        { label: 'Duplicate', icon: 'duplicate', shortcut: 'Mod-D', disabled: !app.selection.length, run: () => app.duplicateSelection() },
-        { label: 'Delete', icon: 'trash', shortcut: 'Delete', disabled: !app.selection.length, run: () => app.deleteSelection() },
-        'separator',
-        { label: 'Select all', shortcut: 'Mod-A', run: () => app.selectAll() },
-        { label: 'Select none', run: () => app.setSelection([]) },
-      ],
+      Edit: () => {
+        // While typing, these act on the selected text.
+        const typing = app.canvas.isEditing;
+        const none = typing ? !app.hasTextSelection() : !app.selection.length;
+        return [
+          { label: 'Undo', icon: 'undo', shortcut: 'Mod-Z', disabled: !app.history.canUndo && !typing, run: () => app.undo() },
+          { label: 'Redo', icon: 'redo', shortcut: 'Mod-Y', disabled: !app.history.canRedo, run: () => app.redo() },
+          'separator',
+          { label: 'Cut', icon: 'cut', shortcut: 'Mod-X', disabled: none, run: () => app.editCommand('cut') },
+          { label: 'Copy', icon: 'copy', shortcut: 'Mod-C', disabled: none, run: () => app.editCommand('copy') },
+          { label: 'Paste', icon: 'paste', shortcut: 'Mod-V', run: () => app.editCommand('paste') },
+          { label: 'Duplicate', icon: 'duplicate', shortcut: 'Mod-D', disabled: typing || !app.selection.length, run: () => app.duplicateSelection() },
+          { label: 'Delete', icon: 'trash', shortcut: 'Delete', disabled: none, run: () => app.editCommand('delete') },
+          'separator',
+          { label: 'Select all', shortcut: 'Mod-A', run: () => app.selectAll() },
+          { label: 'Select none', run: () => app.setSelection([]) },
+        ];
+      },
       View: () => [
-        { label: 'Slideshow', icon: 'present', shortcut: 'Mod-Enter', run: () => app.present({ fromStart: false }) },
-        { label: 'Slideshow from beginning', icon: 'play', shortcut: 'F5', run: () => app.present({ fromStart: true }) },
+        { label: 'Present from this slide', icon: 'present', shortcut: 'Mod-Enter', run: () => app.present({ fromStart: false }) },
+        { label: 'Present from beginning', icon: 'play', shortcut: 'F5', run: () => app.present({ fromStart: true }) },
         { label: 'Presenter view', icon: 'presenter', run: () => app.presenterView() },
         'separator',
         { label: 'Zoom in', icon: 'zoomIn', shortcut: 'Mod-=', run: () => app.zoomBy(1.25) },
@@ -101,24 +107,26 @@ export class Toolbar {
       Insert: () => [
         { label: 'Text box', icon: 'textBox', run: () => app.canvas.setTool({ type: 'text' }) },
         { label: 'Image…', icon: 'image', run: () => app.insertImage() },
-        { label: 'Link…', icon: 'link', shortcut: 'Mod-K', run: () => app.insertLink() },
-        { label: 'Slide number', run: () => app.insertField('slidenum') },
-        { label: 'Date', run: () => app.insertField('datetime1') },
         { label: 'Video or audio…', icon: 'media', run: () => app.insertMedia() },
         { label: 'Table…', icon: 'table', run: () => this.tableMenu(this.menuButtons.Insert) },
-        { label: 'Chart…', icon: 'chart', run: () => app.insertChart() },
+        { label: 'Chart', icon: 'chart', run: () => app.insertChart() },
         { label: 'Diagram…', icon: 'diagram', run: () => app.insertDiagram() },
         'separator',
         ...SHAPES.slice(0, 6).map((s) => ({ label: s.name, run: () => app.canvas.setTool({ type: 'shape', shape: s.id }) })),
-        { label: 'More shapes…', icon: 'shapes', run: () => this.shapeMenu(this.shapeBtn) },
+        { label: 'More shapes…', icon: 'shapes', run: () => this.shapeMenu(this.menuButtons.Insert) },
         { label: 'Line', icon: 'line', run: () => app.canvas.setTool({ type: 'line' }) },
         { label: 'Arrow', icon: 'arrow', run: () => app.canvas.setTool({ type: 'line', arrow: true }) },
         'separator',
+        { label: 'Link…', icon: 'link', shortcut: 'Mod-K', run: () => app.insertLink() },
+        { label: 'Slide number', run: () => app.insertField('slidenum') },
+        { label: 'Date', icon: 'clock', run: () => app.insertField('datetime1') },
         { label: 'Comment', icon: 'comment', shortcut: 'Mod-Alt-M', run: () => app.insertComment() },
+        'separator',
         { label: 'New slide', icon: 'plus', shortcut: 'Mod-M', run: () => app.addSlide() },
       ],
       Format: () => {
         const t = app.hasTextTarget();
+        const lists = app.canvas.isEditing || app.selectedElements().some(canHoldText);
         return [
           { label: 'Bold', icon: 'bold', shortcut: 'Mod-B', disabled: !t, run: () => app.toggleTextProp('bold') },
           { label: 'Italic', icon: 'italic', shortcut: 'Mod-I', disabled: !t, run: () => app.toggleTextProp('italic') },
@@ -128,12 +136,12 @@ export class Toolbar {
           { label: 'Decrease font size', shortcut: 'Mod-Shift-,', disabled: !t, run: () => app.stepFontSize(-1) },
           'separator',
           { label: 'Align left', icon: 'alignLeft', shortcut: 'Mod-Shift-L', disabled: !t, run: () => app.setTextProp('align', 'left') },
-          { label: 'Center', icon: 'alignCenter', shortcut: 'Mod-Shift-E', disabled: !t, run: () => app.setTextProp('align', 'center') },
+          { label: 'Align centre', icon: 'alignCenter', shortcut: 'Mod-Shift-E', disabled: !t, run: () => app.setTextProp('align', 'center') },
           { label: 'Align right', icon: 'alignRight', shortcut: 'Mod-Shift-R', disabled: !t, run: () => app.setTextProp('align', 'right') },
           { label: 'Justify', icon: 'alignJustify', shortcut: 'Mod-Shift-J', disabled: !t, run: () => app.setTextProp('align', 'justify') },
           'separator',
-          { label: 'Bulleted list', icon: 'bulletList', shortcut: 'Mod-Shift-8', disabled: !t, run: () => app.toggleList('ul') },
-          { label: 'Numbered list', icon: 'orderedList', shortcut: 'Mod-Shift-7', disabled: !t, run: () => app.toggleList('ol') },
+          { label: 'Bulleted list', icon: 'bulletList', shortcut: 'Mod-Shift-8', disabled: !lists, run: () => app.toggleList('ul') },
+          { label: 'Numbered list', icon: 'orderedList', shortcut: 'Mod-Shift-7', disabled: !lists, run: () => app.toggleList('ol') },
           { label: 'Clear formatting', icon: 'clearFormat', shortcut: 'Mod-\\', disabled: !t, run: () => app.clearFormatting() },
           'separator',
           { label: 'Format options…', icon: 'format', disabled: !app.selection.length, run: () => app.openPanel('format') },
@@ -165,17 +173,33 @@ export class Toolbar {
     this.menuButtons = {};
     const bar = h('div', { class: 'menubar', role: 'menubar', 'aria-label': 'Menu' });
     const names = Object.keys(menus);
+    const buttons = [];
     for (const name of names) {
       const b = h('button', { type: 'button', class: 'menubar-item', role: 'menuitem', 'aria-haspopup': 'menu', 'aria-expanded': 'false', onmousedown: keep }, name);
-      b.addEventListener('click', () => showPopover(b, menu(menus[name](), { iconFn }), { label: name }));
+      b.addEventListener('click', () => {
+        const m = menu(menus[name](), { iconFn });
+        // With a menu open, Left and Right open the menu beside it, as in desktop apps.
+        m.addEventListener('keydown', (e) => {
+          if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+          e.preventDefault();
+          const next = buttons[(buttons.indexOf(b) + (e.key === 'ArrowRight' ? 1 : buttons.length - 1)) % buttons.length];
+          next.click();
+          next.tabIndex = 0;
+          b.tabIndex = -1;
+        });
+        showPopover(b, m, { label: name });
+      });
+      // Down (or Up) opens a menu from the keyboard, as Enter and Space do.
       b.addEventListener('keydown', (e) => {
-        if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-        const next = this.menuButtons[names[(names.indexOf(name) + (e.key === 'ArrowRight' ? 1 : names.length - 1)) % names.length]];
-        next.focus();
+        if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+        e.preventDefault();
+        if (!b.classList.contains('is-open')) b.click();
       });
       this.menuButtons[name] = b;
+      buttons.push(b);
       bar.append(b);
     }
+    rovingFocus(bar, () => buttons);
     // Moving the pointer across the bar while a menu is open switches menus, as in desktop apps.
     bar.addEventListener('pointerover', (e) => {
       const b = e.target.closest('.menubar-item');
@@ -200,7 +224,7 @@ export class Toolbar {
       'separator',
       { heading: n > 1 ? 'Align to each other' : 'Align on slide' },
       { label: 'Left', icon: 'alignLeftEdge', disabled: none, run: () => app.align('left') },
-      { label: 'Center', icon: 'alignHCenter', disabled: none, run: () => app.align('center') },
+      { label: 'Centre', icon: 'alignHCenter', disabled: none, run: () => app.align('center') },
       { label: 'Right', icon: 'alignRightEdge', disabled: none, run: () => app.align('right') },
       { label: 'Top', icon: 'alignTopEdge', disabled: none, run: () => app.align('top') },
       { label: 'Middle', icon: 'alignVCenter', disabled: none, run: () => app.align('middle') },
@@ -214,6 +238,30 @@ export class Toolbar {
       { label: 'Flip vertically', icon: 'flipV', disabled: none, run: () => app.flip('v') },
       'separator',
       { label: app.selectedElements().every((e) => e.locked) && n ? 'Unlock position' : 'Lock position', disabled: none, run: () => app.toggleLock() },
+    ];
+  }
+
+  /** Row and column actions for the selected table, at `cell` (right-clicked) or the cursor. */
+  tableItems(cell = null) {
+    const app = this.app;
+    const t = app.selectedElements().find((e) => e.type === 'table');
+    const op = (name) => () => app.tableOp(name, cell);
+    return [
+      { label: 'Insert row above', icon: 'rowAbove', run: op('rowAbove') },
+      { label: 'Insert row below', icon: 'rowBelow', run: op('rowBelow') },
+      { label: 'Insert column left', icon: 'colLeft', run: op('colLeft') },
+      { label: 'Insert column right', icon: 'colRight', run: op('colRight') },
+      { label: 'Delete row', icon: 'trash', disabled: t?.cells.length < 2, run: op('deleteRow') },
+      { label: 'Delete column', icon: 'trash', disabled: t?.cells[0]?.length < 2, run: op('deleteCol') },
+    ];
+  }
+
+  mergeItems(cell = null) {
+    const op = (name) => () => this.app.tableOp(name, cell);
+    return [
+      { label: 'Merge with the cell on the right', icon: 'merge', run: op('mergeRight') },
+      { label: 'Merge with the cell below', run: op('mergeDown') },
+      { label: 'Unmerge', run: op('unmerge') },
     ];
   }
 
@@ -244,16 +292,30 @@ export class Toolbar {
   }
 
   tableMenu(anchor) {
+    const ROWS = 8;
+    const COLS = 10;
     const label = h('div', { class: 'table-grid-label' }, 'Insert table');
-    const grid = h('div', { class: 'table-grid', role: 'grid' });
+    const grid = h('div', { class: 'table-grid', role: 'group', 'aria-label': 'Table size' });
     const cells = [];
     const mark = (r, c) => {
       cells.forEach((b) => b.classList.toggle('is-on', +b.dataset.r <= r && +b.dataset.c <= c));
       label.textContent = `${c + 1} × ${r + 1} table`;
     };
-    for (let r = 0; r < 8; r++) {
-      for (let c = 0; c < 10; c++) {
-        const b = h('button', { type: 'button', 'aria-label': `${c + 1} by ${r + 1} table`, dataset: { r, c } });
+    // One tab stop; the arrow keys choose the size.
+    grid.addEventListener('keydown', (e) => {
+      const at = e.target.closest?.('button');
+      if (!at) return;
+      const steps = { ArrowRight: [0, 1], ArrowLeft: [0, -1], ArrowDown: [1, 0], ArrowUp: [-1, 0] };
+      if (!Object.hasOwn(steps, e.key)) return;
+      const step = steps[e.key];
+      e.preventDefault();
+      const r = Math.max(0, Math.min(ROWS - 1, +at.dataset.r + step[0]));
+      const c = Math.max(0, Math.min(COLS - 1, +at.dataset.c + step[1]));
+      cells[r * COLS + c].focus();
+    });
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const b = h('button', { type: 'button', tabindex: r || c ? '-1' : '0', 'aria-label': `${c + 1} by ${r + 1} table`, dataset: { r, c } });
         b.addEventListener('pointerenter', () => mark(r, c));
         b.addEventListener('focus', () => mark(r, c));
         b.addEventListener('click', () => { closePopover(); this.app.insertTable(r + 1, c + 1); });
@@ -350,7 +412,7 @@ export class Toolbar {
     this.hiliteBtn = swatchButton('highlight', 'Highlight colour', (b) => openColorPicker(b, { theme: app.theme, allowNone: true, noneLabel: 'None', onPick: (v) => app.setTextProp('highlight', v === 'none' ? null : v) }));
     this.hiliteBtn.setColor('transparent');
     this.alignBtn = tb('alignLeft', 'Align', (b) => showPopover(b, h('div', { class: 'tb-row-panel' },
-      ...[['left', 'alignLeft', 'Left', 'Mod-Shift-L'], ['center', 'alignCenter', 'Center', 'Mod-Shift-E'], ['right', 'alignRight', 'Right', 'Mod-Shift-R'], ['justify', 'alignJustify', 'Justify', 'Mod-Shift-J']]
+      ...[['left', 'alignLeft', 'Left', 'Mod-Shift-L'], ['center', 'alignCenter', 'Centre', 'Mod-Shift-E'], ['right', 'alignRight', 'Right', 'Mod-Shift-R'], ['justify', 'alignJustify', 'Justify', 'Mod-Shift-J']]
         .map(([v, ic, name, sc]) => tb(ic, name, () => { closePopover(); app.setTextProp('align', v); }, { shortcut: sc })),
       h('span', { class: 'tb-sep' }),
       ...[['top', 'alignTopEdge', 'Top'], ['middle', 'alignVCenter', 'Middle'], ['bottom', 'alignBottomEdge', 'Bottom']]
@@ -363,31 +425,20 @@ export class Toolbar {
     ])), { haspopup: true });
     this.bulletBtn = tb('bulletList', 'Bulleted list', () => app.toggleList('ul'), { shortcut: 'Mod-Shift-8' });
     this.numberBtn = tb('orderedList', 'Numbered list', () => app.toggleList('ol'), { shortcut: 'Mod-Shift-7' });
+    this.outdentBtn = tb('outdent', 'Decrease indent', () => app.indent(-1), { shortcut: 'Mod-[' });
+    this.indentBtn = tb('indent', 'Increase indent', () => app.indent(1), { shortcut: 'Mod-]' });
     group('text', this.fontBtn, sizeBox, sep(), this.boldBtn, this.italicBtn, this.underlineBtn, this.colorBtn, this.hiliteBtn, sep(),
-      this.alignBtn, spacingBtn, this.bulletBtn, this.numberBtn,
-      tb('outdent', 'Decrease indent', () => app.indent(-1), { shortcut: 'Mod-[' }),
-      tb('indent', 'Increase indent', () => app.indent(1), { shortcut: 'Mod-]' }),
+      this.alignBtn, spacingBtn, this.bulletBtn, this.numberBtn, this.outdentBtn, this.indentBtn,
       tb('clearFormat', 'Clear formatting', () => app.clearFormatting(), { shortcut: 'Mod-\\' }));
 
     // Pictures
     group('image', tb('imagePlus', 'Replace image', () => app.replaceImage(), { text: 'Replace image' }));
 
     // Tables
+    // Tables: rows and columns in one menu, so the toolbar fits beside the text controls.
     group('table',
-      tb('rowAbove', 'Insert row above', () => app.tableOp('rowAbove')),
-      tb('rowBelow', 'Insert row below', () => app.tableOp('rowBelow')),
-      tb('colLeft', 'Insert column left', () => app.tableOp('colLeft')),
-      tb('colRight', 'Insert column right', () => app.tableOp('colRight')),
-      tb('trash', 'Delete row or column', (b) => showPopover(b, menu([
-        { label: 'Delete row', run: () => app.tableOp('deleteRow') },
-        { label: 'Delete column', run: () => app.tableOp('deleteCol') },
-      ])), { haspopup: true }),
-      tb('merge', 'Merge cells', (b) => showPopover(b, menu([
-        { heading: 'The cell with the cursor' },
-        { label: 'Merge with the cell on the right', run: () => app.tableOp('mergeRight') },
-        { label: 'Merge with the cell below', run: () => app.tableOp('mergeDown') },
-        { label: 'Unmerge', run: () => app.tableOp('unmerge') },
-      ])), { haspopup: true }));
+      tb('rows', 'Rows and columns', (b) => showPopover(b, menu(this.tableItems(), { iconFn }), { label: 'Rows and columns' }), { haspopup: true }),
+      tb('merge', 'Merge cells', (b) => showPopover(b, menu([{ heading: 'The cell with the cursor' }, ...this.mergeItems()], { iconFn }), { label: 'Merge cells' }), { haspopup: true }));
 
     // Charts
     group('chart', tb('chart', 'Edit chart', () => app.openPanel('format'), { text: 'Edit chart' }));
@@ -406,34 +457,23 @@ export class Toolbar {
       this.undoBtn, this.redoBtn, this.zoomBtn, sep(),
       this.selectBtn, this.textBtn, this.imageBtn, this.shapeBtn, this.lineBtn, this.tableBtn, this.chartBtn, sep(),
       ...Object.values(groups));
-    // Arrow keys move between toolbar controls (one tab stop).
-    bar.addEventListener('keydown', (e) => {
-      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-      if (e.target === this.sizeInput) return;
-      const items = [...bar.querySelectorAll('button, input')].filter((b) => b.offsetParent);
-      const i = items.indexOf(e.target);
-      if (i < 0) return;
-      e.preventDefault();
-      items[(i + (e.key === 'ArrowRight' ? 1 : items.length - 1)) % items.length].focus();
-    });
+    // The buttons are one tab stop that the arrow keys move along; the font size box is a stop of its own.
+    this.syncFocus = rovingFocus(bar, () => [...bar.querySelectorAll('button')]);
     return bar;
   }
 
   weightMenu(anchor) {
     const app = this.app;
     const stroke = app.firstSelected()?.stroke;
-    // Giving a borderless shape a weight also gives it a visible colour.
-    const colour = !stroke || stroke.color === 'none' ? { color: 'theme:text' } : {};
     showPopover(anchor, menu([1, 2, 3, 4, 6, 8, 12, 16].map((w) => ({
-      label: `${w} pt`, checked: stroke?.width === w && stroke?.color !== 'none', run: () => app.setStroke({ width: w, ...colour }),
+      label: `${w} pt`, checked: stroke?.width === w && stroke?.color !== 'none', run: () => app.setBorderWeight(w),
     }))), { label: 'Weight' });
   }
 
   dashMenu(anchor) {
     const app = this.app;
     const current = app.firstSelected()?.stroke?.dash || 'solid';
-    showPopover(anchor, menu([['solid', 'Solid'], ['dash', 'Dash'], ['dot', 'Dot'], ['dashDot', 'Dash-dot'], ['longDash', 'Long dash']]
-      .map(([id, name]) => ({ label: name, checked: current === id, run: () => app.setStroke({ dash: id }) }))), { label: 'Dash' });
+    showPopover(anchor, menu(DASH_STYLES.map(([id, name]) => ({ label: name, checked: current === id, run: () => app.setStroke({ dash: id }) }))), { label: 'Dash' });
   }
 
   fontMenu(anchor) {
@@ -468,13 +508,18 @@ export class Toolbar {
     show('chart', els.length === 1 && els[0].type === 'chart');
     show('diagram', els.length === 1 && els[0].type === 'diagram');
     show('element', els.length > 0);
+    // Indenting works on the text being typed; lists on text boxes, or a table's text while it's typed in.
+    this.outdentBtn.disabled = !editing;
+    this.indentBtn.disabled = !editing;
+    this.bulletBtn.disabled = !editing && !has(canHoldText);
+    this.numberBtn.disabled = this.bulletBtn.disabled;
     this.undoBtn.disabled = !app.history.canUndo && !editing;
-    this.redoBtn.disabled = !app.history.canRedo && !editing;
+    this.redoBtn.disabled = !app.history.canRedo;
     this.zoomBtn.querySelector('.tb-text').textContent = app.canvas.zoom === 'fit' ? 'Fit' : `${Math.round(app.canvas.scale * 100)}%`;
 
     const tool = app.canvas.tool;
-    this.selectBtn.classList.toggle('is-active', !tool);
-    this.textBtn.classList.toggle('is-active', tool?.type === 'text');
+    press(this.selectBtn, !tool);
+    press(this.textBtn, tool?.type === 'text');
     this.shapeBtn.classList.toggle('is-active', tool?.type === 'shape');
     this.lineBtn.classList.toggle('is-active', tool?.type === 'line');
 
@@ -490,16 +535,23 @@ export class Toolbar {
       if (f) {
         this.fontBtn.querySelector('.tb-text').textContent = f.font;
         if (document.activeElement !== this.sizeInput) this.sizeInput.value = f.size ? String(Math.round(f.size * 10) / 10) : '';
-        this.boldBtn.classList.toggle('is-active', !!f.bold);
-        this.italicBtn.classList.toggle('is-active', !!f.italic);
-        this.underlineBtn.classList.toggle('is-active', !!f.underline);
-        this.bulletBtn.classList.toggle('is-active', !!f.bullets);
-        this.numberBtn.classList.toggle('is-active', !!f.numbers);
+        press(this.boldBtn, f.bold);
+        press(this.italicBtn, f.italic);
+        press(this.underlineBtn, f.underline);
+        press(this.bulletBtn, f.bullets);
+        press(this.numberBtn, f.numbers);
         this.colorBtn.setColor(f.colorCss || '#000');
         this.alignBtn.innerHTML = icon({ left: 'alignLeft', center: 'alignCenter', right: 'alignRight', justify: 'alignJustify' }[f.align] || 'alignLeft') + icon('chevronDown', 'icon tb-caret');
       }
     }
+    this.syncFocus(); // the toolbar's tab stop may have been hidden or disabled
   }
+}
+
+/** Show a toggle button as on or off, to the eye and to screen readers. */
+function press(button, on) {
+  button.classList.toggle('is-active', !!on);
+  button.setAttribute('aria-pressed', String(!!on));
 }
 
 /** Small outline of a shape for the shape picker. */
