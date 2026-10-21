@@ -1,3 +1,5 @@
+import { mtxToSfnt } from './mtx.js';
+
 /**
  * Font files as bytes, for fonts embedded in PowerPoint files.
  *
@@ -6,13 +8,14 @@
  * and head values, the font's names – followed by the TrueType file. The
  * header flags can say the TrueType data is XOR-obfuscated (each byte ^ 0x50)
  * or MicroType Express (MTX) compressed. PowerPoint itself writes compressed
- * fonts, which LibreSlides can't unpack; LibreOffice writes them uncompressed,
- * as LibreSlides does (see vcl/source/font/EOTConverter.cxx in LibreOffice and
+ * fonts, which mtx.js unpacks; LibreOffice writes them uncompressed, as
+ * LibreSlides does (see vcl/source/font/EOTConverter.cxx in LibreOffice and
  * the W3C EOT submission).
  *
  * The app's own fonts are bundled as WOFF, which is TrueType with each table
  * zlib-compressed, so they're rebuilt into a TrueType file before wrapping.
  */
+
 const view = (b) => new DataView(b.buffer, b.byteOffset, b.byteLength);
 const tagAt = (b, o) => String.fromCharCode(b[o], b[o + 1], b[o + 2], b[o + 3]);
 const fail = (message) => { throw new Error(message); };
@@ -243,7 +246,9 @@ export function wrapEot(sfnt) {
 
 /**
  * The font inside an EOT file: { data, flags, family }. XOR obfuscation is
- * undone; MicroType Express compressed data throws an error with code 'mtx'.
+ * undone, then MicroType Express compression (the EOT submission has fonts
+ * compressed first and obfuscated after). Compressed data that can't be
+ * unpacked throws an error with code 'mtx'.
  */
 export function unwrapEot(bytes) {
   if (bytes.length < 82) fail('Not an Embedded OpenType font');
@@ -279,9 +284,15 @@ export function unwrapEot(bytes) {
     p += 4 + v.getUint32(p, true); // EUDC font
   }
   need(dataSize);
-  const data = bytes.slice(p, p + dataSize);
+  let data = bytes.slice(p, p + dataSize);
   if (flags & EOT_XOR) for (let i = 0; i < data.length; i++) data[i] ^= 0x50;
-  if (flags & EOT_COMPRESSED) throw Object.assign(new Error('The font is MicroType Express compressed'), { code: 'mtx', family });
+  if (flags & EOT_COMPRESSED) {
+    try {
+      data = mtxToSfnt(data);
+    } catch (err) {
+      throw Object.assign(new Error(`The MicroType Express compressed font couldn’t be unpacked: ${err.message}`), { code: 'mtx', family, cause: err });
+    }
+  }
   return { data, flags, family };
 }
 
