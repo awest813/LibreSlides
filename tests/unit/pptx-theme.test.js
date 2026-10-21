@@ -222,6 +222,13 @@ describe('PowerPoint fills', () => {
     expect((await reread(zip)).slides[0].elements[0].fill).toBe('rgba(255, 0, 0, 0.49)');
   });
 
+  it('keeps a see-through outline see-through', async () => {
+    const shape = Object.assign(newShape('rect', 10, 10, 100, 50), { fill: '#ffffff', stroke: { color: 'rgba(0, 0, 255, 0.12)', width: 1, dash: 'solid' } });
+    const zip = await zipOf(deckWith(shape));
+    expect(await text(zip, 'ppt/slides/slide1.xml')).toMatch(/<a:ln [^>]*><a:solidFill><a:srgbClr val="0000FF"><a:alpha val="12000"\/>/);
+    expect((await reread(zip)).slides[0].elements[0].stroke.color).toBe('rgba(0, 0, 255, 0.12)');
+  });
+
   it('keeps tiled and see-through picture fills', async () => {
     const shape = Object.assign(newShape('ellipse', 10, 10, 100, 50), { fill: '#ffffff', fillImage: { media: 'm1', opacity: 0.6, tile: { w: 1.5, h: 0.75, x: 0, y: 0, align: 'tl', flip: 'x' } } });
     const deck = deckWith(shape);

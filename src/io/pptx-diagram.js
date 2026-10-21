@@ -204,6 +204,9 @@ export function exportsAsSmartArt(el, media = null) {
 /** A colour as PowerPoint's RRGGBB (theme colours resolved), or null for none. */
 function hexOf(color, theme) {
   const c = resolveColor(color, theme, null);
+  // (A see-through colour as the colour it is.)
+  const rgb = /^rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/i.exec(c || '');
+  if (rgb) return rgb.slice(1, 4).map((v) => Math.min(255, +v).toString(16).padStart(2, '0')).join('').toUpperCase();
   const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(c || '');
   if (!m) return null;
   return (m[1].length === 3 ? m[1].replace(/./g, '$&$&') : m[1]).toUpperCase();

@@ -404,7 +404,9 @@ function lineOf(ln, scheme, k) {
   const fill = kid(ln, 'solidFill') || kid(ln, 'gradFill');
   // An outline with no fill of its own takes the shape style's line (or has none).
   if (!fill) return null;
-  const color = colorOf(fill.localName === 'gradFill' ? desc(fill, 'gs')[0] : fill, scheme);
+  const holder = fill.localName === 'gradFill' ? desc(fill, 'gs')[0] : fill;
+  // A see-through outline keeps its transparency.
+  const color = colorOf(holder, scheme) && withOpacity(colorOf(holder, scheme), alphaOf(holder));
   const w = attr(ln, 'w') ? (+attr(ln, 'w') / EMU_PER_PT) * k : 0.75;
   const dash = attr(kid(ln, 'prstDash'), 'val');
   return { color: color || '#000000', width: Math.round(w * 10) / 10, dash: !dash || dash === 'solid' ? 'solid' : /dot/i.test(dash) && !/dash/i.test(dash) ? 'dot' : /lgDash/.test(dash) ? 'longDash' : /dashDot/i.test(dash) ? 'dashDot' : 'dash' };

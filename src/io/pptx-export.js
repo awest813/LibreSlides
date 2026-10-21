@@ -56,7 +56,11 @@ const DASH = { solid: 'solid', dash: 'dash', dot: 'sysDot', dashDot: 'dashDot', 
 
 function lineOpts(stroke, theme) {
   if (!stroke || !stroke.width || !stroke.color || stroke.color === 'none') return { type: 'none' };
-  return { color: toHex(resolveColor(stroke.color, theme)) || '000000', width: stroke.width, dashType: DASH[stroke.dash] || 'solid' };
+  const css = resolveColor(stroke.color, theme);
+  const line = { color: toHex(css) || '000000', width: stroke.width, dashType: DASH[stroke.dash] || 'solid' };
+  const alpha = cssColor(css)?.alpha ?? 1;
+  if (alpha < 1) line.transparency = Math.round((1 - alpha) * 100);
+  return line;
 }
 
 /**
