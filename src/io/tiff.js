@@ -12,6 +12,8 @@ import { readThrough } from './png.js';
  */
 
 export const TIFF_MAX_PIXELS = 25e6;
+/** The most bytes of samples a picture (or one strip or tile of it) may unpack to. */
+const TIFF_MAX_BYTES = 200 * 1024 * 1024;
 
 const fail = (message) => Object.assign(new Error(`TIFF: ${message}`), { code: 'bad-picture' });
 
@@ -208,6 +210,9 @@ export async function decodeTiff(input) {
   const down = Math.ceil(height / pieceH);
   const pieceRow = Math.ceil((pieceW * perPlane * bps) / 8);
   const rowBytes = Math.ceil((width * perPlane * bps) / 8);
+  // Sensible amounts of work and memory, whatever the file says.
+  if (across * down * planes > 200000) throw fail('too many pieces');
+  if (pieceRow * pieceH > TIFF_MAX_BYTES || rowBytes * height * planes > TIFF_MAX_BYTES) throw fail('too large');
   const data = Array.from({ length: planes }, () => new Uint8Array(rowBytes * height));
 
   for (let p = 0; p < planes; p++) {

@@ -63,6 +63,22 @@ describe('TIFF', () => {
       }
     }
     await expect(decodeTiff(huge)).rejects.toThrow(/too large/);
+    // A big picture in tiles of one pixel: refused rather than read piece by piece.
+    const tiny = fixture('tiled.tif').slice();
+    const tv = new DataView(tiny.buffer);
+    const tifd = tv.getUint32(4, little);
+    for (let i = 0; i < tv.getUint16(tifd, little); i++) {
+      const e = tifd + 2 + i * 12;
+      const tag = tv.getUint16(e, little);
+      if (tag === 256 || tag === 257) {
+        tv.setUint16(e + 2, 4, little);
+        tv.setUint32(e + 8, 4000, little);
+      }
+      if (tag === 322 || tag === 323) tv.setUint16(e + 8, 1, little);
+    }
+    const t0 = Date.now();
+    await expect(decodeTiff(tiny)).rejects.toThrow(/TIFF/);
+    expect(Date.now() - t0).toBeLessThan(1000);
   });
 });
 
@@ -171,6 +187,13 @@ describe('Windows metafiles', () => {
     expect(t.getAttribute('font-weight')).toBe('700');
     expect(t.getAttribute('font-family')).toContain('Arial');
     expect(t.getAttribute('transform')).toBe('matrix(1 0 0 1 10 50)');
+  });
+
+  it('draws at most one turn of an arc, however many a damaged file asks for', async () => {
+    const t0 = Date.now();
+    const svg = await metafileToSvg(emf([27, 60, 50], [41, 50, 50, 10, 0.0, 1e30]));
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(pathsOf(svg).join('').match(/C/g).length).toBeLessThanOrEqual(4);
   });
 
   it('reads bitmaps of every depth, upside down or not', () => {

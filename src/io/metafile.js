@@ -496,6 +496,9 @@ class Drawing {
 
   /** An ellipse's arc in logical units as Bézier path data, from angle t0 sweeping by `sweep` (radians, parametric). */
   arcPath(cx, cy, rx, ry, t0, sweep, { move = true } = {}) {
+    // At most once round (a damaged file can ask for any number of turns).
+    if (![cx, cy, rx, ry, t0, sweep].every(Number.isFinite)) return '';
+    sweep = Math.max(-Math.PI * 2, Math.min(Math.PI * 2, sweep));
     const n = Math.max(1, Math.ceil(Math.abs(sweep) / (Math.PI / 2) - 1e-9));
     const dt = sweep / n;
     const k = (4 / 3) * Math.tan(dt / 4);
