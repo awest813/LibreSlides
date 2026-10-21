@@ -11,7 +11,7 @@ import { showInstallHelp } from '../ui/install.js';
 import { getDeck, saveDeck, onStorageChange } from '../storage/db.js';
 import {
   slideSize, newSlide, layoutElements, cloneSlide, cloneElement, canHoldText, boxOf, moveElement, addMedia, newImage, newTable, newChart,
-  htmlToText, SIZES, customSize, uid, mediaSlots, newMedia, regroup, slideAnimations, ANIM_KINDS,
+  htmlToText, SIZES, customSize, uid, mediaSlots, newMedia, regroup, slideAnimations, ANIM_KINDS, slideTitle,
 } from '../model/deck.js';
 import { anchorOf, insertRow, insertCol, deleteRow, deleteCol, mergeCells, unmergeCell } from '../model/tables.js';
 import { themeById, resolveColor } from '../model/themes.js';
@@ -1108,6 +1108,7 @@ export class EditorScreen {
     else if (e.shiftKey && k === 'j') run(() => this.setTextProp('align', 'justify'));
     else if (e.shiftKey && (k === '8' || k === '*')) run(() => this.toggleList('ul'));
     else if (e.shiftKey && (k === '7' || k === '&')) run(() => this.toggleList('ol'));
+    else if (!e.shiftKey && k === 'k') run(() => this.insertLink());
     else if (k === ']') run(() => this.indent(1));
     else if (k === '[') run(() => this.indent(-1));
     else if (k === '\\') run(() => this.clearFormatting());
@@ -1342,6 +1343,52 @@ export class EditorScreen {
   /** Insert › Comment (Ctrl+Alt+M): the Comments tab, ready to type. */
   insertComment() { startComment(this); }
 
+  /**
+   * Link the selected text, or the selected objects (a click on them in the
+   * slideshow follows it), to a web address or another slide.
+   */
+  async insertLink() {
+    const editing = this.canvas.editing;
+    const range = editing && this.canvas.savedRange;
+    const textLink = range && !range.collapsed;
+    const current = textLink ? range.startContainer.parentElement?.closest('a')?.getAttribute('href') : this.selectedElements()[0]?.link;
+    if (!textLink && !this.selection.length) {
+      toast('Select some text or an object to link.');
+      return;
+    }
+    const internal = /^#slide:/.test(current || '');
+    const r = await promptDialog({
+      title: current ? 'Edit link' : 'Insert link',
+      fields: [
+        { name: 'url', label: 'Web address', value: internal ? '' : current || '', placeholder: 'https://example.com', hint: 'Leave empty and choose nothing below to remove the link.' },
+        {
+          name: 'slide', label: 'Or go to', type: 'select', value: internal ? current : '',
+          options: [
+            { value: '', label: '—' },
+            ...['next', 'prev', 'first', 'last'].map((s) => ({ value: `#slide:${s}`, label: { next: 'Next slide', prev: 'Previous slide', first: 'First slide', last: 'Last slide' }[s] })),
+            ...this.deck.slides.map((s, i) => ({ value: `#slide:${s.id}`, label: `${i + 1}. ${slideTitle(s) || 'Slide'}` })),
+          ],
+        },
+      ],
+      confirmLabel: 'Apply',
+    });
+    if (!r) return;
+    let href = r.slide || r.url.trim();
+    // "example.com" means the website.
+    if (href && !href.startsWith('#') && !/^(https?:|mailto:)/i.test(href)) href = /@/.test(href) && !/\//.test(href) ? `mailto:${href}` : `https://${href}`;
+    if (textLink) {
+      this.canvas.execText(() => {
+        if (href) document.execCommand('createLink', false, href);
+        else document.execCommand('unlink');
+      });
+    } else {
+      this.updateSelected((e) => {
+        if (href) e.link = href;
+        else delete e.link;
+      });
+    }
+  }
+
   toggleNotes() {
     this.view.notes = !this.view.notes;
     this.notesPane.hidden = !this.view.notes;
@@ -1386,6 +1433,7 @@ export class EditorScreen {
       'separator',
       { label: 'Animate…', icon: 'animate', run: () => this.openPanel('animate') },
       { label: 'Format options…', icon: 'format', run: () => this.openPanel('format') },
+      { label: this.selectedElements()[0]?.link ? 'Edit link…' : 'Link…', icon: 'link', shortcut: 'Mod-K', run: () => this.insertLink() },
     ] : [
       { label: 'Paste', icon: 'paste', shortcut: 'Mod-V', run: () => this.pasteFromMenu() },
       { label: 'Select all', shortcut: 'Mod-A', run: () => this.selectAll() },
@@ -1460,6 +1508,7 @@ export class EditorScreen {
     if (mod && k === 'a') return run(() => this.selectAll());
     if (mod && k === 'd') return run(() => this.duplicateSelection());
     if (mod && k === 'g') return run(() => (e.shiftKey ? this.ungroupSelection() : this.groupSelection()));
+    if (mod && !e.shiftKey && k === 'k') return run(() => this.insertLink());
     if (e.key === 'Tab') {
       const list = this.slide.elements;
       const i = list.findIndex((x) => x.id === this.selection[this.selection.length - 1]) + (e.shiftKey ? -1 : 1);
@@ -1729,6 +1778,7 @@ export class EditorScreen {
       ['New comment', 'Mod-Alt-M'],
       ['Duplicate', 'Mod-D'],
       ['Group / Ungroup', 'Mod-G', 'Mod-Shift-G'],
+      ['Link', 'Mod-K'],
       ['Undo / Redo', 'Mod-Z', 'Mod-Y'],
       ['Cut / Copy / Paste', 'Mod-X', 'Mod-C', 'Mod-V'],
       ['Select all', 'Mod-A'],

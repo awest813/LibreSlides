@@ -41,6 +41,17 @@ export function buildSteps(slide) {
   return steps;
 }
 
+/**
+ * Where a link to "#slide:…" goes from position `pos`: 'next', 'prev', or the
+ * start of a slide (first, last, or by id); null when there's no such slide.
+ */
+export function linkTarget(deck, target, pos) {
+  if (target === 'next' || target === 'prev') return target;
+  const vis = visibleIndices(deck);
+  const i = target === 'first' ? vis[0] : target === 'last' ? vis[vis.length - 1] : deck.slides.findIndex((s) => s.id === target);
+  return i == null || i < 0 || i === pos?.i ? null : { i, step: minStep(deck.slides[i]) };
+}
+
 /** The first position of a slide: past its automatic step, if it has one. */
 const minStep = (slide) => (buildSteps(slide).auto ? 1 : 0);
 
@@ -429,7 +440,19 @@ export function startSlideshow(deck, { start = 0, onExit = null, remote = null }
     return true;
   };
   root.addEventListener('click', (e) => {
-    if (e.target.closest('a[href], .show-controls, .show-notes')) return;
+    // Links: to another slide, or a web page (in a new tab; links in text open there by themselves).
+    const link = e.target.closest('a[href], [data-link]');
+    if (link) {
+      const href = link.getAttribute('href') || link.dataset.link;
+      const to = /^#slide:/.test(href) && linkTarget(deck, href.slice(7), pos);
+      if (/^#/.test(href)) e.preventDefault();
+      if (to === 'next') next();
+      else if (to === 'prev') prev();
+      else if (to) jump(to);
+      else if (!link.matches('a') && /^(https?:|mailto:)/i.test(href)) window.open(href, '_blank', 'noopener');
+      return;
+    }
+    if (e.target.closest('.show-controls, .show-notes')) return;
     // Clicks on a video's controls or a sound's button play and pause it, not the slideshow.
     if (e.target.closest('video, audio, .el-media-toggle')) return;
     if (!uncover()) next();

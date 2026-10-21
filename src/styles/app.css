@@ -302,6 +302,7 @@ audio.el-media-player { display: none; }
 .show-frame { position: relative; overflow: hidden; perspective: 1800px; }
 .show-layer { position: absolute; inset: 0; backface-visibility: hidden; }
 .show-layer > .slide { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+.show-layer .el[data-link], .show-layer .el a[href] { cursor: pointer; }
 .show-controls {
   position: absolute; left: 16px; bottom: 16px; z-index: 4; display: flex; align-items: center; gap: 2px; padding: 4px 6px;
   background: rgba(32, 32, 32, 0.85); color: #fff; border-radius: 10px; opacity: 0; transition: opacity 0.2s; pointer-events: none;

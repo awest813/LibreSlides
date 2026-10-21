@@ -101,6 +101,7 @@ export class Toolbar {
       Insert: () => [
         { label: 'Text box', icon: 'textBox', run: () => app.canvas.setTool({ type: 'text' }) },
         { label: 'Image…', icon: 'image', run: () => app.insertImage() },
+        { label: 'Link…', icon: 'link', shortcut: 'Mod-K', run: () => app.insertLink() },
         { label: 'Video or audio…', icon: 'media', run: () => app.insertMedia() },
         { label: 'Table…', icon: 'table', run: () => this.tableMenu(this.menuButtons.Insert) },
         { label: 'Chart…', icon: 'chart', run: () => app.insertChart() },

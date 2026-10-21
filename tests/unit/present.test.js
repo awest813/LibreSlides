@@ -139,3 +139,14 @@ describe('motion paths', () => {
     expect(at(1)).toBe('240px 0px'); // a quarter of the 960 pt slide
   });
 });
+
+describe('links in the slideshow', () => {
+  it('finds where a link to another slide goes', async () => {
+    const { linkTarget } = await import('../../src/present/present.js');
+    const d = deckWithAnimations(); // slide 2 is hidden
+    expect(linkTarget(d, 'next', { i: 0, step: 0 })).toBe('next');
+    expect(linkTarget(d, 'last', { i: 0, step: 0 })).toEqual({ i: 3, step: 0 });
+    expect(linkTarget(d, d.slides[1].id, { i: 0, step: 0 })).toEqual({ i: 1, step: 0 });
+    expect(linkTarget(d, 'nope', { i: 0, step: 0 })).toBeNull();
+  });
+});

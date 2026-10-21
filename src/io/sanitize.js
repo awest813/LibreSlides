@@ -155,6 +155,8 @@ export function sanitizeElement(el) {
       else el[kind].path = path.map(([x, y]) => [x, y]);
     }
   }
+  // A click on the object goes to a web page or another slide.
+  if (el.link != null && !(typeof el.link === 'string' && el.link.length < 2000 && /^(https?:\/\/|mailto:|#slide:[\w-]+$)/i.test(el.link))) delete el.link;
   for (const end of ['arrowStart', 'arrowEnd']) {
     if (el[end] != null && el[end] !== true && el[end] !== false && !['arrow', 'stealth', 'diamond', 'oval', 'triangle'].includes(el[end])) el[end] = !!el[end];
   }

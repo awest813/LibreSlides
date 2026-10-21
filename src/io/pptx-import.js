@@ -53,10 +53,25 @@ function runProps(rPr, ctx) {
   if (baseline) p.baseline = baseline > 0 ? 'sup' : 'sub';
   if (attr(rPr, 'cap') === 'all' || attr(rPr, 'cap') === 'small') p.caps = attr(rPr, 'cap');
   if (attr(rPr, 'spc') != null) p.letterSpacing = Math.round((+attr(rPr, 'spc') / 100) * ctx.k * 10) / 10 || 0;
-  const link = rid(kid(rPr, 'hlinkClick'), 'id');
-  const target = link && ctx.rels?.[link];
-  if (target?.external && /^(https?:|mailto:)/i.test(target.path)) p.link = target.path;
+  const link = linkOf(kid(rPr, 'hlinkClick'), ctx.rels);
+  if (link) p.link = link;
   return p;
+}
+
+/**
+ * Where an a:hlinkClick goes, as a LibreSlides link: a web address, or
+ * "#slide:next" and the like; a jump to a particular slide is
+ * "#slide-path:<its part>" until the slides have ids (see importPptx).
+ */
+function linkOf(hlink, rels) {
+  if (!hlink) return null;
+  const action = attr(hlink, 'action') || '';
+  const jump = /jump=(\w+)/.exec(action)?.[1];
+  if (jump) return { nextslide: '#slide:next', previousslide: '#slide:prev', firstslide: '#slide:first', lastslide: '#slide:last' }[jump] || null;
+  const target = rels?.[rid(hlink, 'id')];
+  if (!target) return null;
+  if (/hlinksldjump/.test(action) || target.type === 'slide') return `#slide-path:${target.path}`;
+  return target.external && /^(https?:|mailto:)/i.test(target.path) ? target.path : null;
 }
 
 /**
@@ -580,11 +595,16 @@ async function readSlide(pkg, slidePath, ctx, deck) {
     const tctx = { ...ctx, rels: part.rels };
     let pending = null; // the shape just read, and where its elements start
     const settle = () => {
-      if (pending?.id && part.isSlide && !part.inner) byShapeId.set(pending.id, slide.elements.slice(pending.from));
+      if (!pending) return;
+      const made = slide.elements.slice(pending.from);
+      if (pending.id && part.isSlide && !part.inner) byShapeId.set(pending.id, made);
+      // A click on the shape follows its link.
+      if (pending.link) for (const el of made) el.link ||= pending.link;
     };
     for (const node of container.children) {
       settle();
-      pending = { id: attr(desc(node, 'cNvPr')[0], 'id'), from: slide.elements.length };
+      const cNvPr = desc(node, 'cNvPr')[0];
+      pending = { id: attr(cNvPr, 'id'), from: slide.elements.length, link: linkOf(kid(cNvPr, 'hlinkClick'), part.rels) };
       const name = node.localName;
       if (name === 'grpSp') {
         const gx = xfrmOf(kid(node, 'grpSpPr'));
@@ -1008,16 +1028,29 @@ export async function importPptx(buffer, fallbackTitle = 'Presentation') {
   await readEmbeddedFonts({ pkg, pres, presRels, deck });
 
   const ids = desc(desc(pres, 'sldIdLst')[0], 'sldId');
+  const slidePaths = []; // in step with deck.slides
   for (const s of ids) {
     const rel = presRels[rid(s, 'id')];
     if (!rel) continue;
     try {
       deck.slides.push(await readSlide(pkg, rel.path, ctx, deck));
+      slidePaths.push(rel.path);
     } catch (err) {
       console.warn('Skipped a slide that could not be read', err);
     }
   }
   if (!deck.slides.length) throw Object.assign(new Error('No slides could be read from this file.'), { code: 'bad-file' });
+  // Links to particular slides, now that the slides have ids.
+  const idOfPath = new Map(slidePaths.map((p, i) => [p, deck.slides[i]?.id]));
+  const resolve = (href) => href.replace(/^#slide-path:(.*)$/, (m, p) => (idOfPath.get(p) ? `#slide:${idOfPath.get(p)}` : ''));
+  for (const s of deck.slides) {
+    for (const el of s.elements) {
+      if (el.link) el.link = resolve(el.link) || undefined;
+      const fix = (html) => html.replace(/href="(#slide-path:[^"]*)"/g, (m, href) => `href="${resolve(href.replace(/&amp;/g, '&')) || '#'}"`);
+      if (el.text?.includes('#slide-path:')) el.text = fix(el.text);
+      for (const row of el.cells || []) for (const c of row) if (c.text?.includes('#slide-path:')) c.text = fix(c.text);
+    }
+  }
   // Dark presentations get the dark theme, so new slides match (a picture background says nothing either way).
   const firstBg = deck.slides[0].background;
   if (firstBg && firstBg.type !== 'image' && isDarkColor(firstBg.color || firstBg.from)) deck.themeId = 'simple-dark';

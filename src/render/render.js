@@ -257,6 +257,8 @@ export function renderElement(el, ctx) {
   div.className = `el el-${el.type}`;
   div.dataset.id = el.id;
   if (el.anim && el.anim.effect !== 'none') div.dataset.anim = el.anim.effect;
+  // A click on it in the slideshow follows its link (see present.js).
+  if (el.link) div.dataset.link = el.link;
   if (el.opacity != null && el.opacity < 1) div.style.opacity = String(el.opacity);
 
   if (el.type === 'line') {

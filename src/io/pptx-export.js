@@ -57,7 +57,7 @@ const geom = (b) => ({ x: b.x / IN, y: b.y / IN, w: Math.max(b.w, 0.5) / IN, h: 
 // ------------------------------------------------------------------ text
 
 /** Formatting of a run from its element and its ancestors up to the text root. */
-function runStyle(node, root, base) {
+function runStyle(node, root, base, links) {
   const s = { ...base };
   const chain = [];
   for (let n = node.parentElement; n && n !== root; n = n.parentElement) chain.unshift(n);
@@ -69,7 +69,7 @@ function runStyle(node, root, base) {
     if (tag === 'S' || tag === 'STRIKE') s.strike = true;
     if (tag === 'SUB') s.subscript = true;
     if (tag === 'SUP') s.superscript = true;
-    if (tag === 'A' && el.getAttribute('href')) s.hyperlink = { url: el.getAttribute('href') };
+    if (tag === 'A' && el.getAttribute('href')) s.hyperlink = links ? links(el.getAttribute('href')) : { url: el.getAttribute('href') };
     if (tag === 'FONT') {
       if (el.getAttribute('color')) s.color = toHex(el.getAttribute('color')) || s.color;
       if (el.getAttribute('face')) s.fontFace = el.getAttribute('face');
@@ -131,7 +131,7 @@ function listBullet(list) {
 }
 
 /** Paragraphs of an HTML fragment as pptxgenjs text runs. */
-export function htmlToRuns(html, base = {}) {
+export function htmlToRuns(html, base = {}, links = null) {
   const doc = new DOMParser().parseFromString(`<body>${html || ''}</body>`, 'text/html');
   const root = doc.body;
   // Loose inline content at the top level forms paragraphs of its own.
@@ -158,7 +158,7 @@ export function htmlToRuns(html, base = {}) {
         if (c.nodeType === 3) {
           const text = c.textContent.replace(/​/g, '');
           if (!text) continue;
-          const options = toRunOptions(runStyle(c, root, base));
+          const options = toRunOptions(runStyle(c, root, base, links));
           if (breaks && !runs.length) runs.push({ text: '', options }); // the paragraph starts with an empty line
           for (; breaks > 1; breaks--) runs.push({ text: '', options: { ...options, softBreakBefore: true } });
           runs.push({ text, options: breaks ? { ...options, softBreakBefore: true } : options });
@@ -280,11 +280,12 @@ async function addElement(pptx, s, el, deck, theme, marks) {
     const line = lineOpts({ color: 'theme:text', width: 2, ...el.stroke, color: el.stroke?.color === 'none' ? 'theme:text' : el.stroke?.color }, theme);
     if (arrowStart) line.beginArrowType = arrowType(arrowStart);
     if (arrowEnd) line.endArrowType = arrowType(arrowEnd);
-    s.addShape('line', { ...geom({ x: x1, y: Math.min(y1, y2), w: x2 - x1, h: Math.abs(y2 - y1) }), flipV: y2 < y1, line, objectName });
+    s.addShape('line', { ...geom({ x: x1, y: Math.min(y1, y2), w: x2 - x1, h: Math.abs(y2 - y1) }), flipV: y2 < y1, line, objectName, hyperlink: el.link ? marks.links(el.link) || undefined : undefined });
     return;
   }
   const g = geom(boxOf(el));
-  const common = { ...g, rotate: el.rot || 0, flipH: !!el.flipH, flipV: !!el.flipV, shadow, objectName };
+  const hyperlink = el.link ? marks.links(el.link) || undefined : undefined;
+  const common = { ...g, rotate: el.rot || 0, flipH: !!el.flipH, flipV: !!el.flipV, shadow, objectName, hyperlink };
 
   if (el.type === 'image') {
     const data = await exportableImage(deck.media?.[el.media], el.w, el.h);
@@ -341,7 +342,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
         options.color = 'FFFFFF';
         options.bold = true;
       } else if (el.banded && r % 2 === 0) options.fill = { color: 'EFEFEF' };
-      const runs = htmlToRuns(cell.text, {});
+      const runs = htmlToRuns(cell.text, {}, marks.links);
       return { text: runs.length ? runs : '', options };
     }));
     const border = lineOpts(el.stroke, theme);
@@ -432,7 +433,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
   if (box.wrap === false) opts.wrap = false;
   if (box.vertical) opts.vert = box.vertical;
   if (box.columns > 1) marks.columns.set(mark(), { n: box.columns, gap: box.columnGap });
-  s.addText(hasText ? htmlToRuns(el.text, {}) : [{ text: '', options: {} }], opts);
+  s.addText(hasText ? htmlToRuns(el.text, {}, marks.links) : [{ text: '', options: {} }], opts);
   addExtras();
 }
 
@@ -717,7 +718,15 @@ export async function buildPptx(deck) {
   const allMarks = [];
   for (const slide of deck.slides) {
     const s = pptx.addSlide();
-    const marks = { count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), pictureLooks: new Map(), placeholders: new Map(), timeline: [], groups: [], background: null };
+    // Links as pptxgenjs takes them: a web address, or a slide by number.
+    const index = deck.slides.indexOf(slide);
+    const links = (href) => {
+      if (/^(https?:|mailto:)/i.test(href)) return { url: href };
+      const to = /^#slide:(.+)$/.exec(href)?.[1];
+      const n = { next: index + 2, prev: index, first: 1, last: deck.slides.length }[to] ?? deck.slides.findIndex((x) => x.id === to) + 1;
+      return to && n >= 1 && n <= deck.slides.length ? { slide: n } : null;
+    };
+    const marks = { links, count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), pictureLooks: new Map(), placeholders: new Map(), timeline: [], groups: [], background: null };
     marks.groupSizes = slide.elements.reduce((m, e) => (e.groupId ? m.set(e.groupId, (m.get(e.groupId) || 0) + 1) : m), new Map());
     allMarks.push(marks);
     const bg = slide.background || theme.background;

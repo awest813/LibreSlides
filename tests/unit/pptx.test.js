@@ -282,6 +282,45 @@ describe('PowerPoint pictures in shapes and SmartArt', () => {
   });
 });
 
+describe('PowerPoint links', () => {
+  it('keeps links to web pages and other slides, in text and on objects', async () => {
+    const deck = deckWith();
+    deck.slides.push({ id: 's2', layout: 'blank', background: null, elements: [], notes: '', transition: { type: 'none', duration: 0.6 }, hidden: false });
+    const box = newTextBox(10, 10, 400, 60);
+    box.text = '<p><a href="https://example.com/a?b=1&amp;c=2">site</a> and <a href="#slide:s2">slide two</a></p>';
+    const shape = newShape('rect', 10, 100);
+    shape.link = '#slide:next';
+    const pic = newImage('m1', 300, 100, 50, 50);
+    pic.link = 'https://example.org';
+    deck.slides[0].elements.push(box, shape, pic);
+    deck.media.m1 = PNG;
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deck)));
+    const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+    expect(xml.match(/<a:hlinkClick /g)).toHaveLength(4);
+    expect(xml.match(/ppaction:\/\/hlinksldjump/g)).toHaveLength(2);
+    const rels = await zip.file('ppt/slides/_rels/slide1.xml.rels').async('string');
+    expect(rels).toContain('Target="https://example.com/a?b=1&amp;c=2"');
+    expect(rels).toContain('Target="slide2.xml"');
+    const back = await importPptx(await zip.generateAsync({ type: 'arraybuffer' }));
+    const [b, sh, p] = back.slides[0].elements;
+    const second = back.slides[1].id;
+    expect(b.text).toContain('href="https://example.com/a?b=1&amp;c=2"');
+    expect(b.text).toContain(`href="#slide:${second}"`);
+    expect(sh.link).toBe(`#slide:${second}`);
+    expect(p.link).toBe('https://example.org');
+  });
+
+  it('reads PowerPoint\'s next and previous slide actions', async () => {
+    const shape = newShape('rect', 10, 100);
+    shape.link = 'https://example.org';
+    const back = await roundTrip(deckWith(shape), async (zip) => {
+      const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+      zip.file('ppt/slides/slide1.xml', xml.replace(/<a:hlinkClick [^>]*\/>/, '<a:hlinkClick r:id="" action="ppaction://hlinkshowjump?jump=previousslide"/>'));
+    });
+    expect(back.slides[0].elements[0].link).toBe('#slide:prev');
+  });
+});
+
 describe('PowerPoint placeholders', () => {
   it('writes titles, subtitles and body text as placeholders, empty ones too', async () => {
     const deck = newDeck(); // a title slide with an empty title and subtitle

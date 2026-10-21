@@ -90,6 +90,8 @@ export class SlideCanvas {
 
     this.stage.addEventListener('pointerdown', (e) => this.onPointerDown(e));
     this.stage.addEventListener('dblclick', (e) => this.onDblClick(e));
+    // Links in text are followed in the slideshow, not while editing.
+    this.stage.addEventListener('click', (e) => { if (e.target.closest?.('a[href]')) e.preventDefault(); });
     this.stage.addEventListener('contextmenu', (e) => this.onContextMenu(e));
     this.wrap.addEventListener('pointerdown', (e) => {
       // The grey area around the slide: deselect, or draw there with a tool.
