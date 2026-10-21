@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   slideSections, moveSlidesWithSections, removeSlidesWithSections, setSections, newTable, newDiagram, DIAGRAM_LAYOUTS,
+  gatherGroups, normalizeDeck,
 } from '../../src/model/deck.js';
 import { insertRow, insertCol, deleteRow, deleteCol, mergeCells, unmergeCell, normalizeTable } from '../../src/model/tables.js';
 import { layoutDiagram } from '../../src/model/diagram-layout.js';
@@ -90,6 +91,47 @@ describe('sections survive moves and deletes', () => {
       const firstNamed = m.order.findIndex((s) => s.section);
       if (firstNamed > 0) for (const s of m.order.slice(0, firstNamed)) expect(before.get(s.id) == null || ids.has(s.id)).toBe(true);
     }
+  });
+});
+
+// ------------------------------------------------------------------ groups
+
+describe('groups stay together', () => {
+  const contiguous = (els) => {
+    const seen = new Set();
+    let prev = null;
+    for (const e of els) {
+      if (e.groupId && e.groupId !== prev && seen.has(e.groupId)) return false;
+      if (e.groupId) seen.add(e.groupId);
+      prev = e.groupId || null;
+    }
+    return true;
+  };
+  const order = (els, keep) => els.filter(keep).map((e) => e.id).join(' ');
+
+  it('gathers each group where its topmost member is, keeping everything else in order', () => {
+    const r = rng(5);
+    for (let n = 0; n < 500; n++) {
+      const els = Array.from({ length: r.int(12) }, (_, i) => ({ id: `e${i}`, ...(r() < 0.6 && { groupId: r.pick(['A', 'B', 'C']) }) }));
+      const out = gatherGroups(els);
+      expect(out.map((e) => e.id).sort()).toEqual(els.map((e) => e.id).sort());
+      expect(contiguous(out)).toBe(true);
+      expect(order(out, (e) => !e.groupId)).toBe(order(els, (e) => !e.groupId));
+      for (const g of ['A', 'B', 'C']) expect(order(out, (e) => e.groupId === g)).toBe(order(els, (e) => e.groupId === g));
+      if (contiguous(els)) expect(out.map((e) => e.id)).toEqual(els.map((e) => e.id));
+      // The topmost member stays where it was among the ungrouped elements before and after it.
+      for (const g of ['A', 'B', 'C']) {
+        const last = els.map((e) => e.groupId).lastIndexOf(g);
+        if (last < 0) continue;
+        const below = els.slice(0, last).filter((e) => !e.groupId).length;
+        expect(out.slice(0, out.findIndex((e) => e.groupId === g)).filter((e) => !e.groupId)).toHaveLength(below);
+      }
+    }
+  });
+
+  it('when a deck is opened', () => {
+    const deck = normalizeDeck({ slides: [{ id: 's', elements: [{ id: 'a', groupId: 'g' }, { id: 'x' }, { id: 'b', groupId: 'g' }] }] });
+    expect(deck.slides[0].elements.map((e) => e.id)).toEqual(['x', 'a', 'b']);
   });
 });
 
