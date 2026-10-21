@@ -3,6 +3,7 @@ import { evaluateGeometry } from '../model/geometry.js';
 import { fontStack } from '../model/fonts.js';
 import { resolveColor } from '../model/themes.js';
 import { gradientPaint } from './render.js';
+import { svgEl } from './svg.js';
 
 /**
  * WordArt text warps (see model/warps.js), drawn as an SVG over the text box
@@ -20,13 +21,6 @@ import { gradientPaint } from './render.js';
  * order, as PowerPoint does. The plain text stays in the box underneath,
  * hidden, and is shown instead while it's being edited (see app.css).
  */
-
-const SVG = 'http://www.w3.org/2000/svg';
-const svgEl = (tag, attrs = {}) => {
-  const el = document.createElementNS(SVG, tag);
-  for (const [k, v] of Object.entries(attrs)) if (v != null) el.setAttribute(k, v);
-  return el;
-};
 
 const DEFAULT_INSET = { l: 7.2, t: 3.6, r: 7.2, b: 3.6 }; // the text box's padding (app.css)
 const EMU = 12700; // geometry is worked out in EMUs, as the formulas expect

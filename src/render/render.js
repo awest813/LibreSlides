@@ -9,18 +9,12 @@ import { fontStack } from '../model/fonts.js';
 import { registerDeckFonts } from './deck-fonts.js';
 import { renderWarp } from './warp.js';
 import { isPlainWarp } from '../model/warps.js';
+import { svgEl } from './svg.js';
 
 /**
  * Renders slides to DOM at 1px = 1pt. The same renderer draws the editor
  * canvas, thumbnails, the slideshow and print, so they always match.
  */
-
-const SVG = 'http://www.w3.org/2000/svg';
-const svgEl = (tag, attrs = {}) => {
-  const el = document.createElementNS(SVG, tag);
-  for (const [k, v] of Object.entries(attrs)) if (v != null) el.setAttribute(k, v);
-  return el;
-};
 
 // ------------------------------------------------------------------ media
 
