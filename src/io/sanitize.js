@@ -1,5 +1,6 @@
 import DOMPurify from 'dompurify';
 import { PATH_ARGS } from '../model/shapes.js';
+import { CHART_KINDS } from '../model/deck.js';
 
 /**
  * Text in slides is HTML. Anything that comes from outside (opened files,
@@ -73,6 +74,7 @@ export function sanitizeElement(el) {
       if (el.shape === 'custom') el.shape = 'rect';
     }
   }
+  if (el.type === 'chart' || el.chart != null) el.chart = sanitizeChart(el.chart);
   if (el.crop != null) {
     if (isObject(el.crop)) for (const side of ['l', 't', 'r', 'b']) el.crop[side] = fraction(el.crop[side]);
     else delete el.crop;
@@ -84,6 +86,36 @@ export function sanitizeElement(el) {
     if (typeof el.style.font === 'string') el.style.font = el.style.font.replace(/[^\p{L}\p{N}\s-]/gu, '').slice(0, 64);
   }
   return el;
+}
+
+/**
+ * Chart data from an untrusted source: a known kind, plain strings, finite
+ * numbers (anything else is a blank point), safe colours and sensible sizes.
+ */
+const CHART_LIMITS = { series: 200, points: 1000, text: 255 };
+const chartText = (v) => (typeof v === 'string' || Number.isFinite(v) ? String(v).slice(0, CHART_LIMITS.text) : '');
+
+export function sanitizeChart(chart) {
+  const c = isObject(chart) ? chart : {};
+  const out = {
+    kind: CHART_KINDS.some((k) => k.id === c.kind) ? c.kind : 'column',
+    title: chartText(c.title),
+    categories: (Array.isArray(c.categories) ? c.categories : []).slice(0, CHART_LIMITS.points).map(chartText),
+    series: (Array.isArray(c.series) ? c.series : []).filter(isObject).slice(0, CHART_LIMITS.series).map((s, i) => {
+      const ser = {
+        name: chartText(s.name) || `Series ${i + 1}`,
+        values: (Array.isArray(s.values) ? s.values : []).slice(0, CHART_LIMITS.points).map((v) => (typeof v === 'number' && Number.isFinite(v) ? v : null)),
+      };
+      if (safeColor(s.color)) ser.color = safeColor(s.color);
+      if (Array.isArray(s.pointColors)) ser.pointColors = s.pointColors.slice(0, CHART_LIMITS.points).map((p) => safeColor(p) || null);
+      return ser;
+    }),
+    legend: ['right', 'bottom', 'top', 'left', 'none'].includes(c.legend) ? c.legend : 'none',
+    dataLabels: c.dataLabels === true,
+  };
+  if (['clustered', 'stacked', 'percent'].includes(c.grouping)) out.grouping = c.grouping;
+  if (c.markers === true) out.markers = true;
+  return out;
 }
 
 /** Clean every piece of HTML, colour and picture in a deck from an untrusted source. */

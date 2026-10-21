@@ -7,7 +7,18 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  *
  * deck    { id, title, themeId, size, slides[], media{id: dataUrl}, createdAt, updatedAt }
  * slide   { id, layout, background|null, elements[], notes, transition{type, duration}, hidden }
- * element { id, type: text|shape|image|line|table, x, y, w, h, rot, opacity, … }
+ * element { id, type: text|shape|image|line|table|chart, x, y, w, h, rot, opacity, … }
+ *
+ * A chart keeps its data in the element, so it can be edited and exported as
+ * a real PowerPoint chart:
+ *   chart { kind: column|bar|line|area|pie|doughnut|scatter,
+ *           grouping: clustered|stacked|percent (columns, bars and areas),
+ *           title, categories[], series[{ name, values[number|null], color?, pointColors? }],
+ *           legend: right|bottom|top|left|none, dataLabels, markers (lines) }
+ * Series without a colour take the theme's accents in turn; pie and doughnut
+ * slices use the first series, coloured by its pointColors. A scatter chart's
+ * categories are its X values. `style` { size, color, font } sets its text,
+ * and `fill` and `stroke` the chart area's background and border.
  *
  * Pictures live in deck.media and are referenced by id, so undo snapshots of
  * the slides stay small however many pictures a deck has.
@@ -154,6 +165,35 @@ export function newTable(rows, cols, x, y, w, h) {
   };
 }
 
+export const CHART_KINDS = [
+  { id: 'column', name: 'Column' },
+  { id: 'bar', name: 'Bar' },
+  { id: 'line', name: 'Line' },
+  { id: 'area', name: 'Area' },
+  { id: 'pie', name: 'Pie' },
+  { id: 'doughnut', name: 'Doughnut' },
+  { id: 'scatter', name: 'Scatter (XY)' },
+];
+
+/** A column chart with PowerPoint's sample data, ready to be edited. */
+export function newChart(x, y, w = 480, h = 300) {
+  return {
+    id: uid(), type: 'chart', x, y, w, h, rot: 0,
+    chart: {
+      kind: 'column', grouping: 'clustered', title: '',
+      categories: ['Category 1', 'Category 2', 'Category 3', 'Category 4'],
+      series: [
+        { name: 'Series 1', values: [4.3, 2.5, 3.5, 4.5] },
+        { name: 'Series 2', values: [2.4, 4.4, 1.8, 2.8] },
+        { name: 'Series 3', values: [2, 2, 3, 5] },
+      ],
+      legend: 'bottom', dataLabels: false,
+    },
+    fill: 'none', stroke: { color: 'none', width: 1, dash: 'solid' },
+    style: { size: 12 },
+  };
+}
+
 /** A line's bounding box (lines store their two end points). */
 export function lineBox(el) {
   const x = Math.min(el.x1, el.x2);
@@ -258,6 +298,7 @@ export function slideText(slide) {
   for (const el of els) {
     if (el.text) parts.push(htmlToText(el.text));
     if (el.cells) for (const row of el.cells) for (const c of row) if (c.text) parts.push(htmlToText(c.text));
+    if (el.chart?.title) parts.push(el.chart.title);
   }
   return parts.join(' ').replace(/\s+/g, ' ').trim();
 }

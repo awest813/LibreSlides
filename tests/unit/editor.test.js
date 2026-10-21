@@ -205,3 +205,30 @@ describe('editor: keyboard', () => {
     ed.presentation.exit();
   });
 });
+
+describe('editor: charts', () => {
+  it('inserts a chart and edits its data in the format panel, one undo step at a time', () => {
+    const ed = openEditor(deckWith());
+    ed.insertChart();
+    const chart = () => ed.slide.elements.find((e) => e.type === 'chart');
+    expect(ed.selection).toEqual([chart().id]);
+    expect(ed.panel.current).toBe('format');
+    const panel = ed.panel.el;
+    const cell = panel.querySelector('[aria-label="Series 1, Category 2"]');
+    cell.value = '9';
+    cell.dispatchEvent(new Event('change'));
+    expect(chart().chart.series[0].values[1]).toBe(9);
+    [...panel.querySelectorAll('button')].find((b) => b.textContent === 'Series').click();
+    expect(chart().chart.series).toHaveLength(4);
+    const kind = [...panel.querySelectorAll('select')].find((s) => [...s.options].some((o) => o.value === 'doughnut'));
+    kind.value = 'pie';
+    kind.dispatchEvent(new Event('change'));
+    expect(chart().chart.kind).toBe('pie');
+    expect(ed.canvas.stage.querySelectorAll('.chart-slice').length).toBeGreaterThan(0);
+    ed.undo();
+    ed.undo();
+    expect(chart().chart.kind).toBe('column');
+    expect(chart().chart.series).toHaveLength(3);
+    expect(chart().chart.series[0].values[1]).toBe(9);
+  });
+});

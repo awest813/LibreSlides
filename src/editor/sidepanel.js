@@ -2,8 +2,9 @@ import { h } from '../ui/dom.js';
 import { icon } from '../ui/icons.js';
 import { openColorPicker } from '../ui/color-picker.js';
 import { THEMES, resolveColor, backgroundBaseColor } from '../model/themes.js';
-import { SIZES, LAYOUTS, TRANSITIONS, ANIMATIONS, newSlide, fillPlaceholders, canHoldText, slideText } from '../model/deck.js';
+import { SIZES, LAYOUTS, TRANSITIONS, ANIMATIONS, CHART_KINDS, newSlide, fillPlaceholders, canHoldText, slideText } from '../model/deck.js';
 import { renderThumb, textStyle } from '../render/render.js';
+import { seriesColor, pointColor } from '../render/chart.js';
 
 const TITLES = { design: 'Design', transition: 'Transition', animate: 'Animate', format: 'Format options' };
 const TAB_LABELS = { design: 'Design', transition: 'Transition', animate: 'Animate', format: 'Format' };
@@ -203,7 +204,7 @@ export class SidePanel {
     const animated = app.slide.elements.filter((e) => e.anim && e.anim.effect !== 'none').sort((x, y) => (x.anim.order || 0) - (y.anim.order || 0));
     const list = h('ol', { class: 'anim-list' });
     animated.forEach((el, i) => {
-      const name = (canHoldText(el) && slideText({ elements: [el] })) || ({ image: 'Picture', line: 'Line', table: 'Table', shape: 'Shape', text: 'Text box' }[el.type]);
+      const name = (canHoldText(el) && slideText({ elements: [el] })) || ({ image: 'Picture', line: 'Line', table: 'Table', shape: 'Shape', text: 'Text box', chart: 'Chart' }[el.type]);
       const effect = ANIMATIONS.find((x) => x.id === el.anim.effect)?.name;
       list.append(h('li', { class: `anim-item${app.selection.includes(el.id) ? ' is-selected' : ''}` },
         h('button', { type: 'button', class: 'anim-name', onclick: () => app.setSelection([el.id]) }, h('b', {}, name.slice(0, 40)), h('small', {}, `${effect}${el.anim.start && el.anim.start !== 'click' ? ` · ${el.anim.start} previous` : ''}`)),
@@ -302,7 +303,100 @@ export class SidePanel {
         h('p', { class: 'pf-hint' }, `${el.cells.length} rows × ${el.cells[0]?.length || 0} columns. Double-click the table to type in it; Tab moves between cells.`)));
     }
 
+    if (single && el.type === 'chart' && el.chart) out.push(...chartSections(el, theme, upd));
+
     out.push(section('Arrange', checkbox('Lock position', els.every((e) => e.locked), (v) => upd((e) => { e.locked = v; }))));
     return out;
   }
+}
+
+// ------------------------------------------------------------------ charts
+
+/** A number typed into the chart data: "1,234.5", "3,5" or blank (no point). */
+function parseValue(text) {
+  const t = String(text).trim().replace(/\s/g, '');
+  if (!t) return null;
+  const n = Number(/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(t) ? t.replace(/,/g, '') : t.replace(',', '.'));
+  return Number.isFinite(n) ? n : null;
+}
+
+/** A small field of the data grid; it changes the chart when it's left (or Enter is pressed). */
+function cellInput(value, label, onValue, numeric = false) {
+  const input = h('input', { type: 'text', class: numeric ? 'is-num' : null, inputmode: numeric ? 'decimal' : null, 'aria-label': label });
+  input.value = value ?? '';
+  input.addEventListener('change', () => onValue(input.value));
+  return input;
+}
+
+function swatch(label, value, theme, onPick) {
+  const b = h('button', { type: 'button', class: 'chart-swatch', title: label, 'aria-label': label, 'aria-haspopup': 'true', style: { background: value } });
+  b.addEventListener('click', () => openColorPicker(b, { theme, current: value, onPick }));
+  return b;
+}
+
+const removeButton = (label, run) => h('button', { type: 'button', class: 'icon-btn chart-remove', title: label, 'aria-label': label, html: icon('close'), onclick: run });
+
+/** The Chart and Chart data sections of the format options. */
+function chartSections(el, theme, upd) {
+  const c = el.chart;
+  const edit = (fn) => upd((e) => { if (e.type === 'chart' && e.chart) fn(e.chart, e); });
+  const pie = c.kind === 'pie' || c.kind === 'doughnut';
+  const title = h('input', { type: 'text', placeholder: 'No title' });
+  title.value = c.title || '';
+  title.addEventListener('change', () => edit((ch) => { ch.title = title.value; }));
+  const options = h('div', { class: 'pf-stack' },
+    field('Type', select(CHART_KINDS.map((k) => [k.id, k.name]), c.kind, (v) => edit((ch) => { ch.kind = v; }))),
+    ['column', 'bar', 'area'].includes(c.kind)
+      ? field('Grouping', select([['clustered', c.kind === 'area' ? 'Standard' : 'Clustered'], ['stacked', 'Stacked'], ['percent', '100% stacked']], c.grouping || 'clustered', (v) => edit((ch) => { ch.grouping = v; })))
+      : null,
+    field('Title', title),
+    field('Legend', select([['right', 'Right'], ['bottom', 'Bottom'], ['top', 'Top'], ['left', 'Left'], ['none', 'None']], c.legend || 'none', (v) => edit((ch) => { ch.legend = v; }))),
+    checkbox('Data labels', c.dataLabels, (v) => edit((ch) => { ch.dataLabels = v; })),
+    c.kind === 'line' ? checkbox('Markers', c.markers, (v) => edit((ch) => { ch.markers = v; })) : null,
+    field('Text size', numberInput(el.style?.size || 12, (v) => edit((ch, e) => { e.style = { ...e.style, size: v }; }), { min: 4, max: 72, suffix: 'pt' })),
+    h('div', { class: 'pf-row' },
+      colorButton('Text colour', el.style?.color || 'theme:text', theme, (v) => edit((ch, e) => { e.style = { ...e.style, color: v }; })),
+      colorButton('Background', el.fill || 'none', theme, (v) => edit((ch, e) => { e.fill = v; }), { allowNone: true, noneLabel: 'No background' })),
+  );
+
+  // The data: a row per category and a column per series (only the first for pies).
+  const series = pie ? c.series.slice(0, 1) : c.series;
+  const head = h('tr', {}, h('th', {}, c.kind === 'scatter' ? 'X' : 'Category'), ...series.map((s, k) => h('th', {},
+    cellInput(s.name, `Name of series ${k + 1}`, (v) => edit((ch) => { ch.series[k].name = v; })),
+    pie ? null : h('div', { class: 'chart-head' },
+      swatch(`Colour of ${s.name}`, seriesColor(c, k, theme), theme, (v) => edit((ch) => { ch.series[k].color = v; })),
+      c.series.length > 1 ? removeButton(`Remove ${s.name}`, () => edit((ch) => { ch.series.splice(k, 1); })) : null))),
+  pie ? h('th', {}) : null, h('th', {}));
+  const rows = c.categories.map((cat, i) => h('tr', {},
+    h('td', {}, cellInput(cat, `Category ${i + 1}`, (v) => edit((ch) => { ch.categories[i] = v; }))),
+    ...series.map((s, k) => h('td', {}, cellInput(s.values[i] ?? '', `${s.name}, ${cat}`, (v) => edit((ch) => {
+      const list = ch.series[k].values;
+      while (list.length <= i) list.push(null);
+      list[i] = parseValue(v);
+    }), true))),
+    pie ? h('td', {}, swatch(`Colour of ${cat}`, pointColor(c, i, theme), theme, (v) => edit((ch) => {
+      const first = ch.series[0];
+      first.pointColors = ch.categories.map((_, j) => first.pointColors?.[j] || null);
+      first.pointColors[i] = v;
+    }))) : null,
+    h('td', {}, c.categories.length > 1 ? removeButton(`Remove ${cat || `row ${i + 1}`}`, () => edit((ch) => {
+      ch.categories.splice(i, 1);
+      for (const s of ch.series) {
+        s.values.splice(i, 1);
+        s.pointColors?.splice(i, 1);
+      }
+    })) : null)));
+  const grid = h('div', { class: 'chart-data' }, h('table', {}, h('thead', {}, head), h('tbody', {}, ...rows)));
+  const buttons = h('div', { class: 'pf-row' },
+    h('button', { type: 'button', class: 'btn', html: `${icon('plus')}<span>Row</span>`, onclick: () => edit((ch) => {
+      ch.categories.push(ch.kind === 'scatter' ? String(ch.categories.length + 1) : `Category ${ch.categories.length + 1}`);
+      for (const s of ch.series) while (s.values.length < ch.categories.length) s.values.push(null);
+    }) }),
+    pie ? null : h('button', { type: 'button', class: 'btn', html: `${icon('plus')}<span>Series</span>`, onclick: () => edit((ch) => {
+      ch.series.push({ name: `Series ${ch.series.length + 1}`, values: ch.categories.map(() => null) });
+    }) }));
+  return [
+    section('Chart', options),
+    section('Chart data', grid, buttons, h('p', { class: 'pf-hint' }, pie ? 'Pie and doughnut charts show the first series.' : 'Leave a cell empty for no point.')),
+  ];
 }

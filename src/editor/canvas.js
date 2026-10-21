@@ -338,6 +338,7 @@ export class SlideCanvas {
     if (canHoldText(el) || el.type === 'table') {
       if (this.editing?.id !== el.id) this.startEdit(el.id, { point: e });
     } else if (el.type === 'image') this.app.replaceImage?.();
+    else if (el.type === 'chart') this.app.openPanel('format');
   }
 
   onContextMenu(e) {

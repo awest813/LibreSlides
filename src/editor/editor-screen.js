@@ -10,7 +10,7 @@ import { isDark, toggleTheme } from '../ui/theme.js';
 import { showInstallHelp } from '../ui/install.js';
 import { getDeck, saveDeck, onStorageChange } from '../storage/db.js';
 import {
-  slideSize, newSlide, layoutElements, cloneSlide, cloneElement, canHoldText, boxOf, moveElement, addMedia, newImage, newTable,
+  slideSize, newSlide, layoutElements, cloneSlide, cloneElement, canHoldText, boxOf, moveElement, addMedia, newImage, newTable, newChart,
   htmlToText, SIZES, uid,
 } from '../model/deck.js';
 import { themeById, resolveColor } from '../model/themes.js';
@@ -1108,6 +1108,15 @@ export class EditorScreen {
     const tw = Math.min(w * 0.84, cols * 140);
     const th = rows * 36;
     this.addElements([newTable(rows, cols, Math.round((w - tw) / 2), Math.round((H - th) / 2), Math.round(tw), th)]);
+  }
+
+  /** A sample column chart in the middle of the slide, with its data open in the side panel. */
+  insertChart() {
+    const { w, h: H } = this.size;
+    const cw = Math.round(Math.min(w * 0.6, 560));
+    const ch = Math.round(Math.min(H * 0.6, 340));
+    this.addElements([newChart(Math.round((w - cw) / 2), Math.round((H - ch) / 2), cw, ch)]);
+    this.openPanel('format');
   }
 
   tableOp(op) {
