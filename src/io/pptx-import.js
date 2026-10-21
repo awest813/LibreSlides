@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { uid, newDeck, SIZES, customSize, slideSize } from '../model/deck.js';
+import { uid, newDeck, SIZES, customSize, slideSize, FIELD } from '../model/deck.js';
 import { SHAPES } from '../model/shapes.js';
 import { normalizeTable } from '../model/tables.js';
 import { evaluateGeometry, definitionFromXml } from '../model/geometry.js';
@@ -39,6 +39,7 @@ function runProps(rPr, ctx) {
   if (attr(rPr, 'strike') != null) p.strike = attr(rPr, 'strike') !== 'noStrike';
   const fill = kid(rPr, 'solidFill');
   if (fill) p.color = colorOf(fill, ctx.scheme);
+  Object.assign(p, textEffects(rPr, ctx));
   const hl = kid(rPr, 'highlight');
   if (hl) p.highlight = colorOf(hl, ctx.scheme);
   const latin = kid(rPr, 'latin');
@@ -55,6 +56,58 @@ function runProps(rPr, ctx) {
   if (attr(rPr, 'spc') != null) p.letterSpacing = Math.round((+attr(rPr, 'spc') / 100) * ctx.k * 10) / 10 || 0;
   const link = linkOf(kid(rPr, 'hlinkClick'), ctx.rels);
   if (link) p.link = link;
+  return p;
+}
+
+const rgba = (hex, a) => (a < 1 && /^#[0-9a-f]{6}$/i.test(hex)
+  ? `rgba(${[1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(', ')}, ${Math.round(a * 100) / 100})` : hex);
+
+/** A gradient (see model/deck.js) as a CSS image. */
+function cssGradient(g) {
+  const stops = g.stops.map((st) => `${rgba(st.color, st.opacity ?? 1)} ${Math.round(st.pos * 100)}%`).join(', ');
+  return g.type === 'radial'
+    ? `radial-gradient(circle at ${Math.round(g.cx * 100)}% ${Math.round(g.cy * 100)}%, ${stops})`
+    : `linear-gradient(${g.angle}deg, ${stops})`;
+}
+
+/**
+ * WordArt-like effects of a run: an outline, a gradient or no fill, and a
+ * shadow or glow, as CSS (see spanFor). A gradient's first colour stands in
+ * as the run's colour.
+ */
+function textEffects(rPr, ctx) {
+  const p = {};
+  const ln = kid(rPr, 'ln');
+  if (ln) {
+    const line = lineOf(ln, ctx.scheme, ctx.k);
+    const fill = kid(ln, 'solidFill');
+    p.outline = line && line.color !== 'none' ? `${Math.max(0.25, line.width)}px ${rgba(line.color, alphaOf(fill))}` : null;
+  }
+  const grad = kid(rPr, 'gradFill');
+  if (grad) {
+    const f = fillFrom(grad, ctx.scheme);
+    if (f) {
+      p.color = f.color;
+      p.gradient = f.gradient ? cssGradient(f.gradient) : null;
+    }
+  } else if (kid(rPr, 'noFill')) p.color = 'transparent';
+  else if (kid(rPr, 'solidFill')) p.gradient = null;
+  const effects = kid(rPr, 'effectLst');
+  if (effects) {
+    const shadows = [];
+    const px = (v) => Math.round(((+v || 0) / EMU_PER_PT) * ctx.k * 10) / 10;
+    const sh = kid(effects, 'outerShdw');
+    if (sh) {
+      const dist = px(attr(sh, 'dist'));
+      const dir = ((+attr(sh, 'dir') || 0) / 60000) * (Math.PI / 180);
+      const color = colorOf(sh, ctx.scheme) || '#000000';
+      const r = (v) => Math.round(v * 10) / 10;
+      shadows.push(`${rgba(color, alphaOf(sh))} ${r(dist * Math.cos(dir))}px ${r(dist * Math.sin(dir))}px ${px(attr(sh, 'blurRad'))}px`);
+    }
+    const glow = kid(effects, 'glow');
+    if (glow) shadows.push(`${rgba(colorOf(glow, ctx.scheme) || '#ffffff', alphaOf(glow))} 0px 0px ${px(attr(glow, 'rad'))}px`);
+    p.shadow = shadows.join(', ') || null;
+  }
   return p;
 }
 
@@ -133,7 +186,8 @@ function textBody(txBody, ctx, { chain = [], defaults = {}, base: fixedBase = nu
     for (const r of p.children) {
       if (r.localName === 'r' || r.localName === 'fld') {
         const t = kid(r, 't')?.textContent || '';
-        if (t) runs.push({ text: t, props: { ...defaults, ...props.run, ...runProps(kid(r, 'rPr'), ctx) } });
+        const field = r.localName === 'fld' && FIELD.test(attr(r, 'type')) ? attr(r, 'type') : null;
+        if (t || field) runs.push({ text: t || ' ', props: { ...defaults, ...props.run, ...runProps(kid(r, 'rPr'), ctx), field } });
       } else if (r.localName === 'br') runs.push({ br: true });
     }
     return { lvl, props, runs };
@@ -244,7 +298,11 @@ function spanFor(text, props, base) {
   // Kept on every run: the box's own style has nothing for these.
   if (props.caps) css.push(props.caps === 'small' ? 'font-variant: small-caps' : 'text-transform: uppercase');
   if (props.letterSpacing) css.push(`letter-spacing: ${props.letterSpacing}px`);
+  if (props.outline) css.push(`-webkit-text-stroke: ${props.outline}`);
+  if (props.shadow) css.push(`text-shadow: ${props.shadow}`);
+  if (props.gradient) css.push(`background-image: ${props.gradient}; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent`);
   let html = esc(text);
+  if (props.field) html = `<span data-field="${props.field}">${html}</span>`;
   if (css.length) html = `<span style="${css.join('; ')}">${html}</span>`;
   if (props.baseline) html = `<${props.baseline}>${html}</${props.baseline}>`;
   return props.link ? `<a href="${esc(props.link)}">${html}</a>` : html;

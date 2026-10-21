@@ -88,6 +88,41 @@ describe('PowerPoint text', () => {
     expect(back).toContain('<ol style="list-style-type: lower-roman" start="3"><li>three</li></ol>');
   });
 
+  it('keeps slide number and date fields', async () => {
+    const box = newTextBox(10, 10, 400, 100);
+    box.text = '<p>Slide <span data-field="slidenum">9</span> of today, <span data-field="datetime4">May 1</span></p>';
+    const xml = await slideXml(deckWith(box));
+    expect(xml).toMatch(/<a:fld id="\{[0-9A-F-]+\}" type="slidenum"><a:rPr lang="en-US"[^>]*>[\s\S]*?<a:t>1<\/a:t><\/a:fld>/);
+    expect(xml).toContain('type="datetime4"');
+    expect(xml).not.toContain('x-ls');
+    const back = (await roundTrip(deckWith(box))).slides[0].elements[0];
+    expect(back.text).toMatch(/^<p>Slide <span data-field="slidenum">1<\/span> of today, <span data-field="datetime4">[^<]+20\d\d<\/span><\/p>$/);
+    // Shown with the slide's own number.
+    const deck = deckWith(back);
+    deck.slides.unshift({ ...deck.slides[0], id: 's0', elements: [] });
+    const { renderSlide } = await import('../../src/render/render.js');
+    expect(renderSlide(deck.slides[1], deck).querySelector('[data-field=slidenum]').textContent).toBe('2');
+  });
+
+  it('keeps text outlines, gradients, shadows and glows', async () => {
+    const box = newTextBox(10, 10, 400, 100);
+    box.text = '<p><span style="-webkit-text-stroke: 1.5px #ff0000">outline</span> '
+      + '<span style="color: #ff0000; background-image: linear-gradient(90deg, #ff0000 0%, rgba(0, 0, 255, 0.5) 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent">grad</span> '
+      + '<span style="text-shadow: rgba(0, 0, 0, 0.5) 3px 4px 2px, #ffff00 0px 0px 6px">glow</span> '
+      + '<span style="color: transparent; -webkit-text-stroke: 1px #000000">hollow</span></p>';
+    const xml = await slideXml(deckWith(box));
+    expect(xml).toMatch(/<a:rPr[^>]*><a:ln w="19050"><a:solidFill><a:srgbClr val="FF0000"\/><\/a:solidFill><\/a:ln>/);
+    expect(xml).toMatch(/<a:gradFill[^>]*><a:gsLst><a:gs pos="0"><a:srgbClr val="FF0000"><\/a:srgbClr><\/a:gs><a:gs pos="100000"><a:srgbClr val="0000FF"><a:alpha val="50000"\/>[\s\S]*?<a:lin ang="0"/);
+    expect(xml).toMatch(/<a:effectLst><a:glow rad="76200"><a:srgbClr val="FFFF00"\/><\/a:glow><a:outerShdw blurRad="25400" dist="63500" dir="3187806"/);
+    expect(xml).toMatch(/<a:noFill\/>[\s\S]*?<a:t>hollow/);
+    expect(xml).not.toContain('x-ls');
+    const back = (await roundTrip(deckWith(box))).slides[0].elements[0].text;
+    expect(back).toContain('-webkit-text-stroke: 1.5px #ff0000">outline');
+    expect(back).toContain('background-image: linear-gradient(90deg, #ff0000 0%, rgba(0, 0, 255, 0.5) 100%)');
+    expect(back).toMatch(/text-shadow: rgba\(0, 0, 0, 0.5\) 3px 4px 2px, #ffff00 0px 0px 6px">glow/);
+    expect(back).toMatch(/color: transparent[^"]*-webkit-text-stroke: 1px #000000">hollow/);
+  });
+
   it('keeps text box margins, no wrapping, vertical text and columns', async () => {
     const box = newTextBox(10, 10, 400, 200);
     box.text = '<p>Side</p>';

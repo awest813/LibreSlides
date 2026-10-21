@@ -2,7 +2,7 @@ import DOMPurify from 'dompurify';
 import { PATH_ARGS } from '../model/shapes.js';
 import { normalizeTable } from '../model/tables.js';
 import { isMediaData } from './media-files.js';
-import { CHART_KINDS, uid, ANIM_KINDS, ANIMATIONS, EMPHASES, EXITS, MOTIONS } from '../model/deck.js';
+import { CHART_KINDS, uid, ANIM_KINDS, ANIMATIONS, EMPHASES, EXITS, MOTIONS, FIELD } from '../model/deck.js';
 import { FONT_FACES } from '../model/fonts.js';
 
 /**
@@ -11,7 +11,7 @@ import { FONT_FACES } from '../model/fonts.js';
  */
 const TEXT_CONFIG = {
   ALLOWED_TAGS: ['p', 'div', 'br', 'span', 'b', 'strong', 'i', 'em', 'u', 's', 'strike', 'sub', 'sup', 'ul', 'ol', 'li', 'a', 'font'],
-  ALLOWED_ATTR: ['style', 'href', 'color', 'face', 'size', 'start'],
+  ALLOWED_ATTR: ['style', 'href', 'color', 'face', 'size', 'start', 'data-field'],
   ALLOW_DATA_ATTR: false,
 };
 
@@ -24,6 +24,7 @@ function ensureHooks() {
   DOMPurify.addHook('afterSanitizeAttributes', (node) => {
     // No external resources from inline styles (CSS escapes could spell url( in disguise); links open in a new tab.
     if (node.hasAttribute?.('style') && UNSAFE_STYLE.test(node.getAttribute('style'))) node.removeAttribute('style');
+    if (node.hasAttribute?.('data-field') && !FIELD.test(node.getAttribute('data-field'))) node.removeAttribute('data-field');
     if (node.tagName === 'A') {
       node.setAttribute('target', '_blank');
       node.setAttribute('rel', 'noopener noreferrer');

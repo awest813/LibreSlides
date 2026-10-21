@@ -11,7 +11,7 @@ import { showInstallHelp } from '../ui/install.js';
 import { getDeck, saveDeck, onStorageChange } from '../storage/db.js';
 import {
   slideSize, newSlide, layoutElements, cloneSlide, cloneElement, canHoldText, boxOf, moveElement, addMedia, newImage, newTable, newChart,
-  htmlToText, SIZES, customSize, uid, mediaSlots, newMedia, regroup, slideAnimations, ANIM_KINDS, slideTitle,
+  htmlToText, SIZES, customSize, uid, mediaSlots, newMedia, regroup, slideAnimations, ANIM_KINDS, slideTitle, newTextBox, fieldText,
 } from '../model/deck.js';
 import { anchorOf, insertRow, insertCol, deleteRow, deleteCol, mergeCells, unmergeCell } from '../model/tables.js';
 import { themeById, resolveColor } from '../model/themes.js';
@@ -26,7 +26,7 @@ import { Toolbar } from './toolbar.js';
 import { SidePanel } from './sidepanel.js';
 import { History } from './history.js';
 import { startComment } from './comments.js';
-import { stripInline, exec, execFontSize, caretFormat, highlightAll } from './richtext.js';
+import { stripInline, exec, execFontSize, caretFormat, highlightAll, effectAll, TEXT_EFFECTS } from './richtext.js';
 import { VERSION, BUILD, diagnostics } from '../diagnostics.js';
 
 const CLIP_TYPE = 'application/x-libreslides+json';
@@ -1024,6 +1024,39 @@ export class EditorScreen {
         if (el.cells) for (const row of el.cells) for (const cell of row) cell.text = stripInline(cell.text, prop);
       }
     }, { coalesce: `text-${prop}` });
+  }
+
+  /** Give the text of the selected boxes (or of the box being edited) a WordArt-like effect, or none. */
+  setTextEffect(name) {
+    const c = this.canvas;
+    const editing = c.editing?.id;
+    if (editing) c.endEdit();
+    const els = editing ? [c.find(editing)].filter(Boolean) : this.textElements();
+    if (!els.length) return;
+    const color = (key, fallback) => resolveColor(`theme:${key}`, this.theme, fallback);
+    this.change(() => {
+      for (const el of els) {
+        const css = TEXT_EFFECTS[name]?.({ accent: color('accent1', '#2563eb'), accent2: color('accent2', '#f59e0b'), text: resolveColor(textStyle(el, this.theme).color, this.theme, '#000000') });
+        if (el.text) el.text = effectAll(el.text, css);
+        if (el.cells) for (const row of el.cells) for (const cell of row) cell.text = effectAll(cell.text, css);
+      }
+    });
+  }
+
+  /** Insert the slide number or today's date: at the caret while typing, else in a new box at the foot of the slide. */
+  insertField(type) {
+    const n = this.slideIndex + 1;
+    const html = `<span data-field="${type}">${fieldText(type, n)}</span>`;
+    if (this.canvas.editing) {
+      this.canvas.execText(() => exec('insertHTML', html));
+      return;
+    }
+    const { w, h: H } = this.size;
+    const num = type === 'slidenum';
+    const box = newTextBox(num ? w - 160 : 40, H - 50, 120, 30);
+    box.text = `<p>${html}</p>`;
+    box.style = { ...(box.style || {}), size: 12, align: num ? 'right' : 'left' };
+    this.addElements([box]);
   }
 
   toggleTextProp(prop) {

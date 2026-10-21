@@ -45,6 +45,15 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  * the picture shown until it plays (`poster`, optional). It plays when the
  * slide appears if `autoplay`, otherwise when its control is clicked.
  *
+ * Text may hold fields PowerPoint fills in as the slideshow runs: the
+ * slide's number or today's date, `<span data-field="slidenum|datetime…">`
+ * (see FIELD and fieldText). The text inside is only what was last shown.
+ *
+ * Runs of text may have WordArt-like effects as inline CSS: an outline
+ * (-webkit-text-stroke), a shadow or glow (text-shadow) and a gradient
+ * (a linear-gradient background clipped to the text, with `color` holding
+ * its first colour).
+ *
  * A slide may carry review comments, as PowerPoint's do. They're plain text
  * (never HTML), shown only in the editor, and kept through undo, copies and
  * .pptx files (see io/pptx-comments.js):
@@ -158,6 +167,25 @@ export const motionPath = (m) => (m?.effect === 'custom' ? m.path : MOTIONS.find
  * `motion` (a path, with `path` for a custom one), each { effect, duration,
  * start: click|with|after, order }, sharing one playing order on the slide.
  */
+/** PowerPoint's field types LibreSlides fills in: the slide number, and the date in one of its 13 formats. */
+export const FIELD = /^(slidenum|datetime(1[0-3]|[1-9])?)$/;
+
+// How each date field is written, as Intl.DateTimeFormat options (PowerPoint's datetime1…13).
+const DATE_FORMATS = [
+  { dateStyle: 'short' }, { dateStyle: 'full' }, { day: 'numeric', month: 'long', year: 'numeric' }, { dateStyle: 'long' },
+  { day: '2-digit', month: 'short', year: '2-digit' }, { month: 'long', year: '2-digit' }, { month: 'short', year: '2-digit' },
+  { dateStyle: 'short', timeStyle: 'short' }, { dateStyle: 'short', timeStyle: 'medium' },
+  { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }, { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' },
+  { hour: 'numeric', minute: '2-digit', hour12: true }, { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true },
+];
+
+/** What a field shows on slide number `n` (from 1). */
+export function fieldText(type, n, date = new Date()) {
+  if (type === 'slidenum') return String(n);
+  const i = Math.max(1, +type.slice(8) || 1) - 1;
+  return new Intl.DateTimeFormat(undefined, DATE_FORMATS[i]).format(date);
+}
+
 export const ANIM_KINDS = ['anim', 'emphasis', 'exit', 'motion'];
 
 /** Every animation on a slide, in playing order: { el, kind, anim }. */

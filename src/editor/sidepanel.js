@@ -7,6 +7,7 @@ import { SHAPES } from '../model/shapes.js';
 import { renderThumb, textStyle } from '../render/render.js';
 import { seriesColor, pointColor } from '../render/chart.js';
 import { commentsPanel } from './comments.js';
+import { textEffectOf } from './richtext.js';
 
 const TITLES = { design: 'Design', transition: 'Transition', animate: 'Animate', format: 'Format options', comments: 'Comments' };
 const TAB_LABELS = { design: 'Design', transition: 'Transition', animate: 'Animate', format: 'Format', comments: 'Comments' };
@@ -351,10 +352,16 @@ export class SidePanel {
 
     if (els.some((e) => canHoldText(e) || e.type === 'table')) {
       const t = textStyle(el, theme);
+      const effects = new Set(els.map((e) => textEffectOf(e.text || (e.cells || []).flat().map((c) => c.text).join(''))));
+      const effect = effects.size === 1 ? [...effects][0] : 'mixed';
       out.push(section('Text',
         field('Vertical alignment', select([['top', 'Top'], ['middle', 'Middle'], ['bottom', 'Bottom']], t.valign, (v) => app.setTextProp('valign', v))),
         field('Line spacing', select([[1, 'Single'], [1.15, '1.15'], [1.25, '1.25'], [1.5, '1.5'], [2, 'Double']], t.lineHeight, (v) => app.setTextProp('lineHeight', +v))),
-        field('Space between paragraphs', select([[0, 'None'], [0.35, 'Small'], [0.8, 'Medium'], [1.4, 'Large']], t.spacing, (v) => app.setTextProp('spacing', +v)))));
+        field('Space between paragraphs', select([[0, 'None'], [0.35, 'Small'], [0.8, 'Medium'], [1.4, 'Large']], t.spacing, (v) => app.setTextProp('spacing', +v))),
+        field('Effect', select([
+          ...(effect === 'mixed' ? [['mixed', 'Mixed']] : []),
+          ['none', 'None'], ['shadow', 'Shadow'], ['glow', 'Glow'], ['outline', 'Outline'], ['hollow', 'Hollow'], ['gradient', 'Gradient'],
+        ], effect, (v) => app.setTextEffect(v)))));
     }
 
     if (single && el.type === 'image') {

@@ -272,3 +272,32 @@ describe('editor: groups', () => {
     expect(ed.selection).toEqual([a.id]);
   });
 });
+
+describe('editor: fields and text effects', () => {
+  it('inserts a slide number that shows each slide’s own number', () => {
+    const d = deckWith();
+    const ed = openEditor(d);
+    ed.goToSlide(1);
+    ed.insertField('slidenum');
+    const box = ed.slide.elements.at(-1);
+    expect(box.text).toBe('<p><span data-field="slidenum">2</span></p>');
+    expect(ed.canvas.slideEl.querySelector('[data-field=slidenum]').textContent).toBe('2');
+    d.slides.reverse();
+    ed.goToSlide(0);
+    expect(ed.canvas.slideEl.querySelector('[data-field=slidenum]').textContent).toBe('1');
+  });
+
+  it('gives the selected boxes a text effect, and takes it away', () => {
+    const box = newTextBox(0, 0);
+    box.text = '<p>One <b>two</b></p><ul><li>three</li></ul>';
+    const ed = openEditor(deckWith(box));
+    ed.setSelection([box.id]);
+    ed.setTextEffect('outline');
+    expect(ed.slide.elements[0].text).toMatch(/^<p><span style="-webkit-text-stroke: 1px [^"]+">One <b>two<\/b><\/span><\/p><ul><li><span style="-webkit-text-stroke/);
+    ed.setTextEffect('shadow');
+    expect(ed.slide.elements[0].text).not.toContain('stroke');
+    expect(ed.slide.elements[0].text).toContain('text-shadow');
+    ed.setTextEffect('none');
+    expect(ed.slide.elements[0].text).toBe('<p>One <b>two</b></p><ul><li>three</li></ul>');
+  });
+});

@@ -1,5 +1,5 @@
 import { themeById, resolveColor, backgroundCss } from '../model/themes.js';
-import { slideSize, isTitleLayout, PLACEHOLDER_HINTS, canHoldText } from '../model/deck.js';
+import { slideSize, isTitleLayout, PLACEHOLDER_HINTS, canHoldText, FIELD, fieldText } from '../model/deck.js';
 import { shapePath, customPath, textInset } from '../model/shapes.js';
 import { renderChart } from './chart.js';
 import { renderMedia } from './media.js';
@@ -431,7 +431,16 @@ export function renderSlide(slide, deck, { editing = false, live = false } = {})
   for (const d of decorElements(slide, theme, w, h)) decor.append(renderElement(d, ctx));
   root.append(decor);
   for (const el of slide.elements) root.append(renderElement(el, ctx));
+  fillFields(root, slide, deck);
   return root;
+}
+
+/** Put the slide's number and today's date into its fields (see model/deck.js). */
+export function fillFields(root, slide, deck) {
+  const n = (deck.slides || []).findIndex((s) => s.id === slide.id) + 1;
+  for (const f of root.querySelectorAll('[data-field]')) {
+    if (FIELD.test(f.dataset.field)) f.textContent = fieldText(f.dataset.field, n || 1);
+  }
 }
 
 /** A slide scaled into a box `width` px wide (thumbnails, previews). */

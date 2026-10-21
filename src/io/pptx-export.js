@@ -1,6 +1,6 @@
 import PptxGenJS from 'pptxgenjs';
 import JSZip from 'jszip';
-import { slideSize, boxOf, htmlToText, ANIM_KINDS, motionPath } from '../model/deck.js';
+import { slideSize, boxOf, htmlToText, ANIM_KINDS, motionPath, FIELD, fieldText } from '../model/deck.js';
 import { themeById, resolveColor, backgroundBaseColor } from '../model/themes.js';
 import { textStyle, themeDecor } from '../render/render.js';
 import { safeFileName } from '../ui/dom.js';
@@ -56,6 +56,80 @@ const geom = (b) => ({ x: b.x / IN, y: b.y / IN, w: Math.max(b.w, 0.5) / IN, h: 
 
 // ------------------------------------------------------------------ text
 
+/** The value of `prop` in an inline style, as written (parentheses and all), or null. */
+function styleValue(css, prop) {
+  const m = new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*`, 'i').exec(css);
+  if (!m) return null;
+  let depth = 0;
+  let i = m.index + m[0].length;
+  const from = i;
+  for (; i < css.length; i++) {
+    if (css[i] === '(') depth++;
+    else if (css[i] === ')') depth--;
+    else if (css[i] === ';' && depth <= 0) break;
+  }
+  return css.slice(from, i).trim() || null;
+}
+
+/** Split a CSS list on its top-level commas. */
+const cssList = (v) => v.split(/,(?![^(]*\))/).map((x) => x.trim()).filter(Boolean);
+
+/** A CSS colour and its opacity: { color (hex), alpha }. */
+function cssColor(v) {
+  const hex = toHex(v);
+  if (!hex) return null;
+  const a = /rgba\([^)]*[,/]\s*([\d.]+)\s*\)/i.exec(v);
+  return { color: hex, alpha: a ? Math.max(0, Math.min(1, +a[1])) : 1 };
+}
+
+const COLOR_RE = /#[0-9a-f]{3,8}\b|rgba?\([^)]*\)|\b[a-z]+\b/i;
+
+/**
+ * Text effects in a run's inline style (see model/deck.js): an outline
+ * { width, color, alpha }, shadows [{ x, y, blur, color, alpha }] and a gradient.
+ */
+function textEffectsOf(css, s) {
+  const stroke = styleValue(css, '-webkit-text-stroke');
+  const strokeWidth = styleValue(css, '-webkit-text-stroke-width');
+  if (stroke || strokeWidth) {
+    const width = parseFloat(stroke || strokeWidth) || 0;
+    const color = cssColor((stroke || '').replace(/^[\d.]+px\s*/, '') || styleValue(css, '-webkit-text-stroke-color') || '');
+    s.outline = width > 0 && color ? { width, ...color } : null;
+  }
+  const shadow = styleValue(css, 'text-shadow');
+  if (shadow) {
+    s.shadows = shadow === 'none' ? null : cssList(shadow).map((one) => {
+      const color = cssColor(COLOR_RE.exec(one.replace(/-?[\d.]+px/g, ''))?.[0] || '') || { color: '000000', alpha: 1 };
+      const [x = 0, y = 0, blur = 0] = (one.match(/-?[\d.]+px/g) || []).map(parseFloat);
+      return { x, y, blur, ...color };
+    });
+  }
+  const image = styleValue(css, 'background-image');
+  if (image) s.gradient = /gradient\(/.test(image) && /transparent/.test(styleValue(css, '-webkit-text-fill-color') || '') ? gradientOfCss(image) : null;
+  if (/^(transparent|rgba\([^)]*,\s*0\))$/i.test(styleValue(css, 'color') || '')) s.noFill = true;
+}
+
+/** A CSS linear or radial gradient as a LibreSlides one (see model/deck.js). */
+function gradientOfCss(image) {
+  const m = /^(linear|radial)-gradient\((.*)\)$/i.exec(image.trim());
+  if (!m) return null;
+  const parts = cssList(m[2]);
+  const g = { type: m[1].toLowerCase(), stops: [] };
+  if (g.type === 'linear') g.angle = /deg$/.test(parts[0]) ? (parts.shift(), parseFloat(m[2])) : 180;
+  else {
+    const at = /at\s+([\d.]+)%\s+([\d.]+)%/.exec(parts[0]);
+    if (at || /circle|ellipse/.test(parts[0])) parts.shift();
+    Object.assign(g, { cx: at ? +at[1] / 100 : 0.5, cy: at ? +at[2] / 100 : 0.5 });
+  }
+  parts.forEach((stop, i) => {
+    const color = cssColor(stop.replace(/\s+[\d.]+%$/, ''));
+    if (!color) return;
+    const pos = /([\d.]+)%$/.exec(stop);
+    g.stops.push({ pos: pos ? +pos[1] / 100 : i / Math.max(1, parts.length - 1), color: `#${color.color}`, ...(color.alpha < 1 && { opacity: color.alpha }) });
+  });
+  return g.stops.length ? g : null;
+}
+
 /** Formatting of a run from its element and its ancestors up to the text root. */
 function runStyle(node, root, base, links) {
   const s = { ...base };
@@ -70,6 +144,7 @@ function runStyle(node, root, base, links) {
     if (tag === 'SUB') s.subscript = true;
     if (tag === 'SUP') s.superscript = true;
     if (tag === 'A' && el.getAttribute('href')) s.hyperlink = links ? links(el.getAttribute('href')) : { url: el.getAttribute('href') };
+    if (FIELD.test(el.dataset?.field || '')) s.field = el.dataset.field;
     if (tag === 'FONT') {
       if (el.getAttribute('color')) s.color = toHex(el.getAttribute('color')) || s.color;
       if (el.getAttribute('face')) s.fontFace = el.getAttribute('face');
@@ -81,19 +156,26 @@ function runStyle(node, root, base, links) {
     const deco = `${st.textDecoration || ''} ${st.textDecorationLine || ''}`;
     if (/underline/.test(deco)) s.underline = true;
     if (/line-through/.test(deco)) s.strike = true;
-    if (st.color) s.color = toHex(st.color) || s.color;
+    if (st.color && toHex(st.color)) Object.assign(s, { color: toHex(st.color), noFill: false });
     if (st.backgroundColor) s.highlight = toHex(st.backgroundColor) || s.highlight;
     if (st.fontSize && /px|pt$/.test(st.fontSize)) s.fontSize = parseFloat(st.fontSize);
     if (st.fontFamily) s.fontFace = st.fontFamily.split(',')[0].replace(/["']/g, '').trim();
     if (st.letterSpacing && parseFloat(st.letterSpacing)) s.charSpacing = parseFloat(st.letterSpacing);
     if (st.textTransform === 'uppercase') s.caps = 'all';
     if (/small-caps/.test(st.fontVariant || '')) s.caps = 'small';
+    textEffectsOf(el.getAttribute('style') || '', s);
   }
   return s;
 }
 
-// pptxgenjs can't write capitals: runs carry these languages, swapped for cap="…" afterwards (see fixRuns).
-const CAPS_LANG = { all: 'x-ls-caps-all', small: 'x-ls-caps-small' };
+/**
+ * What pptxgenjs can't write — capitals, fields, outlines, gradient text,
+ * shadows and glows — travels in the run's language as "x-ls-" and hex-coded
+ * JSON, and is written into the XML afterwards (see fixRuns).
+ */
+const EXTRAS_LANG = 'x-ls-';
+const hexOf = (str) => [...new TextEncoder().encode(str)].map((b) => b.toString(16).padStart(2, '0')).join('');
+const unhex = (hex) => new TextDecoder().decode(new Uint8Array(hex.match(/../g).map((h) => parseInt(h, 16))));
 
 function toRunOptions(s) {
   const o = {};
@@ -109,8 +191,55 @@ function toRunOptions(s) {
   if (s.superscript) o.superscript = true;
   if (s.hyperlink) o.hyperlink = s.hyperlink;
   if (s.charSpacing) o.charSpacing = s.charSpacing;
-  if (s.caps) o.lang = CAPS_LANG[s.caps];
+  const extras = {};
+  for (const key of ['caps', 'field', 'outline', 'gradient', 'shadows']) if (s[key]) extras[key] = s[key];
+  if (s.noFill && !s.gradient) extras.noFill = true;
+  if (Object.keys(extras).length) o.lang = EXTRAS_LANG + hexOf(JSON.stringify(extras));
   return o;
+}
+
+const emu = (pt) => Math.round(pt * 12700);
+const clrXml = ({ color, alpha }) => (alpha < 1 ? `<a:srgbClr val="${color}"><a:alpha val="${Math.round(alpha * 100000)}"/></a:srgbClr>` : `<a:srgbClr val="${color}"/>`);
+
+/** A run's a:rPr with its extras (see EXTRAS_LANG) written in. */
+function runWithExtras(hex, attrs, body) {
+  let extras;
+  try {
+    extras = JSON.parse(unhex(hex));
+  } catch {
+    return `<a:rPr lang="en-US"${attrs}>${body}</a:rPr>`;
+  }
+  if (extras.caps === 'all' || extras.caps === 'small') attrs += ` cap="${extras.caps}"`;
+  if (extras.field) attrs += ` x-ls-fld="${extras.field}"`;
+  const [, solid = '', rest] = /^(<a:solidFill>[\s\S]*?<\/a:solidFill>)?([\s\S]*)$/.exec(body);
+  const o = extras.outline;
+  const ln = o ? `<a:ln w="${emu(o.width)}"><a:solidFill>${clrXml(o)}</a:solidFill></a:ln>` : '';
+  const fill = extras.gradient ? gradFillXml(extras.gradient) : extras.noFill ? '<a:noFill/>' : solid;
+  // Shadows with no offset are glows.
+  const glow = extras.shadows?.find((sh) => !sh.x && !sh.y);
+  const shadow = extras.shadows?.find((sh) => sh.x || sh.y);
+  let effects = '';
+  if (glow) effects += `<a:glow rad="${emu(glow.blur)}">${clrXml(glow)}</a:glow>`;
+  if (shadow) {
+    const dist = Math.hypot(shadow.x, shadow.y);
+    const dir = Math.round(((((Math.atan2(shadow.y, shadow.x) * 180) / Math.PI) % 360) + 360) % 360 * 60000);
+    effects += `<a:outerShdw blurRad="${emu(shadow.blur)}" dist="${emu(dist)}" dir="${dir}" algn="ctr" rotWithShape="0">${clrXml(shadow)}</a:outerShdw>`;
+  }
+  return `<a:rPr lang="en-US"${attrs}>${ln}${fill}${effects ? `<a:effectLst>${effects}</a:effectLst>` : ''}${rest}</a:rPr>`;
+}
+
+let fieldCount = 0;
+
+/** Text with its fields showing slide number `n` and today's date, as PowerPoint shows them until it updates them. */
+const withFields = (html, n) => (html || '').replace(/(<span data-field="(\w+)">)[^<]*(<\/span>)/g, (m, open, type, close) => (FIELD.test(type) ? open + fieldText(type, n) + close : m));
+
+/** Write run extras (see EXTRAS_LANG) into a slide's XML, and make field runs fields. */
+function fixRuns(xml) {
+  xml = xml.replace(/<a:rPr lang="x-ls-([0-9a-f]+)"(?: altLang="en-US")?([^>]*)>([\s\S]*?)<\/a:rPr>/g, (m, hex, attrs, body) => runWithExtras(hex, attrs, body));
+  return xml.replace(/<a:r>(<a:rPr\b[^>]*?) x-ls-fld="(\w+)"([\s\S]*?)<\/a:r>/g, (m, head, type, tail) => {
+    const id = `{5A3B1C2D-0000-4000-8000-${(++fieldCount).toString(16).toUpperCase().padStart(12, '0')}}`;
+    return `<a:fld id="${id}" type="${type}">${head}${tail}</a:fld>`;
+  });
 }
 
 // CSS numbering styles as PowerPoint's.
@@ -342,7 +471,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
         options.color = 'FFFFFF';
         options.bold = true;
       } else if (el.banded && r % 2 === 0) options.fill = { color: 'EFEFEF' };
-      const runs = htmlToRuns(cell.text, {}, marks.links);
+      const runs = htmlToRuns(withFields(cell.text, marks.number), {}, marks.links);
       return { text: runs.length ? runs : '', options };
     }));
     const border = lineOpts(el.stroke, theme);
@@ -433,7 +562,9 @@ async function addElement(pptx, s, el, deck, theme, marks) {
   if (box.wrap === false) opts.wrap = false;
   if (box.vertical) opts.vert = box.vertical;
   if (box.columns > 1) marks.columns.set(mark(), { n: box.columns, gap: box.columnGap });
-  s.addText(hasText ? htmlToRuns(el.text, {}, marks.links) : [{ text: '', options: {} }], opts);
+  // Text with no fill of its own (hollow, outlined WordArt) has a transparent colour.
+  const runBase = resolveColor(t.color, theme) === 'transparent' ? { noFill: true } : {};
+  s.addText(hasText ? htmlToRuns(withFields(el.text, marks.number), runBase, marks.links) : [{ text: '', options: {} }], opts);
   addExtras();
 }
 
@@ -469,8 +600,7 @@ const TRANSITION_XML = {
  * otherwise). Keep the first <a:pPr> of each paragraph and drop the rest.
  */
 export function fixParagraphs(slideXml) {
-  // Capitals (see CAPS_LANG).
-  slideXml = slideXml.replace(/lang="x-ls-caps-(all|small)"(?: altLang="en-US")?/g, 'lang="en-US" cap="$1"');
+  slideXml = fixRuns(slideXml);
   return slideXml.replace(/<a:p>([\s\S]*?)<\/a:p>/g, (para, inner) => {
     let first = true;
     const body = inner.replace(/<a:pPr\b[^>]*\/>|<a:pPr\b[^>]*>[\s\S]*?<\/a:pPr>/g, (pPr, at) => {
@@ -726,7 +856,7 @@ export async function buildPptx(deck) {
       const n = { next: index + 2, prev: index, first: 1, last: deck.slides.length }[to] ?? deck.slides.findIndex((x) => x.id === to) + 1;
       return to && n >= 1 && n <= deck.slides.length ? { slide: n } : null;
     };
-    const marks = { links, count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), pictureLooks: new Map(), placeholders: new Map(), timeline: [], groups: [], background: null };
+    const marks = { number: allMarks.length + 1, links, count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), pictureLooks: new Map(), placeholders: new Map(), timeline: [], groups: [], background: null };
     marks.groupSizes = slide.elements.reduce((m, e) => (e.groupId ? m.set(e.groupId, (m.get(e.groupId) || 0) + 1) : m), new Map());
     allMarks.push(marks);
     const bg = slide.background || theme.background;
