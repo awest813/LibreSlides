@@ -6,7 +6,7 @@ vi.mock('../../src/storage/db.js', () => ({
   onStorageChange: () => () => {},
 }));
 
-import { EditorScreen } from '../../src/editor/editor-screen.js';
+import { EditorScreen, stepOrder } from '../../src/editor/editor-screen.js';
 import { newDeck, newSlide, newShape, newTextBox, newTable } from '../../src/model/deck.js';
 
 // jsdom lacks these.
@@ -583,5 +583,22 @@ describe('editor: sections', () => {
     expect(ed.filmstrip.list.querySelectorAll('.film-section-toggle')[1].getAttribute('aria-expanded')).toBe('false');
     ed.goToSlide(1);
     expect(item().classList.contains('in-collapsed')).toBe(false);
+  });
+});
+
+describe('editor: stacking order', () => {
+  const ids = (list) => list.map((e) => e.id).join(' ');
+  const els = (spec) => spec.split(' ').map((s) => ({ id: s, ...(s.length > 1 && { groupId: s[0] }) }));
+
+  it('steps a group over a whole group, never splitting either', () => {
+    const list = els('A1 A2 B1 B2 c');
+    expect(ids(stepOrder(list, new Set(['A1', 'A2']), 1))).toBe('B1 B2 A1 A2 c');
+    expect(ids(stepOrder(list, new Set(['c']), -1))).toBe('A1 A2 c B1 B2');
+    expect(ids(stepOrder(list, new Set(['c']), 1))).toBe('A1 A2 B1 B2 c');
+  });
+
+  it('moves an object chosen inside a group within it', () => {
+    expect(ids(stepOrder(els('A1 A2 A3 b'), new Set(['A1']), 1))).toBe('A2 A1 A3 b');
+    expect(ids(stepOrder(els('A1 A2 A3 b'), new Set(['A3']), 1))).toBe('A1 A2 A3 b');
   });
 });

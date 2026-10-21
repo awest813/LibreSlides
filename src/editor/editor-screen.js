@@ -60,6 +60,40 @@ function toggleListHtml(html, kind) {
     : `<${kind}>${lines.map((l) => `<li${attr(l.style)}>${l.html}</li>`).join('')}</${kind}>`;
 }
 
+/**
+ * Move the selected objects one place up (step 1) or down (-1) the stacking
+ * order. Groups move and are stepped over as one, so none is ever split; a
+ * selection inside one group moves within it.
+ */
+export function stepOrder(list, ids, step) {
+  const swapIn = (arr) => {
+    const out = [...arr];
+    const indices = out.map((u, i) => (u.selected ? i : -1)).filter((i) => i >= 0);
+    if (step > 0) indices.reverse();
+    for (const i of indices) {
+      const j = i + step;
+      if (j < 0 || j >= out.length || out[j].selected) continue;
+      [out[i], out[j]] = [out[j], out[i]];
+    }
+    return out;
+  };
+  // Runs of one group are units; ungrouped objects are units of their own.
+  const units = [];
+  for (const el of list) {
+    const last = units.at(-1);
+    if (el.groupId && last?.groupId === el.groupId) last.els.push(el);
+    else units.push({ groupId: el.groupId, els: [el] });
+  }
+  for (const u of units) u.selected = u.els.some((e) => ids.has(e.id));
+  const picked = units.filter((u) => u.selected);
+  if (picked.length === 1 && picked[0].groupId && !picked[0].els.every((e) => ids.has(e.id))) {
+    const inner = swapIn(picked[0].els.map((el) => ({ el, selected: ids.has(el.id) })));
+    picked[0].els = inner.map((u) => u.el);
+    return units.flatMap((u) => u.els);
+  }
+  return swapIn(units).flatMap((u) => u.els);
+}
+
 export class EditorScreen {
   constructor(root, { deckId, onHome, onOpenFile, onNewDeck, onCopyDeck, onPresent }) {
     this.root = root;
@@ -982,18 +1016,7 @@ export class EditorScreen {
       const rest = list.filter((e) => !ids.has(e.id));
       if (action === 'front') this.slide.elements = [...rest, ...sel];
       else if (action === 'back') this.slide.elements = [...sel, ...rest];
-      else {
-        const arr = [...list];
-        const step = action === 'forward' ? 1 : -1;
-        const indices = arr.map((e, i) => (ids.has(e.id) ? i : -1)).filter((i) => i >= 0);
-        if (step > 0) indices.reverse();
-        for (const i of indices) {
-          const j = i + step;
-          if (j < 0 || j >= arr.length || ids.has(arr[j].id)) continue;
-          [arr[i], arr[j]] = [arr[j], arr[i]];
-        }
-        this.slide.elements = arr;
-      }
+      else this.slide.elements = stepOrder(list, ids, action === 'forward' ? 1 : -1);
     });
   }
 
