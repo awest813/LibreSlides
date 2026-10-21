@@ -21,8 +21,36 @@ const PRESETS = {
 
 // Emphasis effects as PowerPoint's (presetID).
 const EMPHASIS_PRESETS = { pulse: 26, spin: 8, teeter: 32, flash: 35 };
-const CLASS = { anim: 'entr', emphasis: 'emph', exit: 'exit' };
-const known = (a) => (a.kind === 'emphasis' ? EMPHASIS_PRESETS[a.effect] : PRESETS[a.effect]);
+const CLASS = { anim: 'entr', emphasis: 'emph', exit: 'exit', motion: 'path' };
+const known = (a) => (a.kind === 'motion' ? a.path?.length > 1 : a.kind === 'emphasis' ? EMPHASIS_PRESETS[a.effect] : PRESETS[a.effect]);
+
+/** A motion path (points in fractions of the slide) as PowerPoint writes one: "M 0 0 L 0.25 0 E". */
+const pathString = (pts) => `${pts.map(([x, y], i) => `${i ? 'L' : 'M'} ${+x.toFixed(5)} ${+y.toFixed(5)}`).join(' ')} E`;
+
+/** PowerPoint's motion path string as points (curves followed at a few points along them). */
+export function parsePath(d) {
+  const tokens = String(d || '').match(/[A-Za-z]|-?\d*\.?\d+(?:e-?\d+)?/g) || [];
+  const pts = [];
+  let i = 0;
+  const num = () => +tokens[i++];
+  let cur = [0, 0];
+  while (i < tokens.length && pts.length < 500) {
+    const op = tokens[i++];
+    if (op === 'M' || op === 'L') {
+      cur = [num(), num()];
+      pts.push(cur);
+    } else if (op === 'C') {
+      const [c1, c2, end] = [[num(), num()], [num(), num()], [num(), num()]];
+      for (let k = 1; k <= 8; k++) {
+        const t = k / 8;
+        const at = (a, b, c, e) => (1 - t) ** 3 * a + 3 * (1 - t) ** 2 * t * b + 3 * (1 - t) * t ** 2 * c + t ** 3 * e;
+        pts.push([at(cur[0], c1[0], c2[0], end[0]), at(cur[1], c1[1], c2[1], end[1])]);
+      }
+      cur = end;
+    } else if (op === 'Z' && pts.length) pts.push(pts[0]);
+  }
+  return pts.filter((p) => p.every(Number.isFinite)).map(([x, y]) => [Math.round(x * 10000) / 10000, Math.round(y * 10000) / 10000]);
+}
 
 // Where a fly-in starts, in PowerPoint's slide-relative units.
 const FLY_FROM = {
@@ -55,6 +83,10 @@ export function timingXml({ anims = [], media = [] }) {
   const effectBody = (a) => {
     const ms = Math.max(1, Math.round((a.duration ?? 0.5) * 1000));
     const s = a.spid;
+    if (a.kind === 'motion') {
+      return `<p:animMotion origin="layout" path="${pathString(a.path)}" pathEditMode="relative" rAng="0">${behaviour(s, ms)}`
+        + '<p:attrNameLst><p:attrName>ppt_x</p:attrName><p:attrName>ppt_y</p:attrName></p:attrNameLst></p:cBhvr><p:rCtr x="0" y="0"/></p:animMotion>';
+    }
     if (a.kind === 'emphasis') {
       const back = (tag, inner) => `<p:${tag}><p:cBhvr><p:cTn id="${id()}" dur="${Math.round(ms / 2)}" autoRev="1" fill="hold"/>${target(s)}</p:cBhvr>${inner}</p:${tag}>`;
       if (a.effect === 'pulse') return back('animScale', '<p:by x="112000" y="112000"/>');
@@ -86,7 +118,7 @@ export function timingXml({ anims = [], media = [] }) {
         + `<p:cTn id="${id()}" dur="${a.duration ? Math.round(a.duration * 1000) : 'indefinite'}" fill="hold"/>${target(a.spid)}`
         + '</p:cBhvr></p:cmd></p:childTnLst></p:cTn></p:par>';
     }
-    const [presetId, sub] = a.kind === 'emphasis' ? [EMPHASIS_PRESETS[a.effect], 0] : [PRESETS[a.effect].id, PRESETS[a.effect].sub];
+    const [presetId, sub] = a.kind === 'motion' ? [0, 0] : a.kind === 'emphasis' ? [EMPHASIS_PRESETS[a.effect], 0] : [PRESETS[a.effect].id, PRESETS[a.effect].sub];
     return `<p:par><p:cTn id="${id()}" presetID="${presetId}" presetClass="${CLASS[a.kind || 'anim']}" presetSubtype="${sub}" fill="hold" grpId="0" nodeType="${nodeType}">`
       + `<p:stCondLst><p:cond delay="${delayMs}"/></p:stCondLst><p:childTnLst>${effectBody(a)}</p:childTnLst></p:cTn></p:par>`;
   };
@@ -158,7 +190,7 @@ export function readAnimations(doc) {
   const out = [];
   const seen = new Set();
   for (const effect of desc(main, 'cTn')) {
-    const kind = { entr: 'anim', emph: 'emphasis', exit: 'exit' }[attr(effect, 'presetClass')];
+    const kind = { entr: 'anim', emph: 'emphasis', exit: 'exit', path: 'motion' }[attr(effect, 'presetClass')];
     if (!kind) continue;
     const spid = attr(desc(effect, 'spTgt')[0], 'spid');
     // A shape built paragraph by paragraph has an effect per paragraph: the first stands for it.
@@ -172,8 +204,10 @@ export function readAnimations(doc) {
     // A behaviour that plays back to where it began (autoRev) takes twice its length.
     const durations = desc(effect, 'cTn').map((c) => +attr(c, 'dur') * (attr(c, 'autoRev') === '1' ? 2 : 1)).filter((d) => d > 1);
     const type = attr(effect, 'nodeType');
+    const path = kind === 'motion' ? parsePath(attr(desc(effect, 'animMotion')[0], 'path')) : null;
+    if (kind === 'motion' && path.length < 2) continue;
     out.push({
-      spid, kind, effect: name,
+      spid, kind, effect: kind === 'motion' ? 'custom' : name, ...(path && { path }),
       duration: Math.min(5, Math.max(0.1, (durations.length ? Math.max(...durations) : 500) / 1000)),
       start: type === 'withEffect' ? 'with' : type === 'afterEffect' ? 'after' : 'click',
       order: out.length + 1,

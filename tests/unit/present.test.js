@@ -124,3 +124,18 @@ describe('emphasis and exit effects', () => {
     expect(visible(3)).toEqual([true, false]);
   });
 });
+
+describe('motion paths', () => {
+  it('leaves an object where its path ended, once that step has played', () => {
+    const d = newDeck();
+    const s = newSlide('blank', d);
+    const a = newShape('rect', 0, 0);
+    a.motion = { effect: 'right', order: 1, duration: 1 };
+    s.elements.push(a);
+    d.slides = [s];
+    const p = new Player(d, document.createElement('div'));
+    const at = (step) => p.makeLayer(0, step).querySelector(`[data-id="${a.id}"]`).style.translate;
+    expect(at(0)).toBe('');
+    expect(at(1)).toBe('240px 0px'); // a quarter of the 960 pt slide
+  });
+});

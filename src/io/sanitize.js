@@ -2,7 +2,7 @@ import DOMPurify from 'dompurify';
 import { PATH_ARGS } from '../model/shapes.js';
 import { normalizeTable } from '../model/tables.js';
 import { isMediaData } from './media-files.js';
-import { CHART_KINDS, uid, ANIM_KINDS, ANIMATIONS, EMPHASES, EXITS } from '../model/deck.js';
+import { CHART_KINDS, uid, ANIM_KINDS, ANIMATIONS, EMPHASES, EXITS, MOTIONS } from '../model/deck.js';
 import { FONT_FACES } from '../model/fonts.js';
 
 /**
@@ -137,7 +137,7 @@ export function sanitizeElement(el) {
   for (const kind of ANIM_KINDS) {
     const a = el[kind];
     if (a == null) continue;
-    const effects = { anim: ANIMATIONS, emphasis: EMPHASES, exit: EXITS }[kind];
+    const effects = { anim: ANIMATIONS, emphasis: EMPHASES, exit: EXITS, motion: MOTIONS }[kind];
     if (!isObject(a) || !effects.some((x) => x.id === a.effect) || a.effect === 'none') {
       delete el[kind];
       continue;
@@ -148,6 +148,12 @@ export function sanitizeElement(el) {
       start: ['click', 'with', 'after'].includes(a.start) ? a.start : 'click',
       order: Number.isFinite(a.order) ? a.order : 0,
     };
+    if (kind === 'motion' && a.effect === 'custom') {
+      // A path of up to 500 points, each within a few slides of the start.
+      const path = (Array.isArray(a.path) ? a.path : []).filter((p) => Array.isArray(p) && p.length === 2 && p.every((v) => Number.isFinite(v) && Math.abs(v) <= 10)).slice(0, 500);
+      if (path.length < 2) delete el[kind];
+      else el[kind].path = path.map(([x, y]) => [x, y]);
+    }
   }
   for (const end of ['arrowStart', 'arrowEnd']) {
     if (el[end] != null && el[end] !== true && el[end] !== false && !['arrow', 'stealth', 'diamond', 'oval', 'triangle'].includes(el[end])) el[end] = !!el[end];

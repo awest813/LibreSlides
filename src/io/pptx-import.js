@@ -903,7 +903,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
   let order = 0;
   for (const a of readAnimations(doc)) {
     (byShapeId.get(a.spid) || []).forEach((el, k) => {
-      el[a.kind] = { effect: a.effect, duration: Math.round(a.duration * 100) / 100, start: k ? 'with' : a.start, order: ++order };
+      el[a.kind] = { effect: a.effect, duration: Math.round(a.duration * 100) / 100, start: k ? 'with' : a.start, order: ++order, ...(a.path && { path: a.path }) };
     });
   }
 

@@ -1300,7 +1300,7 @@ export class EditorScreen {
         // Duration or start alone doesn't animate something that isn't animated.
         if (!el[kind] && !props.effect) continue;
         const fresh = !el[kind];
-        el[kind] = { effect: kind === 'emphasis' ? 'pulse' : 'fade', duration: 0.5, start: 'click', ...(el[kind] || {}), ...props };
+        el[kind] = { effect: { emphasis: 'pulse', motion: 'right' }[kind] || 'fade', duration: kind === 'motion' ? 1.2 : 0.5, start: 'click', ...(el[kind] || {}), ...props };
         if (fresh) el[kind].order = order++;
       }
     }, { render: true });

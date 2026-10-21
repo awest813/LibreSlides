@@ -2,7 +2,7 @@ import { h } from '../ui/dom.js';
 import { icon } from '../ui/icons.js';
 import { openColorPicker } from '../ui/color-picker.js';
 import { THEMES, resolveColor, backgroundBaseColor } from '../model/themes.js';
-import { SIZES, slideSize, LAYOUTS, TRANSITIONS, ANIMATIONS, EMPHASES, EXITS, slideAnimations, CHART_KINDS, newSlide, fillPlaceholders, canHoldText, slideText } from '../model/deck.js';
+import { SIZES, slideSize, LAYOUTS, TRANSITIONS, ANIMATIONS, EMPHASES, EXITS, MOTIONS, slideAnimations, CHART_KINDS, newSlide, fillPlaceholders, canHoldText, slideText } from '../model/deck.js';
 import { SHAPES } from '../model/shapes.js';
 import { renderThumb, textStyle } from '../render/render.js';
 import { seriesColor, pointColor } from '../render/chart.js';
@@ -253,7 +253,8 @@ export class SidePanel {
     const out = [];
     if (els.length) {
       // One section each for how it comes in, draws attention and goes out.
-      for (const [kind, title, effects] of [['anim', 'Entrance', ANIMATIONS], ['emphasis', 'Emphasis', EMPHASES], ['exit', 'Exit', EXITS]]) {
+      const motions = MOTIONS.filter((m) => m.id !== 'custom' || els[0].motion?.effect === 'custom');
+      for (const [kind, title, effects] of [['anim', 'Entrance', ANIMATIONS], ['emphasis', 'Emphasis', EMPHASES], ['exit', 'Exit', EXITS], ['motion', 'Motion path', motions]]) {
         const a = els[0][kind] || { effect: 'none', duration: 0.5 };
         const on = a.effect && a.effect !== 'none';
         out.push(section(els.length > 1 ? `${title} (${els.length} objects)` : title,
@@ -266,7 +267,7 @@ export class SidePanel {
     }
     const animated = slideAnimations(app.slide);
     const list = h('ol', { class: 'anim-list' });
-    const effectName = { anim: ANIMATIONS, emphasis: EMPHASES, exit: EXITS };
+    const effectName = { anim: ANIMATIONS, emphasis: EMPHASES, exit: EXITS, motion: MOTIONS };
     animated.forEach(({ el, kind, anim }, i) => {
       const name = (canHoldText(el) && slideText({ elements: [el] })) || ({ image: 'Picture', line: 'Line', table: 'Table', shape: 'Shape', text: 'Text box', chart: 'Chart', media: el.kind === 'audio' ? 'Sound' : 'Video' }[el.type]) || 'Object';
       const effect = effectName[kind].find((x) => x.id === anim.effect)?.name;

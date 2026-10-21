@@ -1,6 +1,6 @@
 import PptxGenJS from 'pptxgenjs';
 import JSZip from 'jszip';
-import { slideSize, boxOf, htmlToText, ANIM_KINDS } from '../model/deck.js';
+import { slideSize, boxOf, htmlToText, ANIM_KINDS, motionPath } from '../model/deck.js';
 import { themeById, resolveColor, backgroundBaseColor } from '../model/themes.js';
 import { textStyle, themeDecor } from '../render/render.js';
 import { safeFileName } from '../ui/dom.js';
@@ -667,7 +667,7 @@ function timelineOf(xml, timeline) {
     for (const kind of ANIM_KINDS) {
       const a = el[kind];
       if (!a?.effect || a.effect === 'none') continue;
-      anims.push({ spid, kind, order: a.order || 0, effect: a.effect, duration: a.duration ?? 0.5, start: a.start || 'click', hasText: !!htmlToText(el.text || '') });
+      anims.push({ spid, kind, order: a.order || 0, effect: a.effect, duration: a.duration ?? 0.5, start: a.start || 'click', hasText: !!htmlToText(el.text || ''), ...(kind === 'motion' && { path: motionPath(a) }) });
     }
   }
   anims.sort((a, b) => a.order - b.order);

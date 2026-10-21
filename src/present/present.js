@@ -1,7 +1,7 @@
 import { h, toast } from '../ui/dom.js';
 import { icon } from '../ui/icons.js';
 import { renderSlide, renderThumb } from '../render/render.js';
-import { slideSize, slideTitle, slideAnimations } from '../model/deck.js';
+import { slideSize, slideTitle, slideAnimations, motionPath } from '../model/deck.js';
 
 /**
  * Slideshow: plays a deck full screen with transitions and click-by-click
@@ -32,7 +32,7 @@ export function buildSteps(slide) {
       lastEnd = 0;
     }
     const delay = start === 'after' ? lastEnd : start === 'with' ? lastStart : 0;
-    cur.push({ id: el.id, kind, effect: anim.effect, duration: dur, delay });
+    cur.push({ id: el.id, kind, effect: anim.effect, duration: dur, delay, ...(kind === 'motion' && { path: motionPath(anim) }) });
     lastStart = delay;
     lastEnd = delay + dur;
   }
@@ -68,6 +68,9 @@ export function firstPos(deck, from = 0) {
 }
 
 // ------------------------------------------------------------------ animation effects
+
+/** A point of a motion path (fractions of the slide) as a CSS translate. */
+const translateAt = ([x, y] = [0, 0], w, h) => `${x * w}px ${y * h}px`;
 
 /** Keyframes for an emphasis: something already on the slide, drawing the eye and settling back. */
 function emphasis(effect, opacity = 1) {
@@ -167,12 +170,19 @@ export class Player {
     node.style.transformOrigin = '0 0';
     node.style.transform = `scale(${this.scale || 1})`;
     const steps = buildSteps(slide);
-    // Objects that come in on later clicks start hidden, and those that went out on earlier ones are gone.
+    // Objects that come in on later clicks start hidden, those that went out on earlier ones are gone,
+    // and those that moved along a path on earlier ones are where it ended.
+    const { w, h: H } = slideSize(this.deck);
     for (const [k, items] of steps.entries()) {
       for (const it of items) {
-        if (it.kind === 'emphasis' || (it.kind === 'exit') === (k >= step)) continue;
         const el = node.querySelector(`:scope > .el[data-id="${CSS.escape(it.id)}"]`);
-        if (el) el.style.visibility = 'hidden';
+        if (!el) continue;
+        if (it.kind === 'motion') {
+          if (k < step) el.style.translate = translateAt(it.path.at(-1), w, H);
+          continue;
+        }
+        if (it.kind === 'emphasis' || (it.kind === 'exit') === (k >= step)) continue;
+        el.style.visibility = 'hidden';
       }
     }
     return h('div', { class: 'show-layer' }, node);
@@ -238,6 +248,13 @@ export class Player {
       if (!el) continue;
       const delay = (it.delay + extraDelay) * 1000;
       const opacity = +(el.style.opacity || 1);
+      if (it.kind === 'motion') {
+        // Along its path, and staying where it ends.
+        const frames = it.path.map((pt) => ({ translate: translateAt(pt, w, H) }));
+        el.animate(frames, { duration: it.duration * 1000, delay, easing: 'ease-in-out', fill: 'forwards' })
+          .finished.then(() => { el.style.translate = frames.at(-1).translate; }).catch(() => {});
+        continue;
+      }
       if (it.kind === 'emphasis') {
         const frames = emphasis(it.effect, opacity);
         if (frames) el.animate(frames, { duration: it.duration * 1000, delay, easing: 'ease-in-out', composite: frames[0].transform ? 'add' : 'replace' });

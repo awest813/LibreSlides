@@ -134,12 +134,31 @@ export const EXITS = [
   { id: 'spin', name: 'Spin out' },
 ];
 
+// Motion paths: where an object travels, as points relative to where it starts,
+// in fractions of the slide's width and height (as PowerPoint keeps them).
+const circle = Array.from({ length: 25 }, (_, i) => {
+  const a = (i / 24) * 2 * Math.PI;
+  return [Math.round(0.1 * Math.sin(a) * 1000) / 1000, Math.round(0.15 * (1 - Math.cos(a)) * 1000) / 1000];
+});
+export const MOTIONS = [
+  { id: 'none', name: 'None' },
+  { id: 'right', name: 'Move right', path: [[0, 0], [0.25, 0]] },
+  { id: 'left', name: 'Move left', path: [[0, 0], [-0.25, 0]] },
+  { id: 'up', name: 'Move up', path: [[0, 0], [0, -0.25]] },
+  { id: 'down', name: 'Move down', path: [[0, 0], [0, 0.25]] },
+  { id: 'circle', name: 'Circle', path: circle },
+  { id: 'custom', name: 'Custom path' },
+];
+
+/** A motion animation's path (see MOTIONS). */
+export const motionPath = (m) => (m?.effect === 'custom' ? m.path : MOTIONS.find((x) => x.id === m?.effect)?.path) || [[0, 0]];
+
 /**
- * An element's animations: `anim` (its entrance), `emphasis` and `exit`,
- * each { effect, duration, start: click|with|after, order }, sharing one
- * playing order on the slide.
+ * An element's animations: `anim` (its entrance), `emphasis`, `exit` and
+ * `motion` (a path, with `path` for a custom one), each { effect, duration,
+ * start: click|with|after, order }, sharing one playing order on the slide.
  */
-export const ANIM_KINDS = ['anim', 'emphasis', 'exit'];
+export const ANIM_KINDS = ['anim', 'emphasis', 'exit', 'motion'];
 
 /** Every animation on a slide, in playing order: { el, kind, anim }. */
 export function slideAnimations(slide) {

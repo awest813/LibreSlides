@@ -80,6 +80,20 @@ describe('animations in PowerPoint files', () => {
     ]);
   });
 
+  it('keeps motion paths', async () => {
+    const a = newShape('rect', 10, 10);
+    a.motion = { effect: 'right', duration: 1.2, start: 'click', order: 1 };
+    const b = newShape('ellipse', 300, 10);
+    b.motion = { effect: 'custom', path: [[0, 0], [0.1, 0.2], [-0.05, 0.3]], duration: 2, start: 'after', order: 2 };
+    const xml = await slideXml(deckWith(a, b));
+    expect(xml).toContain('presetID="0" presetClass="path"');
+    expect(xml).toContain('<p:animMotion origin="layout" path="M 0 0 L 0.25 0 E" pathEditMode="relative"');
+    const zip = await exported(deckWith(a, b));
+    const [ba, bb] = (await importPptx(await zip.generateAsync({ type: 'arraybuffer' }))).slides[0].elements;
+    expect(ba.motion).toEqual({ effect: 'custom', path: [[0, 0], [0.25, 0]], duration: 1.2, start: 'click', order: 1 });
+    expect(bb.motion.path).toEqual([[0, 0], [0.1, 0.2], [-0.05, 0.3]]);
+  });
+
   it('starts by itself when the first effect follows the slide', async () => {
     const a = newShape('rect', 10, 10);
     a.anim = { effect: 'fly-down', duration: 0.5, start: 'after', order: 1 };
