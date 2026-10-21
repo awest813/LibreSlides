@@ -15,7 +15,7 @@ import { writeComments } from './pptx-comments.js';
 import { writeSections } from './pptx-sections.js';
 import { exportsAsSmartArt, writeDiagram } from './pptx-diagram.js';
 import { xmlText, emu } from './ooxml.js';
-import { symbolBullet } from './pptx-text.js';
+import { symbolBullet, EAST_ASIAN, COMPLEX_SCRIPT } from './pptx-text.js';
 import { diagramAsShapes } from '../model/diagram-layout.js';
 
 /**
@@ -154,6 +154,8 @@ function gradientOfCss(image) {
   return g.stops.length ? g : null;
 }
 
+const GENERIC_FONTS = new Set(['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui', 'inherit', 'initial']);
+
 /** Formatting of a run from its element and its ancestors up to the text root. */
 function runStyle(node, root, base, links) {
   const s = { ...base };
@@ -184,7 +186,12 @@ function runStyle(node, root, base, links) {
     if (st.color && toHex(st.color)) Object.assign(s, { color: toHex(st.color), noFill: false });
     if (st.backgroundColor) s.highlight = toHex(st.backgroundColor) || s.highlight;
     if (st.fontSize && /px|pt$/.test(st.fontSize)) s.fontSize = parseFloat(st.fontSize);
-    if (st.fontFamily) s.fontFace = st.fontFamily.split(',')[0].replace(/["']/g, '').trim();
+    if (st.fontFamily) {
+      // The first font is the run's; ones after it are for its East Asian or complex-script text (see fontsOf in the reader).
+      const fonts = cssList(st.fontFamily).map((f) => f.replace(/["']/g, '').trim()).filter((f) => f && !GENERIC_FONTS.has(f));
+      s.fontFace = fonts[0] || s.fontFace;
+      s.moreFonts = fonts.slice(1);
+    }
     if (st.letterSpacing && parseFloat(st.letterSpacing)) s.charSpacing = parseFloat(st.letterSpacing);
     if (st.textTransform === 'uppercase') s.caps = 'all';
     if (/small-caps/.test(st.fontVariant || '')) s.caps = 'small';
@@ -195,15 +202,16 @@ function runStyle(node, root, base, links) {
 
 /**
  * What pptxgenjs can't write — capitals, fields, outlines, gradient text,
- * shadows and glows, and bold or italic turned off in a box that has them —
- * travels in the run's language as "x-ls-" and hex-coded JSON, and is
+ * shadows and glows, bold or italic turned off in a box that has them, and
+ * fonts of their own for East Asian and complex-script text — travels in
+ * the run's language as "x-ls-" and hex-coded JSON, and is
  * written into the XML afterwards (see fixRuns).
  */
 const EXTRAS_LANG = 'x-ls-';
 const hexOf = (str) => [...new TextEncoder().encode(str)].map((b) => b.toString(16).padStart(2, '0')).join('');
 const unhex = (hex) => new TextDecoder().decode(new Uint8Array(hex.match(/../g).map((h) => parseInt(h, 16))));
 
-function toRunOptions(s) {
+function toRunOptions(s, text = '') {
   // Formatting a run turns off is written as off, or it would take the box's
   // (pptxgenjs gives every run the box's options, and only writes b and i when they're on).
   const o = {};
@@ -222,6 +230,10 @@ function toRunOptions(s) {
   const extras = {};
   for (const key of ['caps', 'field', 'outline', 'gradient', 'shadows']) if (s[key]) extras[key] = s[key];
   if (s.noFill && !s.gradient) extras.noFill = true;
+  // Fonts for East Asian and complex-script text, in the order they follow the run's own.
+  const more = [...(s.moreFonts || [])];
+  if (more.length && EAST_ASIAN.test(text)) extras.ea = more.shift();
+  if (more.length && COMPLEX_SCRIPT.test(text)) extras.cs = more.shift();
   const off = [s.bold === false && 'b', s.italic === false && 'i'].filter(Boolean);
   if (off.length) extras.off = off;
   if (Object.keys(extras).length) o.lang = EXTRAS_LANG + hexOf(JSON.stringify(extras));
@@ -241,6 +253,7 @@ function runWithExtras(hex, attrs, body) {
   if (extras.caps === 'all' || extras.caps === 'small') attrs += ` cap="${extras.caps}"`;
   for (const name of extras.off || []) if (name === 'b' || name === 'i') attrs = `${attrs.replace(new RegExp(` ${name}="[^"]*"`), '')} ${name}="0"`;
   if (extras.field) attrs += ` x-ls-fld="${extras.field}"`;
+  for (const tag of ['ea', 'cs']) if (typeof extras[tag] === 'string') body = body.replace(new RegExp(`<a:${tag} typeface="[^"]*"`), `<a:${tag} typeface="${xmlText(extras[tag])}"`);
   const [, solid = '', rest] = /^(<a:solidFill>[\s\S]*?<\/a:solidFill>)?([\s\S]*)$/.exec(body);
   const o = extras.outline;
   const ln = o ? `<a:ln w="${emu(o.width)}"><a:solidFill>${clrXml(o)}</a:solidFill></a:ln>` : '';
@@ -367,7 +380,7 @@ export function htmlToRuns(html, base = {}, links = null, box = {}) {
         if (c.nodeType === 3) {
           const text = c.textContent.replace(/​/g, '');
           if (!text) continue;
-          const options = toRunOptions(runStyle(c, root, base, links));
+          const options = toRunOptions(runStyle(c, root, base, links), text);
           if (breaks && !runs.length) runs.push({ text: '', options }); // the paragraph starts with an empty line
           for (; breaks > 1; breaks--) runs.push({ text: '', options: { ...options, softBreakBefore: true } });
           runs.push({ text, options: breaks ? { ...options, softBreakBefore: true } : options });

@@ -13,7 +13,8 @@ import { readEmbeddedFonts } from './pptx-fonts.js';
 import { readComments } from './pptx-comments.js';
 import { readSections } from './pptx-sections.js';
 import { readDiagram } from './pptx-diagram.js';
-import { bulletGlyph } from './pptx-text.js';
+import { bulletGlyph, EAST_ASIAN, COMPLEX_SCRIPT } from './pptx-text.js';
+import { fontStack } from '../model/fonts.js';
 import { EMU_PER_PT, kids, kid, path, desc, attr, rid, SCHEME_ALIAS, colorOf, alphaOf, blend, Package, addMediaTo } from './ooxml.js';
 
 /**
@@ -53,6 +54,13 @@ function runProps(rPr, ctx) {
     if (face === '+mj-lt') p.font = ctx.fonts.major;
     else if (face === '+mn-lt') p.font = ctx.fonts.minor;
     else if (face && !face.startsWith('+')) p.font = face;
+  }
+  // The fonts for East Asian and for complex scripts (Arabic, Hebrew, Thai…): the theme's ("+mn-ea") are usually unset.
+  for (const [tag, key] of [['ea', 'fontEa'], ['cs', 'fontCs']]) {
+    const node = kid(rPr, tag);
+    if (!node) continue;
+    const face = attr(node, 'typeface');
+    p[key] = face && !face.startsWith('+') ? face : null;
   }
   // Raised or lowered (superscript, subscript), capitals and letter spacing.
   const baseline = +attr(rPr, 'baseline') || 0;
@@ -396,12 +404,23 @@ function warpOf(bodyPrs) {
 /** A font name made safe to put in a style attribute. */
 const cssFont = (name) => String(name).replace(/["'\\;<>{}()]/g, '').trim();
 
+/** The fonts of a run's text: its Latin font, then those for East Asian and complex scripts it has text in. */
+function fontsOf(text, props) {
+  const fonts = [props.font];
+  if (props.fontEa && EAST_ASIAN.test(text)) fonts.push(props.fontEa);
+  if (props.fontCs && COMPLEX_SCRIPT.test(text)) fonts.push(props.fontCs);
+  return [...new Set(fonts.filter((f) => f && cssFont(f)).map(cssFont))];
+}
+
 /** A run as HTML, with inline styles only where it differs from the box's base style. */
 function spanFor(text, props, base) {
   const css = [];
   if (props.size && Math.abs(props.size - (base.size || 0)) > 0.4) css.push(`font-size: ${Math.round(props.size * 10) / 10}px`);
   if (props.color && props.color !== base.color) css.push(`color: ${props.color}`);
-  if (props.font && props.font !== base.font && cssFont(props.font)) css.push(`font-family: '${cssFont(props.font)}'`);
+  const fonts = fontsOf(text, props);
+  // Text in several scripts falls back from font to font, then to the kind of font the first is.
+  if (fonts.length > 1) css.push(`font-family: ${fonts.map((f) => `'${f}'`).join(', ')}, ${fontStack(fonts[0]).split(', ').pop()}`);
+  else if (fonts[0] && props.font !== base.font) css.push(`font-family: '${fonts[0]}'`);
   if (props.highlight) css.push(`background-color: ${props.highlight}`);
   // Formatting left unset is off, so compare as booleans.
   if (!!props.bold !== !!base.bold) css.push(`font-weight: ${props.bold ? 700 : 400}`);

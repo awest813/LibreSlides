@@ -291,7 +291,7 @@ describe('PowerPoint paragraphs, bullets and lists', () => {
     );
     expect(el.style).toMatchObject({ lineHeight: 1.2, spacing: 0.3 });
     expect(el.text).toBe('<p style="text-align: left; line-height: 30px; margin-inline-start: 36px; text-indent: 18px">Set in</p>'
-      + '<p dir="rtl" style="text-align: right; margin-top: 12px">مرحبا</p>'
+      + '<p dir="rtl" style="text-align: right; margin-top: 12px"><span style="font-family: \'Inter\', \'Arial\', sans-serif">مرحبا</span></p>'
       + '<p style="text-align: left; line-height: 1.8">Airy</p><p style="text-align: left">Last</p>');
     const xml = await slideXml(deckWith(el));
     expect(xml).toMatch(/<a:pPr[^>]* marL="457200" indent="228600"><a:lnSpc><a:spcPts val="3000"\/><\/a:lnSpc>/);
@@ -303,6 +303,15 @@ describe('PowerPoint paragraphs, bullets and lists', () => {
   });
 
 
+  it('sets East Asian and complex-script text in their own fonts, and keeps them', async () => {
+    const rPr = '<a:rPr lang="ja-JP" sz="2000"><a:latin typeface="Calibri"/><a:ea typeface="MS Gothic"/><a:cs typeface="Arial"/></a:rPr>';
+    const el = await readBody(para('', 'Latin', rPr) + para('', '日本語のテキスト', rPr));
+    expect(el.style.font).toBe('Calibri');
+    expect(el.text).toBe('<p>Latin</p><p><span style="font-family: \'Calibri\', \'MS Gothic\', sans-serif">日本語のテキスト</span></p>');
+    const xml = await slideXml(deckWith(el));
+    expect(xml).toMatch(/<a:latin typeface="Calibri"[^>]*\/><a:ea typeface="MS Gothic"[^>]*\/>[\s\S]*?<a:t>日本語/);
+    expect((await roundTrip(deckWith(el))).slides[0].elements[0].text).toBe(el.text);
+  });
 
   it('writes paragraphs inside list items and lists inside lists at the level they\'re shown', () => {
     const runs = htmlToRuns('<ul><li>a<p>note</p></li><ul><li>b</li></ul></ul>', {}, null, { size: 20 });

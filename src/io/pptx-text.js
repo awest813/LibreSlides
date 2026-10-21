@@ -1,6 +1,12 @@
 /**
  * Text helpers shared by the PowerPoint reader and writer.
- *
+ */
+
+// East Asian text (CJK, kana, hangul, full-width forms) and complex scripts (right-to-left, Indic, Thai…), which PowerPoint sets in fonts of their own.
+export const EAST_ASIAN = /[\u1100-\u11ff\u2e80-\u9fff\ua960-\ua97f\uac00-\ud7ff\uf900-\ufaff\ufe30-\ufe4f\uff00-\uffef]|[\ud840-\ud87f][\udc00-\udfff]/;
+export const COMPLEX_SCRIPT = /[\u0590-\u08ff\u0900-\u0dff\u0e00-\u0fff\u1000-\u109f\u1780-\u17ff\ufb1d-\ufdff\ufe70-\ufeff]/;
+
+/**
  * Bullets in PowerPoint's symbol fonts (Wingdings, Wingdings 2 and 3,
  * Symbol) are letters that only look right in that font: Wingdings' "l" is
  * a round bullet, "§" a small square. They're shown as the Unicode
