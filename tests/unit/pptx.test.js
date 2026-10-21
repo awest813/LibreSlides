@@ -228,6 +228,24 @@ describe('PowerPoint pictures in shapes and SmartArt', () => {
   });
 });
 
+describe('PowerPoint slide sizes', () => {
+  it('keeps a slide size of its own, and scales standard shapes to LibreSlides\' sizes', async () => {
+    const deck = deckWith(newShape('rect', 500, 300, 50, 50));
+    deck.size = '600x400';
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deck)));
+    expect(await zip.file('ppt/presentation.xml').async('string')).toContain(`<p:sldSz cx="${600 * 12700}" cy="${400 * 12700}"`);
+    const back = await importPptx(await zip.generateAsync({ type: 'arraybuffer' }));
+    expect(back.size).toBe('600x400');
+    expect([back.slides[0].elements[0].x, back.slides[0].elements[0].y].map(Math.round)).toEqual([500, 300]);
+    // PowerPoint's old 10 × 5.625 in widescreen is 16:9: scaled up to LibreSlides' 960 × 540.
+    const wide = await roundTrip(deck, async (z) => {
+      z.file('ppt/presentation.xml', (await z.file('ppt/presentation.xml').async('string')).replace(/<p:sldSz[^>]*\/>/, `<p:sldSz cx="${720 * 12700}" cy="${405 * 12700}"/>`));
+    });
+    expect(wide.size).toBe('16:9');
+    expect(Math.round(wide.slides[0].elements[0].x)).toBe(Math.round(500 * (540 / 405)));
+  });
+});
+
 describe('PowerPoint groups', () => {
   it('writes groups as groups and reads them back', async () => {
     const [a, b, c] = [newShape('rect', 100, 100, 100, 50), newTextBox(300, 200, 100, 50), newShape('ellipse', 600, 100)];

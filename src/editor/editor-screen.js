@@ -11,7 +11,7 @@ import { showInstallHelp } from '../ui/install.js';
 import { getDeck, saveDeck, onStorageChange } from '../storage/db.js';
 import {
   slideSize, newSlide, layoutElements, cloneSlide, cloneElement, canHoldText, boxOf, moveElement, addMedia, newImage, newTable, newChart,
-  htmlToText, SIZES, uid, mediaSlots, newMedia, regroup,
+  htmlToText, SIZES, customSize, uid, mediaSlots, newMedia, regroup,
 } from '../model/deck.js';
 import { anchorOf, insertRow, insertCol, deleteRow, deleteCol, mergeCells, unmergeCell } from '../model/tables.js';
 import { themeById, resolveColor } from '../model/themes.js';
@@ -550,28 +550,46 @@ export class EditorScreen {
   }
 
   setSize(size) {
-    if (!SIZES[size] || size === this.deck.size) return;
-    const sx = SIZES[size].w / this.size.w;
+    const to = SIZES[size] || customSize(size);
+    if (!to || size === this.deck.size) return;
+    const sx = to.w / this.size.w;
+    const sy = to.h / this.size.h;
     this.change(() => {
       this.deck.size = size;
       for (const s of this.deck.slides) {
         for (const el of s.elements) {
           if (el.type === 'line') {
             el.x1 *= sx; el.x2 *= sx;
+            el.y1 *= sy; el.y2 *= sy;
           } else if (el.type === 'image' || el.type === 'media' || (el.type === 'shape' && el.lockRatio)) {
             // Keep proportions: scale about the element's centre.
-            const k = Math.min(1, sx);
+            const k = Math.min(sx, sy);
             const cx = (el.x + el.w / 2) * sx;
-            const cy = el.y + el.h / 2;
+            const cy = (el.y + el.h / 2) * sy;
             el.w *= k; el.h *= k;
             el.x = cx - el.w / 2; el.y = cy - el.h / 2;
           } else {
             el.x *= sx; el.w *= sx;
+            el.y *= sy; el.h *= sy;
           }
         }
       }
     }, { structure: true });
     this.canvas.layout();
+  }
+
+  /** Ask for a slide size of one's own, in inches. */
+  async customSizePrompt() {
+    const { w, h } = this.size;
+    const r = await promptDialog({
+      title: 'Custom slide size',
+      fields: [{ name: 'w', label: 'Width (inches)', value: String(Math.round((w / 72) * 100) / 100) }, { name: 'h', label: 'Height (inches)', value: String(Math.round((h / 72) * 100) / 100) }],
+      confirmLabel: 'Apply',
+    });
+    if (!r) return;
+    const size = `${Math.round(parseFloat(r.w) * 72 * 10) / 10}x${Math.round(parseFloat(r.h) * 72 * 10) / 10}`;
+    if (customSize(size)) this.setSize(size);
+    else toast('Slides can be 1 to 56 inches wide and high.', { type: 'error' });
   }
 
   setBackground(bg, { all = false } = {}) {

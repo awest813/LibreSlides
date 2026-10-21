@@ -2,7 +2,8 @@ import { DEFAULT_THEME, themeById } from './themes.js';
 
 /**
  * The presentation model. Coordinates are in points on a slide 960 × 540 pt
- * (16:9, PowerPoint's 13.33 × 7.5 in widescreen) or 720 × 540 pt (4:3); font
+ * (16:9, PowerPoint's 13.33 × 7.5 in widescreen), 720 × 540 pt (4:3), another
+ * of SIZES, or a size of its own ("WxH" in points: see customSize); font
  * sizes are in points too, so a slide renders at 1px = 1pt and is scaled.
  *
  * deck    { id, title, themeId, size, slides[], media{id: dataUrl}, createdAt, updatedAt }
@@ -41,9 +42,25 @@ export const SIZES = {
   '16:9': { w: 960, h: 540, label: 'Widescreen (16:9)' },
   '16:10': { w: 864, h: 540, label: 'Widescreen (16:10)' },
   '4:3': { w: 720, h: 540, label: 'Standard (4:3)' },
+  a4: { w: 780, h: 540, label: 'A4 paper' },
+  'a4-portrait': { w: 540, h: 780, label: 'A4 paper (portrait)' },
+  'letter-portrait': { w: 540, h: 720, label: 'Letter paper (portrait)' },
 };
 
-export const slideSize = (deck) => SIZES[deck?.size] || SIZES['16:9'];
+/**
+ * A size of its own, "WxH" in points (from a PowerPoint file, or chosen),
+ * within PowerPoint's limits of 1 to 56 inches.
+ */
+export function customSize(size) {
+  const m = /^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/.exec(String(size || ''));
+  if (!m) return null;
+  const [w, h] = [+m[1], +m[2]];
+  if (!(w >= 72 && w <= 4032 && h >= 72 && h <= 4032)) return null;
+  const inch = (v) => Math.round((v / 72) * 100) / 100;
+  return { w, h, label: `Custom (${inch(w)} × ${inch(h)} in)` };
+}
+
+export const slideSize = (deck) => SIZES[deck?.size] || customSize(deck?.size) || SIZES['16:9'];
 
 export const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-3);
 
@@ -363,7 +380,7 @@ export function slideTitle(slide) {
 /** Make a loaded deck safe to use: fill in fields added by later versions. */
 export function normalizeDeck(deck) {
   deck.media ||= {};
-  deck.size = SIZES[deck.size] ? deck.size : '16:9';
+  deck.size = SIZES[deck.size] || customSize(deck.size) ? deck.size : '16:9';
   deck.themeId = themeById(deck.themeId).id;
   deck.title ||= 'Untitled presentation';
   if (!Array.isArray(deck.slides) || !deck.slides.length) deck.slides = [newSlide('title', deck)];

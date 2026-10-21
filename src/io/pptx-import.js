@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { uid, newDeck, SIZES } from '../model/deck.js';
+import { uid, newDeck, SIZES, customSize, slideSize } from '../model/deck.js';
 import { SHAPES } from '../model/shapes.js';
 import { normalizeTable } from '../model/tables.js';
 import { evaluateGeometry, definitionFromXml } from '../model/geometry.js';
@@ -874,10 +874,15 @@ export async function importPptx(buffer, fallbackTitle = 'Presentation') {
   const sz = desc(pres, 'sldSz')[0];
   const W = (sz && +attr(sz, 'cx') / EMU_PER_PT) || 960;
   const H = (sz && +attr(sz, 'cy') / EMU_PER_PT) || 540;
-  const size = Object.keys(SIZES).reduce((best, id) => (Math.abs(SIZES[id].w / SIZES[id].h - W / H) < Math.abs(SIZES[best].w / SIZES[best].h - W / H) ? id : best), '16:9');
-  const k = Math.min(SIZES[size].w / W, SIZES[size].h / H);
-  const ox = (SIZES[size].w - W * k) / 2;
-  const oy = (SIZES[size].h - H * k) / 2;
+  // A standard size of the same shape (scaled to it), or the file's own.
+  const closest = Object.keys(SIZES).reduce((best, id) => (Math.abs(SIZES[id].w / SIZES[id].h - W / H) < Math.abs(SIZES[best].w / SIZES[best].h - W / H) ? id : best), '16:9');
+  const standard = Math.abs(SIZES[closest].w / SIZES[closest].h - W / H) < 0.01 * (W / H);
+  const own = `${Math.round(W * 10) / 10}x${Math.round(H * 10) / 10}`;
+  const size = standard || !customSize(own) ? closest : own;
+  const { w: SW, h: SH } = slideSize({ size });
+  const k = Math.min(SW / W, SH / H);
+  const ox = (SW - W * k) / 2;
+  const oy = (SH - H * k) / 2;
 
   // Theme colours and fonts, from the first master's theme; the master's colour map says which is text and background.
   const scheme = {};
