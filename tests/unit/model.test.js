@@ -1,13 +1,20 @@
 import { describe, it, expect } from 'vitest';
 import {
   newDeck, newSlide, layoutElements, cloneSlide, fillPlaceholders, addMedia, pruneMedia, normalizeDeck, slideText, slideTitle,
-  textToHtml, htmlToText, lineBox, moveElement, newLine, LAYOUTS, SIZES,
+  textToHtml, htmlToText, lineBox, moveElement, newLine, LAYOUTS, SIZES, slideSize,
+  slideSections, moveSlidesWithSections, removeSlidesWithSections, setSections,
 } from '../../src/model/deck.js';
 import { TEMPLATES } from '../../src/model/templates.js';
 import { THEMES, resolveColor, backgroundCss, themeById } from '../../src/model/themes.js';
 import { SHAPES, shapePath, customPath } from '../../src/model/shapes.js';
 
 describe('deck model', () => {
+  it('takes only real size names as sizes', () => {
+    expect(slideSize({ size: '__proto__' })).toEqual(SIZES['16:9']);
+    expect(slideSize({ size: 'toString' })).toEqual(SIZES['16:9']);
+    expect(slideSize({ size: 'a4' })).toEqual(SIZES.a4);
+  });
+
   it('creates a deck with a title slide', () => {
     const d = newDeck();
     expect(d.slides).toHaveLength(1);
@@ -104,5 +111,54 @@ describe('themes and shapes', () => {
   it('stretches freeform outlines to the box', () => {
     expect(customPath([['M', 0, 1], ['L', 0.5, 0], ['C', 0, 0, 1, 1, 1, 0.5], ['Q', 0.25, 0.25, 0, 0], ['Z']], 200, 100))
       .toBe('M0 100L100 0C0 0 200 100 200 50Q50 25 0 0Z');
+  });
+});
+
+describe('sections', () => {
+  /** Slides a…, with "A:a" naming a section that starts at slide a. */
+  const slides = (spec) => spec.split(' ').map((t) => {
+    const [name, id] = t.includes(':') ? t.split(':') : [null, t];
+    return { id, ...(name && { section: name }) };
+  });
+  const show = (list) => list.map((s) => (s.section ? `${s.section}:${s.id}` : s.id)).join(' ');
+  const move = (spec, ids, index) => {
+    const list = slides(spec);
+    const m = moveSlidesWithSections(list, new Set(ids), index);
+    if (!m) return null;
+    setSections(m.order, m.sections);
+    return show(m.order);
+  };
+
+  it('groups slides by the section their first slide names', () => {
+    expect(slideSections(slides('a A:b c B:d'))).toEqual([
+      { name: null, start: 0, end: 1 }, { name: 'A', start: 1, end: 3 }, { name: 'B', start: 3, end: 4 },
+    ]);
+    expect(slideSections(slides('A:a b'))).toEqual([{ name: 'A', start: 0, end: 2 }]);
+  });
+
+  it('doesn’t copy a section with its first slide', () => {
+    expect(cloneSlide({ id: 'a', section: 'A', elements: [] }).section).toBeUndefined();
+  });
+
+  it('passes a section on to its next slide when its first slide is deleted or moved away', () => {
+    expect(show(removeSlidesWithSections(slides('A:a b c B:d'), new Set(['a'])))).toBe('A:b c B:d');
+    expect(show(removeSlidesWithSections(slides('A:a b B:c'), new Set(['a', 'b'])))).toBe('B:c');
+    expect(move('A:a b c B:d e', ['a'], 5)).toBe('A:b c B:d e a');
+  });
+
+  it('puts moved slides into the section they land in', () => {
+    expect(move('A:a b B:c d', ['d'], 2)).toBe('A:a b d B:c');
+    expect(move('A:a b B:c d', ['b'], 4)).toBe('A:a B:c d b');
+    expect(move('A:a b B:c d', ['c'], 4)).toBe('A:a b B:d c');
+    // At the very top, into the first section rather than one of no name.
+    expect(move('A:a b B:c d', ['c'], 0)).toBe('A:c a b B:d');
+    expect(move('x A:a b', ['b'], 0)).toBe('b x A:a');
+  });
+
+  it('moves whole sections past whole sections, after the slides in no section', () => {
+    expect(move('A:a b B:c d C:e', ['c', 'd'], 1)).toBe('B:c d A:a b C:e');
+    expect(move('A:a b B:c d C:e', ['a', 'b'], 3)).toBe('B:c d A:a b C:e');
+    expect(move('x y B:c d', ['c', 'd'], 1)).toBeNull();
+    expect(move('A:a b', ['a'], 0)).toBeNull();
   });
 });

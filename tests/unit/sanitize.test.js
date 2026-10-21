@@ -12,6 +12,13 @@ describe('untrusted presentations', () => {
     }
   });
 
+  it('keeps a bullet\'s colour and size and a paragraph\'s direction, and nothing else of the kind', () => {
+    expect(sanitizeHtml('<ul dir="rtl"><li style="--bu-color: #7030a0; --bu-size: 75%; color: red">a</li></ul>'))
+      .toBe('<ul dir="rtl"><li style="--bu-color: #7030a0; --bu-size: 75%; color: red">a</li></ul>');
+    expect(sanitizeHtml('<p dir="sideways" style="--bu-color: javascript; --x: 1; --bu-size: 1e9px; margin-top: 4px">a</p>')).toBe('<p style="margin-top: 4px">a</p>');
+    expect(sanitizeHtml('<p style="--anything: red">a</p>')).toBe('<p>a</p>');
+  });
+
   it('only lets a number through as a gradient angle', () => {
     const deck = sanitizeDeck({ slides: [{ background: { type: 'gradient', from: '#000', to: '#fff', angle: '0deg,#fff,#fff),url(https://t/x),linear-gradient(0' } }, { background: { type: 'gradient', from: '#000', to: '#fff', angle: 45 } }] });
     expect(deck.slides[0].background.angle).toBe(180);
@@ -22,6 +29,18 @@ describe('untrusted presentations', () => {
     const deck = sanitizeDeck({ slides: [{ elements: [{ type: 'text', style: { font: '맑은 고딕' } }, { type: 'text', style: { font: 'Inter"; x:url(y)' } }] }] });
     expect(deck.slides[0].elements[0].style.font).toBe('맑은 고딕');
     expect(deck.slides[0].elements[1].style.font).toBe('Inter xurly');
+  });
+
+  it('keeps only safe table cell borders and sensible margins', () => {
+    const deck = sanitizeDeck({ slides: [{ elements: [{ type: 'table', cells: [[
+      { text: '', borders: { t: { color: 'url(https://t/x)', width: 2 }, b: { color: '#f00', width: 999, dash: 'wavy' }, l: 'x' }, margin: { t: -4, l: 'x', r: 9 } },
+      { text: '', borders: 'x', margin: 7 },
+    ]] }] }] });
+    const [a, b] = deck.slides[0].elements[0].cells[0];
+    expect(a.borders).toEqual({ b: { color: '#f00', width: 50, dash: 'solid' } });
+    expect(a.margin).toEqual({ t: 0, r: 9, b: 3.6, l: 7.2 });
+    expect(b.borders).toBeUndefined();
+    expect(b.margin).toBeUndefined();
   });
 
   it('copes with damaged structure instead of crashing', () => {
@@ -50,5 +69,40 @@ describe('untrusted presentations', () => {
     await expect(importFile(lslides({ app: 'Other', format: 1, deck }))).rejects.toThrow(/isn’t a LibreSlides/);
     const ok = await importFile(lslides({ app: 'LibreSlides', format: 1, deck }));
     expect(ok.title).toBe('T');
+  });
+
+  it('keeps section names as plain text of sensible length', () => {
+    const deck = sanitizeDeck({ slides: [{ section: '  Intro\n<b>x</b> ' }, { section: 7 }, { section: '   ' }, { section: 'x'.repeat(1000) }] });
+    expect(deck.slides.map((s) => s.section?.length ?? s.section)).toEqual([14, undefined, undefined, 255]);
+    expect(deck.slides[0].section).toBe('Intro <b>x</b>');
+  });
+
+  it('keeps numbers numbers, and names and choices known ones', () => {
+    const deck = sanitizeDeck({
+      size: '__proto__',
+      slides: [{
+        id: '"><x', transition: { type: 'constructor', duration: 'slow' }, hidden: 'yes',
+        elements: [
+          { type: 'shape', shape: { a: 1 }, x: '10', y: -1e308, w: -5, rot: NaN, opacity: 7, text: { a: 1 }, stroke: { color: 'red', width: 'x', dash: 'constructor' }, style: { align: 3, valign: [], size: 'big', lineHeight: 1e9 } },
+          { type: 'line', x1: 0, y1: null, x2: '5', stroke: 'thin' },
+          { type: 'table', cells: '', colWidths: [1, 3] },
+          { type: 'table', cells: [[{ text: 'a' }, { text: 'b' }]], colWidths: [1, 3] },
+        ],
+        comments: [{ text: 't', x: -1e308, y: 2 }],
+      }],
+    });
+    expect(deck.size).toBe('16:9');
+    const [slide] = deck.slides;
+    expect(slide.id).toMatch(/^[\w-]+$/);
+    expect(slide.transition).toEqual({ type: 'none', duration: 0.6 });
+    expect(slide.hidden).toBe(false);
+    const [shape, line, empty, table] = slide.elements;
+    expect(shape).toMatchObject({ shape: 'rect', x: 0, y: -1e5, w: 0, h: 0, rot: 0, opacity: 1, text: '', stroke: { color: 'none', dash: 'solid' } });
+    expect(shape.stroke.width).toBeUndefined();
+    expect(shape.style).toEqual({ lineHeight: 10 });
+    expect(line).toMatchObject({ x1: 0, y1: 0, x2: 0, y2: 0, stroke: null });
+    expect(empty.cells).toEqual([[{ text: '' }]]);
+    expect(table.colWidths).toEqual([0.25, 0.75]);
+    expect(slide.comments[0]).toMatchObject({ x: -1e5, y: 2 });
   });
 });

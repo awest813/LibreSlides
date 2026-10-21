@@ -15,6 +15,10 @@ const PROP_CSS = {
   strike: ['text-decoration', 'text-decoration-line'],
   highlight: ['background-color', 'background'],
   align: ['text-align'],
+  // A box's line and paragraph spacing replace what its paragraphs had of their own (from PowerPoint).
+  lineHeight: ['line-height'],
+  spacing: ['margin-top', 'margin-bottom'],
+  effect: ['-webkit-text-stroke', '-webkit-text-stroke-width', '-webkit-text-stroke-color', 'text-shadow', 'background-image', '-webkit-background-clip', 'background-clip', '-webkit-text-fill-color'],
 };
 const PROP_TAGS = { bold: ['B', 'STRONG'], italic: ['I', 'EM'], underline: ['U'], strike: ['S', 'STRIKE'] };
 
@@ -116,6 +120,22 @@ export function exec(cmd, value = null, { css = true } = {}) {
   return document.execCommand(cmd, false, value);
 }
 
+/**
+ * Set the paragraph at the caret in (dir 1) or out (-1) by a list's inset,
+ * as PowerPoint does, when it isn't a list item (the browser's indent
+ * command would wrap it in a quote). Returns whether it did.
+ */
+export function indentParagraph(dir) {
+  const node = document.getSelection()?.anchorNode;
+  const block = (node?.nodeType === 1 ? node : node?.parentElement)?.closest('p, div, li');
+  if (!block || block.tagName === 'LI' || block.isContentEditable === false || block.contentEditable === 'true') return false;
+  const step = 1.25 * (parseFloat(getComputedStyle(block).fontSize) || 18);
+  const next = Math.max(0, Math.round(((parseFloat(block.style.marginInlineStart) || 0) + dir * step) * 10) / 10);
+  block.style.marginInlineStart = next ? `${next}px` : '';
+  if (!block.getAttribute('style')) block.removeAttribute('style');
+  return true;
+}
+
 /** Set the font size (pt) of the selected text, or of what's typed next at the caret. */
 export function execFontSize(body, size) {
   const sel = document.getSelection();
@@ -165,6 +185,50 @@ export function highlightAll(html, color) {
   const div = document.createElement('div');
   div.append(tpl.content);
   return div.innerHTML;
+}
+
+/**
+ * Give all the text in an HTML fragment one text effect (see TEXT_EFFECTS),
+ * replacing any it had: each paragraph's content is wrapped in a styled span.
+ */
+export function effectAll(html, css) {
+  html = stripInline(html, 'effect');
+  if (!html || !css) return html;
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  for (const block of tpl.content.querySelectorAll('p, li, div')) {
+    const inline = [...block.childNodes].filter((n) => !(n.nodeType === 1 && /^(UL|OL|P|DIV)$/.test(n.nodeName)));
+    if (!inline.length || !inline.some((n) => n.textContent.trim())) continue;
+    const span = document.createElement('span');
+    span.setAttribute('style', css);
+    inline[0].before(span);
+    span.append(...inline);
+  }
+  const div = document.createElement('div');
+  div.append(tpl.content);
+  return div.innerHTML;
+}
+
+/** WordArt-like effects for whole text boxes, as inline CSS made from the text and accent colours. */
+export const TEXT_EFFECTS = {
+  shadow: () => 'text-shadow: rgba(0, 0, 0, 0.45) 2px 2px 3px',
+  glow: ({ accent }) => `text-shadow: ${accent} 0px 0px 8px`,
+  outline: ({ accent }) => `-webkit-text-stroke: 1px ${accent}`,
+  hollow: ({ text }) => `color: transparent; -webkit-text-stroke: 1px ${text}`,
+  gradient: ({ accent, accent2 }) => `color: ${accent}; background-image: linear-gradient(90deg, ${accent} 0%, ${accent2} 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent`,
+};
+
+/** Which of TEXT_EFFECTS an HTML fragment's text has, if any (or 'mixed'). */
+export function textEffectOf(html) {
+  const found = new Set();
+  const css = (html || '').match(/style="[^"]*"/g) || [];
+  for (const st of css) {
+    if (/-webkit-background-clip: text|background-clip: text/.test(st)) found.add('gradient');
+    else if (/-webkit-text-stroke/.test(st)) found.add(/color: transparent/.test(st) ? 'hollow' : 'outline');
+    else if (/text-shadow: [^;"]*\b0px 0px/.test(st)) found.add('glow');
+    else if (/text-shadow/.test(st)) found.add('shadow');
+  }
+  return found.size > 1 ? 'mixed' : [...found][0] || 'none';
 }
 
 /** Formatting at the caret, for the toolbar. */

@@ -1,7 +1,7 @@
 import { h, toast } from '../ui/dom.js';
 import { icon } from '../ui/icons.js';
 import { renderSlide, renderThumb } from '../render/render.js';
-import { slideSize, slideTitle } from '../model/deck.js';
+import { slideSize, slideTitle, slideAnimations, motionPath } from '../model/deck.js';
 
 /**
  * Slideshow: plays a deck full screen with transitions and click-by-click
@@ -17,15 +17,14 @@ import { slideSize, slideTitle } from '../model/deck.js';
 
 /** The slide's animations grouped into click-steps; each entry has delays for "with/after previous". */
 export function buildSteps(slide) {
-  const animated = slide.elements.filter((e) => e.anim && e.anim.effect && e.anim.effect !== 'none')
-    .sort((a, b) => (a.anim.order || 0) - (b.anim.order || 0));
+  const animated = slideAnimations(slide);
   const steps = [];
   let cur = null;
   let lastStart = 0;
   let lastEnd = 0;
-  for (const el of animated) {
-    const dur = el.anim.duration ?? 0.5;
-    const start = el.anim.start || 'click';
+  for (const { el, kind, anim } of animated) {
+    const dur = anim.duration ?? 0.5;
+    const start = anim.start || 'click';
     if (start === 'click' || !cur) {
       cur = [];
       steps.push(cur);
@@ -33,13 +32,24 @@ export function buildSteps(slide) {
       lastEnd = 0;
     }
     const delay = start === 'after' ? lastEnd : start === 'with' ? lastStart : 0;
-    cur.push({ id: el.id, effect: el.anim.effect, duration: dur, delay });
+    cur.push({ id: el.id, kind, effect: anim.effect, duration: dur, delay, ...(kind === 'motion' && { path: motionPath(anim) }) });
     lastStart = delay;
     lastEnd = delay + dur;
   }
   // A first animation set to "with" or "after previous" plays as the slide appears, without a click.
   steps.auto = animated.length > 0 && (animated[0].anim.start || 'click') !== 'click';
   return steps;
+}
+
+/**
+ * Where a link to "#slide:…" goes from position `pos`: 'next', 'prev', or the
+ * start of a slide (first, last, or by id); null when there's no such slide.
+ */
+export function linkTarget(deck, target, pos) {
+  if (target === 'next' || target === 'prev') return target;
+  const vis = visibleIndices(deck);
+  const i = target === 'first' ? vis[0] : target === 'last' ? vis[vis.length - 1] : deck.slides.findIndex((s) => s.id === target);
+  return i == null || i < 0 || i === pos?.i ? null : { i, step: minStep(deck.slides[i]) };
 }
 
 /** The first position of a slide: past its automatic step, if it has one. */
@@ -62,6 +72,16 @@ export function prevPos(deck, pos) {
   return p == null ? null : { i: p, step: buildSteps(deck.slides[p]).length };
 }
 
+/**
+ * Where typing a slide's number and Enter goes: the slide with that number
+ * (as the filmstrip and its fields number it, hidden ones too, which this is
+ * the way to show, as in PowerPoint), past its automatic build.
+ */
+export function numberPos(deck, n) {
+  const i = Math.min(deck.slides.length, Math.max(1, Math.floor(n) || 1)) - 1;
+  return deck.slides[i] ? { i, step: minStep(deck.slides[i]) } : null;
+}
+
 export function firstPos(deck, from = 0) {
   const vis = visibleIndices(deck);
   const i = Math.max(0, vis.find((x) => x >= from) ?? vis[vis.length - 1] ?? from);
@@ -70,11 +90,26 @@ export function firstPos(deck, from = 0) {
 
 // ------------------------------------------------------------------ animation effects
 
+/** A point of a motion path (fractions of the slide) as a CSS translate. */
+const translateAt = ([x, y] = [0, 0], w, h) => `${x * w}px ${y * h}px`;
+
+/** Keyframes for an emphasis: something already on the slide, drawing the eye and settling back. */
+function emphasis(effect, opacity = 1) {
+  switch (effect) {
+    case 'pulse': return [{ transform: 'scale(1)' }, { transform: 'scale(1.12)' }, { transform: 'scale(1)' }];
+    case 'spin': return [{ transform: 'rotate(0)' }, { transform: 'rotate(360deg)' }];
+    case 'teeter': return [0, 4, -4, 4, -4, 0].map((a) => ({ transform: `rotate(${a}deg)` }));
+    case 'flash': return [{ opacity }, { opacity: 0 }, { opacity }];
+    default: return null;
+  }
+}
+
 /** Keyframes for an entrance; `to` is the element's own opacity, where fades end. */
 function entrance(effect, W, H, to = 1) {
   switch (effect) {
     case 'fade': case 'appear': return [{ opacity: 0 }, { opacity: to }];
     case 'fly-up': return [{ transform: `translateY(${H}px)`, opacity: 0 }, { transform: 'translateY(0)', opacity: to }];
+    case 'fly-down': return [{ transform: `translateY(${-H}px)`, opacity: 0 }, { transform: 'translateY(0)', opacity: to }];
     case 'fly-left': return [{ transform: `translateX(${-W}px)`, opacity: 0 }, { transform: 'translateX(0)', opacity: to }];
     case 'fly-right': return [{ transform: `translateX(${W}px)`, opacity: 0 }, { transform: 'translateX(0)', opacity: to }];
     case 'zoom': return [{ transform: 'scale(0.3)', opacity: 0 }, { transform: 'scale(1)', opacity: to }];
@@ -103,12 +138,27 @@ const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').match
 
 // ------------------------------------------------------------------ player
 
-/** Draws a deck position into `host`, scaled to fit, with transitions and builds. */
+/** Pause every video and sound under `root` (a slide that's going away keeps playing otherwise). */
+function stopMedia(root) {
+  for (const m of root?.querySelectorAll('video, audio') || []) {
+    try {
+      m.pause();
+    } catch { /* not a real media element (tests) */ }
+  }
+}
+
+/**
+ * Draws a deck position into `host`, scaled to fit, with transitions and
+ * builds. With `media`, videos and sounds play (the slideshow and the
+ * audience window); otherwise they show their poster (the presenter's
+ * console and previews in the editor, which shouldn't make a sound).
+ */
 export class Player {
-  constructor(deck, host, { animate = true } = {}) {
+  constructor(deck, host, { animate = true, media = true } = {}) {
     this.deck = deck;
     this.host = host;
     this.animate = animate;
+    this.media = media;
     this.pos = null;
     this.layer = null;
     this.frame = h('div', { class: 'show-frame' });
@@ -120,6 +170,7 @@ export class Player {
 
   destroy() {
     this.observer.disconnect();
+    stopMedia(this.frame);
     this.frame.remove();
   }
 
@@ -136,16 +187,23 @@ export class Player {
 
   makeLayer(i, step) {
     const slide = this.deck.slides[i];
-    const node = renderSlide(slide, this.deck);
+    const node = renderSlide(slide, this.deck, { live: this.media });
     node.style.transformOrigin = '0 0';
     node.style.transform = `scale(${this.scale || 1})`;
     const steps = buildSteps(slide);
-    // Objects that appear on later clicks start hidden.
+    // Objects that come in on later clicks start hidden, those that went out on earlier ones are gone,
+    // and those that moved along a path on earlier ones are where it ended.
+    const { w, h: H } = slideSize(this.deck);
     for (const [k, items] of steps.entries()) {
-      if (k < step) continue;
       for (const it of items) {
         const el = node.querySelector(`:scope > .el[data-id="${CSS.escape(it.id)}"]`);
-        if (el) el.style.visibility = 'hidden';
+        if (!el) continue;
+        if (it.kind === 'motion') {
+          if (k < step) el.style.translate = translateAt(it.path.at(-1), w, H);
+          continue;
+        }
+        if (it.kind === 'emphasis' || (it.kind === 'exit') === (k >= step)) continue;
+        el.style.visibility = 'hidden';
       }
     }
     return h('div', { class: 'show-layer' }, node);
@@ -175,13 +233,34 @@ export class Player {
     const frames = anim && forward && tr ? transitionFrames(tr.type) : null;
     for (const a of this.running || []) a.finish();
     this.running = [];
+    stopMedia(old);
     if (frames) {
       const opts = { duration: (tr.duration ?? 0.6) * 1000, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'both' };
       this.running.push(layer.animate(frames.incoming, opts));
       if (old && frames.outgoing) this.running.push(old.animate(frames.outgoing, opts));
       this.running[0].finished.catch(() => {}).then(() => old?.remove());
     } else old?.remove();
-    if (autoPlay) this.playStep(pos.i, 0, frames ? tr.duration ?? 0.6 : 0);
+    const settle = frames ? tr.duration ?? 0.6 : 0;
+    // Videos and sounds set to play by themselves start once the slide is in (those built in later, as they appear).
+    this.startMedia(layer, settle * 1000);
+    if (autoPlay) this.playStep(pos.i, 0, settle);
+  }
+
+  /** Play the videos and sounds under `root` that start by themselves, after `delay` ms. */
+  startMedia(root, delay = 0) {
+    if (!this.media) return;
+    const layer = this.layer;
+    for (const m of root.querySelectorAll('[data-autoplay]')) {
+      if (m.closest('.el')?.style.visibility === 'hidden') continue;
+      const play = () => {
+        // Not once the show has moved on (the slide may still be on its way out).
+        if (!m.isConnected || this.layer !== layer) return;
+        // Browsers may refuse to play sound before the viewer has clicked; the controls still work.
+        Promise.resolve().then(() => m.play()).catch(() => {});
+      };
+      if (delay > 0) setTimeout(play, delay);
+      else play();
+    }
   }
 
   playStep(i, k, extraDelay = 0) {
@@ -191,11 +270,34 @@ export class Player {
     for (const it of items) {
       const el = node.querySelector(`:scope > .el[data-id="${CSS.escape(it.id)}"]`);
       if (!el) continue;
+      const delay = (it.delay + extraDelay) * 1000;
+      const opacity = +(el.style.opacity || 1);
+      if (it.kind === 'motion') {
+        // Along its path, and staying where it ends.
+        const frames = it.path.map((pt) => ({ translate: translateAt(pt, w, H) }));
+        el.animate(frames, { duration: it.duration * 1000, delay, easing: 'ease-in-out', fill: 'forwards' })
+          .finished.then(() => { el.style.translate = frames.at(-1).translate; }).catch(() => {});
+        continue;
+      }
+      if (it.kind === 'emphasis') {
+        const frames = emphasis(it.effect, opacity);
+        if (frames) el.animate(frames, { duration: it.duration * 1000, delay, easing: 'ease-in-out', composite: frames[0].transform ? 'add' : 'replace' });
+        continue;
+      }
+      if (it.kind === 'exit') {
+        // The entrance played backwards, then gone.
+        const frames = entrance(it.effect, w, H, opacity)?.reverse();
+        const out = el.animate(frames || [{ opacity }, { opacity: 0 }], { duration: it.effect === 'appear' ? 1 : it.duration * 1000, delay, easing: 'cubic-bezier(.4,0,.8,.3)', fill: 'forwards', composite: frames?.[0].transform ? 'add' : 'replace' });
+        out.finished.then(() => { el.style.visibility = 'hidden'; out.cancel(); }).catch(() => {});
+        (this.running ||= []).push(out);
+        continue;
+      }
       el.style.visibility = '';
-      const frames = entrance(it.effect, w, H, +(el.style.opacity || 1));
+      this.startMedia(el, delay);
+      const frames = entrance(it.effect, w, H, opacity);
       if (!frames) continue;
       const duration = it.effect === 'appear' ? 1 : it.duration * 1000;
-      el.animate(frames, { duration, delay: (it.delay + extraDelay) * 1000, easing: 'cubic-bezier(.2,.7,.3,1)', fill: 'backwards', composite: frames[0].transform ? 'add' : 'replace' });
+      el.animate(frames, { duration, delay, easing: 'cubic-bezier(.2,.7,.3,1)', fill: 'backwards', composite: frames[0].transform ? 'add' : 'replace' });
     }
   }
 }
@@ -243,8 +345,8 @@ export function startSlideshow(deck, { start = 0, onExit = null, remote = null }
     ended = false;
     endScreen.hidden = true;
     player.go(p, how);
-    const vis = visibleIndices(deck);
-    counter.textContent = `${Math.max(1, vis.indexOf(p.i) + 1)} / ${vis.length}`;
+    // Slide numbers as the filmstrip and the slides' number fields have them.
+    counter.textContent = `${p.i + 1} / ${deck.slides.length}`;
     notesBox.textContent = deck.slides[p.i].notes || 'No speaker notes for this slide.';
     remote?.send?.(p);
   }
@@ -319,10 +421,9 @@ export function startSlideshow(deck, { start = 0, onExit = null, remote = null }
     }
     if (k === 'Enter' && typed) {
       e.preventDefault();
-      const vis = visibleIndices(deck);
-      const i = vis[Math.min(vis.length, Math.max(1, +typed)) - 1];
+      const to = numberPos(deck, +typed);
       typed = '';
-      if (i != null) jump({ i, step: minStep(deck.slides[i]) });
+      if (to) jump(to);
       return;
     }
     typed = '';
@@ -350,8 +451,40 @@ export function startSlideshow(deck, { start = 0, onExit = null, remote = null }
     curtain.hidden = true;
     return true;
   };
+  // Touch screens: swipe left for the next step, right for the one before.
+  root.style.touchAction = 'pinch-zoom'; // a swipe isn't taken for the browser's own panning
+  let touch = null;
+  let swipedAt = 0;
+  root.addEventListener('touchstart', (e) => {
+    touch = e.touches.length === 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null;
+  }, { passive: true });
+  root.addEventListener('touchend', (e) => {
+    const t = e.changedTouches[0];
+    if (!touch || !t || e.touches.length) return;
+    const [dx, dy] = [t.clientX - touch.x, t.clientY - touch.y];
+    touch = null;
+    // Across, far enough, and not a video's seek bar being dragged.
+    if (Math.abs(dx) < 40 || Math.abs(dx) < Math.abs(dy) * 1.5 || e.target.closest?.('video, audio, .show-controls, .show-notes')) return;
+    swipedAt = Date.now(); // a browser may still send a click for it
+    if (!uncover()) (dx < 0 ? next : prev)();
+  });
   root.addEventListener('click', (e) => {
-    if (e.target.closest('a[href], .show-controls, .show-notes')) return;
+    if (Date.now() - swipedAt < 600) return;
+    // Links: to another slide, or a web page (in a new tab; links in text open there by themselves).
+    const link = e.target.closest('a[href], [data-link]');
+    if (link) {
+      const href = link.getAttribute('href') || link.dataset.link;
+      const to = /^#slide:/.test(href) && linkTarget(deck, href.slice(7), pos);
+      if (/^#/.test(href)) e.preventDefault();
+      if (to === 'next') next();
+      else if (to === 'prev') prev();
+      else if (to) jump(to);
+      else if (!link.matches('a') && /^(https?:|mailto:)/i.test(href)) window.open(href, '_blank', 'noopener');
+      return;
+    }
+    if (e.target.closest('.show-controls, .show-notes')) return;
+    // Clicks on a video's controls or a sound's button play and pause it, not the slideshow.
+    if (e.target.closest('video, audio, .el-media-toggle')) return;
     if (!uncover()) next();
   });
   root.addEventListener('contextmenu', (e) => {
@@ -401,7 +534,7 @@ export function startPresenterView(deck, { start = 0, onExit = null } = {}) {
   let pos = firstPos(deck, start);
   const currentHost = h('div', { class: 'pv-current' });
   const nextHost = h('div', { class: 'pv-next-slide' });
-  const player = new Player(deck, currentHost, { animate: false });
+  const player = new Player(deck, currentHost, { animate: false, media: false });
   const notes = h('div', { class: 'pv-notes', tabindex: '0', 'aria-label': 'Speaker notes' });
   let notesSize = 22;
   const timerEl = h('span', { class: 'pv-timer' }, '0:00');
@@ -458,8 +591,7 @@ export function startPresenterView(deck, { start = 0, onExit = null } = {}) {
     if (!p) return;
     pos = p;
     player.go(p, 'cut');
-    const vis = visibleIndices(deck);
-    counter.textContent = `Slide ${vis.indexOf(p.i) + 1} of ${vis.length}`;
+    counter.textContent = `Slide ${p.i + 1} of ${deck.slides.length}`;
     titleEl.textContent = slideTitle(deck.slides[p.i]) || deck.title;
     notes.textContent = deck.slides[p.i].notes || 'No speaker notes for this slide.';
     notes.classList.toggle('is-empty', !deck.slides[p.i].notes);
@@ -509,10 +641,9 @@ export function startPresenterView(deck, { start = 0, onExit = null } = {}) {
     }
     const run = (fn) => { e.preventDefault(); fn(); };
     if (k === 'Enter' && typed) {
-      const vis = visibleIndices(deck);
-      const i = vis[Math.min(vis.length, Math.max(1, +typed)) - 1];
+      const to = numberPos(deck, +typed);
       typed = '';
-      if (i != null) run(() => go({ i, step: minStep(deck.slides[i]) }, 'cut'));
+      if (to) run(() => go(to, 'cut'));
       return;
     }
     typed = '';
@@ -575,7 +706,7 @@ export function previewOnStage(app, { animations = false, transition = false } =
   const stage = app.canvas.stage;
   const host = h('div', { class: 'preview-host', title: 'Click to stop the preview' });
   stage.append(host);
-  const player = new Player(app.deck, host);
+  const player = new Player(app.deck, host, { media: false });
   const i = app.slideIndex;
   const done = () => {
     clearTimeout(timer);

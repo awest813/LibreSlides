@@ -1,19 +1,34 @@
 import JSZip from 'jszip';
-import { uid, newDeck, SIZES } from '../model/deck.js';
+import { uid, newDeck, newSlide, SIZES, customSize, slideSize, FIELD } from '../model/deck.js';
 import { SHAPES } from '../model/shapes.js';
-import { isDarkColor } from '../model/themes.js';
+import { normalizeTable, NO_BORDER, CELL_MARGIN, SIDES } from '../model/tables.js';
+import { evaluateGeometry, definitionFromXml } from '../model/geometry.js';
+import PRESETS from '../model/preset-shapes.js';
+import { cleanWarp } from '../model/warps.js';
+import { isDarkColor, backgroundBaseColor, withOpacity } from '../model/themes.js';
+import { isPattern } from '../model/patterns.js';
+import { pictureSize, duotoneImage } from './images.js';
 import { readChart } from './pptx-chart.js';
+import { readAnimations } from './pptx-timing.js';
 import { readMedia } from './pptx-media.js';
 import { readEmbeddedFonts } from './pptx-fonts.js';
-import { EMU_PER_PT, kids, kid, path, desc, attr, rid, SCHEME_ALIAS, colorOf, alphaOf, blend, Package, addMediaTo } from './ooxml.js';
+import { readComments } from './pptx-comments.js';
+import { readSections } from './pptx-sections.js';
+import { readDiagram } from './pptx-diagram.js';
+import { bulletGlyph, EAST_ASIAN, COMPLEX_SCRIPT } from './pptx-text.js';
+import { fontStack } from '../model/fonts.js';
+import { EMU_PER_PT, kids, kid, path, desc, attr, rid, SCHEME_ALIAS, colorOf, alphaOf, blend, Package, addMediaTo, contentOf } from './ooxml.js';
+import { oleObjectOf, olePreview } from './pptx-ole.js';
+import { builtInTableStyle } from './pptx-table-styles.js';
 
 /**
  * PowerPoint (.pptx) reader. Brings in what LibreSlides can edit: text boxes
  * and placeholders with their formatting, shapes, pictures (with their crop),
- * lines and arrows, tables, backgrounds, speaker notes, transitions and
- * skipped slides. Positions, text styles and the graphics on layouts and
- * masters are resolved onto each slide. Charts, SmartArt and video aren't
- * supported and are left out.
+ * lines and arrows, freeforms and preset shapes, tables, charts, video and
+ * sound, groups, SmartArt (as diagrams, drawn as PowerPoint drew them), links,
+ * animations, comments, backgrounds, speaker notes, transitions and skipped
+ * slides. Positions, text styles and the graphics on layouts and masters are
+ * resolved onto each slide.
  */
 const SHAPE_IDS = new Set(SHAPES.map((s) => s.id));
 
@@ -34,6 +49,7 @@ function runProps(rPr, ctx) {
   if (attr(rPr, 'strike') != null) p.strike = attr(rPr, 'strike') !== 'noStrike';
   const fill = kid(rPr, 'solidFill');
   if (fill) p.color = colorOf(fill, ctx.scheme);
+  Object.assign(p, textEffects(rPr, ctx));
   const hl = kid(rPr, 'highlight');
   if (hl) p.highlight = colorOf(hl, ctx.scheme);
   const latin = kid(rPr, 'latin');
@@ -43,10 +59,99 @@ function runProps(rPr, ctx) {
     else if (face === '+mn-lt') p.font = ctx.fonts.minor;
     else if (face && !face.startsWith('+')) p.font = face;
   }
-  const link = rid(kid(rPr, 'hlinkClick'), 'id');
-  const target = link && ctx.rels?.[link];
-  if (target?.external && /^(https?:|mailto:)/i.test(target.path)) p.link = target.path;
+  // The fonts for East Asian and for complex scripts (Arabic, Hebrew, Thai…): the theme's ("+mn-ea") are usually unset.
+  for (const [tag, key] of [['ea', 'fontEa'], ['cs', 'fontCs']]) {
+    const node = kid(rPr, tag);
+    if (!node) continue;
+    const face = attr(node, 'typeface');
+    p[key] = face && !face.startsWith('+') ? face : null;
+  }
+  // Raised or lowered (superscript, subscript), capitals and letter spacing.
+  const baseline = +attr(rPr, 'baseline') || 0;
+  if (baseline) p.baseline = baseline > 0 ? 'sup' : 'sub';
+  if (attr(rPr, 'cap') === 'all' || attr(rPr, 'cap') === 'small') p.caps = attr(rPr, 'cap');
+  if (attr(rPr, 'spc') != null) p.letterSpacing = Math.round((+attr(rPr, 'spc') / 100) * ctx.k * 10) / 10 || 0;
+  const link = linkOf(kid(rPr, 'hlinkClick'), ctx.rels);
+  if (link) p.link = link;
+  if (kid(rPr, 'hlinkClick') && !('color' in p)) Object.assign(p, linkColor(kid(rPr, 'hlinkClick'), ctx));
   return p;
+}
+
+const rgba = (hex, a) => (a < 1 && /^#[0-9a-f]{6}$/i.test(hex)
+  ? `rgba(${[1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(', ')}, ${Math.round(a * 100) / 100})` : hex);
+
+/** A gradient (see model/deck.js) as a CSS image. */
+function cssGradient(g) {
+  const stops = g.stops.map((st) => `${rgba(st.color, st.opacity ?? 1)} ${Math.round(st.pos * 100)}%`).join(', ');
+  return g.type === 'radial'
+    ? `radial-gradient(circle at ${Math.round(g.cx * 100)}% ${Math.round(g.cy * 100)}%, ${stops})`
+    : `linear-gradient(${g.angle}deg, ${stops})`;
+}
+
+/**
+ * WordArt-like effects of a run: an outline, a gradient or no fill, and a
+ * shadow or glow, as CSS (see spanFor). A gradient's first colour stands in
+ * as the run's colour.
+ */
+function textEffects(rPr, ctx) {
+  const p = {};
+  const ln = kid(rPr, 'ln');
+  if (ln) {
+    const line = lineOf(ln, ctx.scheme, ctx.k);
+    const fill = kid(ln, 'solidFill');
+    p.outline = line && line.color !== 'none' ? `${Math.max(0.25, line.width)}px ${rgba(line.color, alphaOf(fill))}` : null;
+  }
+  const grad = kid(rPr, 'gradFill');
+  if (grad) {
+    const f = fillFrom(grad, ctx.scheme);
+    if (f) {
+      p.color = f.color;
+      p.gradient = f.gradient ? cssGradient(f.gradient) : null;
+    }
+  } else if (kid(rPr, 'noFill')) p.color = 'transparent';
+  else if (kid(rPr, 'solidFill')) p.gradient = null;
+  const effects = kid(rPr, 'effectLst');
+  if (effects) {
+    const shadows = [];
+    const px = (v) => Math.round(((+v || 0) / EMU_PER_PT) * ctx.k * 10) / 10;
+    const sh = kid(effects, 'outerShdw');
+    if (sh) {
+      const dist = px(attr(sh, 'dist'));
+      const dir = ((+attr(sh, 'dir') || 0) / 60000) * (Math.PI / 180);
+      const color = colorOf(sh, ctx.scheme) || '#000000';
+      const r = (v) => Math.round(v * 10) / 10;
+      shadows.push(`${rgba(color, alphaOf(sh))} ${r(dist * Math.cos(dir))}px ${r(dist * Math.sin(dir))}px ${px(attr(sh, 'blurRad'))}px`);
+    }
+    const glow = kid(effects, 'glow');
+    if (glow) shadows.push(`${rgba(colorOf(glow, ctx.scheme) || '#ffffff', alphaOf(glow))} 0px 0px ${px(attr(glow, 'rad'))}px`);
+    p.shadow = shadows.join(', ') || null;
+  }
+  return p;
+}
+
+/**
+ * A link's text colour, for a run without one of its own: the theme's link
+ * colour, unless the link says to keep the text's (PowerPoint 365's ahyp:hlinkClr).
+ */
+function linkColor(hlink, ctx) {
+  const keepText = desc(hlink, 'hlinkClr').some((c) => attr(c, 'val') === 'tx');
+  return !keepText && ctx.scheme?.hlink ? { color: `#${ctx.scheme.hlink.toLowerCase()}` } : {};
+}
+
+/**
+ * Where an a:hlinkClick goes, as a LibreSlides link: a web address, or
+ * "#slide:next" and the like; a jump to a particular slide is
+ * "#slide-path:<its part>" until the slides have ids (see importPptx).
+ */
+function linkOf(hlink, rels) {
+  if (!hlink) return null;
+  const action = attr(hlink, 'action') || '';
+  const jump = /jump=(\w+)/.exec(action)?.[1];
+  if (jump) return { nextslide: '#slide:next', previousslide: '#slide:prev', firstslide: '#slide:first', lastslide: '#slide:last' }[jump] || null;
+  const target = rels?.[rid(hlink, 'id')];
+  if (!target) return null;
+  if (/hlinksldjump/.test(action) || target.type === 'slide') return `#slide-path:${target.path}`;
+  return target.external && /^(https?:|mailto:)/i.test(target.path) ? target.path : null;
 }
 
 /**
@@ -59,18 +164,42 @@ function paraProps(pPr, ctx) {
   const align = ALIGN[attr(pPr, 'algn')];
   if (align) p.align = align;
   if (kid(pPr, 'buNone')) p.bullet = 'none';
-  else if (kid(pPr, 'buAutoNum')) p.bullet = 'ol';
-  else if (kid(pPr, 'buChar') || kid(pPr, 'buBlip')) p.bullet = 'ul';
+  else if (kid(pPr, 'buAutoNum')) {
+    p.bullet = 'ol';
+    p.numbering = { type: attr(kid(pPr, 'buAutoNum'), 'type'), start: +attr(kid(pPr, 'buAutoNum'), 'startAt') || 1 };
+  } else if (kid(pPr, 'buChar') || kid(pPr, 'buBlip')) {
+    p.bullet = 'ul';
+    p.bulletChar = attr(kid(pPr, 'buChar'), 'char') || undefined;
+  }
+  // The bullet's own colour, size and font, or (null) the text's.
+  if (kid(pPr, 'buClr')) p.bulletColor = colorOf(kid(pPr, 'buClr'), ctx.scheme);
+  else if (kid(pPr, 'buClrTx')) p.bulletColor = null;
+  if (kid(pPr, 'buSzPct')) p.bulletSize = { pct: pctOf(attr(kid(pPr, 'buSzPct'), 'val')) };
+  else if (kid(pPr, 'buSzPts')) p.bulletSize = { px: (+attr(kid(pPr, 'buSzPts'), 'val') / 100) * ctx.k * ctx.fontScale };
+  else if (kid(pPr, 'buSzTx')) p.bulletSize = null;
+  if (kid(pPr, 'buFont')) {
+    const face = attr(kid(pPr, 'buFont'), 'typeface');
+    p.bulletFont = face === '+mj-lt' ? ctx.fonts.major : face === '+mn-lt' ? ctx.fonts.minor : face;
+  } else if (kid(pPr, 'buFontTx')) p.bulletFont = null;
+  // Where the text starts (marL) and where its first line or bullet starts from there (indent: less than 0 hangs).
+  for (const key of ['marL', 'indent']) if (attr(pPr, key) != null) p[key] = ptOf(attr(pPr, key)) * ctx.k;
+  if (attr(pPr, 'rtl') != null) p.rtl = isTrue(attr(pPr, 'rtl'));
+  // Line spacing in lines ("single" is about 1.2 times the text size) or in points.
   const ln = path(pPr, 'lnSpc', 'spcPct');
-  if (ln) p.lineHeight = (+attr(ln, 'val') / 100000) * 1.2; // "single" spacing is about 1.2 lines
+  const lnPts = path(pPr, 'lnSpc', 'spcPts');
+  if (ln) Object.assign(p, { lineHeight: pctOf(attr(ln, 'val')) * 1.2, linePx: null });
+  else if (lnPts) Object.assign(p, { linePx: (+attr(lnPts, 'val') / 100) * ctx.k, lineHeight: null });
   for (const side of ['spcAft', 'spcBef']) {
     const pts = path(pPr, side, 'spcPts');
     const pct = path(pPr, side, 'spcPct');
     if (pts) p[side] = { pt: (+attr(pts, 'val') / 100) * ctx.k };
-    else if (pct) p[side] = { em: (+attr(pct, 'val') / 100000) * 1.2 };
+    else if (pct) p[side] = { em: pctOf(attr(pct, 'val')) * 1.2 };
   }
   return p;
 }
+
+/** A DrawingML percentage ("75000", or "75%" as strict files write it) as a fraction. */
+const pctOf = (v) => (/%\s*$/.test(v || '') ? parseFloat(v) / 100 : +v / 100000) || 0;
 
 /**
  * Where a shape's text formatting comes from, lowest priority first: the
@@ -91,9 +220,33 @@ function levelProps(chain, lvl) {
   return out;
 }
 
-const emOf = (space, size) => (!space ? null : space.em ?? (size ? space.pt / size : 0));
+/** Space before or after a paragraph (see paraProps) in pixels, for text of `size`. */
+const spacePx = (space, size) => (!space ? 0 : space.pt ?? space.em * size);
+const round1 = (v) => Math.round(v * 10) / 10;
+/** The value that comes up most often (the first of those tied). */
+function commonest(values) {
+  const counts = new Map();
+  for (const v of values) counts.set(v, (counts.get(v) || 0) + 1);
+  let best = values[0];
+  for (const [v, n] of counts) if (n > counts.get(best)) best = v;
+  return best;
+}
 
-/** Convert a txBody to HTML; returns { html, base, align, lineHeight, spacing } (base is the box-level run style). */
+/**
+ * Convert a txBody to HTML; returns { html, base, align, lineHeight, spacing }
+ * (base is the box-level run style, lineHeight and spacing the box's).
+ *
+ * Paragraph settings that differ from the box's are the paragraph's own
+ * inline styles: alignment, line spacing (line-height), the space above it
+ * (margin-top: the one before's space after and its own space before),
+ * margins and indents (margin-inline-start and text-indent) and direction
+ * (dir). List levels are nested lists, each as far in as PowerPoint puts its
+ * text (padding-inline-start); a list item is coloured and sized as its
+ * first run, so its bullet is, unless the bullet has a colour (--bu-color)
+ * or size (--bu-size) of its own. A level with no list above it is a list of
+ * its own, set in, and paragraphs without bullets inside a list stay in it,
+ * so its numbering goes on after them.
+ */
 function textBody(txBody, ctx, { chain = [], defaults = {}, base: fixedBase = null } = {}) {
   const paras = kids(txBody, 'p').map((p) => {
     const pPr = kid(p, 'pPr');
@@ -103,62 +256,192 @@ function textBody(txBody, ctx, { chain = [], defaults = {}, base: fixedBase = nu
     for (const r of p.children) {
       if (r.localName === 'r' || r.localName === 'fld') {
         const t = kid(r, 't')?.textContent || '';
-        if (t) runs.push({ text: t, props: { ...defaults, ...props.run, ...runProps(kid(r, 'rPr'), ctx) } });
+        const field = r.localName === 'fld' && FIELD.test(attr(r, 'type')) ? attr(r, 'type') : null;
+        if (t || field) runs.push({ text: t || ' ', props: { ...defaults, ...props.run, ...runProps(kid(r, 'rPr'), ctx), field } });
       } else if (r.localName === 'br') runs.push({ br: true });
     }
-    return { lvl, props, runs };
+    const first = runs.find((r) => !r.br);
+    // An empty paragraph is as tall as its end mark's text (often a small spacer).
+    const end = first ? null : runProps(kid(p, 'endParaRPr'), ctx).size;
+    return { lvl, props, runs, first, size: first?.props.size || end || props.run.size || defaults.size || 18, end };
   });
   // Alignment shared by every paragraph belongs to the box, not to each paragraph.
   const aligns = paras.map((p) => p.props.align || null);
   const uniform = aligns.every((a) => a === aligns[0]);
-  const first = paras.flatMap((p) => p.runs).find((r) => !r.br);
-  const base = fixedBase || (first ? { ...first.props } : { ...defaults, ...(paras[0]?.props.run || {}) });
-  const out = [];
-  const listStack = []; // open list tags
-  const closeLists = (depth) => {
-    while (listStack.length > depth) out.push(`</li></${listStack.pop()}>`);
-  };
-  for (const { lvl, props, runs } of paras) {
-    const bullet = runs.some((r) => !r.br) && (props.bullet === 'ul' || props.bullet === 'ol') ? props.bullet : null;
-    const inner = runs.map((r) => (r.br ? '<br>' : spanFor(r.text, r.props, base))).join('') || '<br>';
-    const style = props.align && !uniform ? ` style="text-align: ${props.align}"` : '';
-    if (bullet) {
-      const depth = lvl + 1;
-      if (listStack.length > depth) closeLists(depth);
-      if (listStack.length === depth) out.push(`</li><li${style}>${inner}`);
-      else {
-        while (listStack.length < depth) {
-          out.push(`<${bullet}><li${listStack.length === depth - 1 ? style : ''}>`);
-          listStack.push(bullet);
-        }
-        out.push(inner);
-      }
-    } else {
-      closeLists(0);
-      out.push(`<p${style}>${inner}</p>`);
-    }
-  }
-  closeLists(0);
+  const firstRun = paras.find((p) => p.first)?.first;
+  const base = fixedBase || (firstRun ? { ...firstRun.props } : { ...defaults, ...(paras[0]?.props.run || {}) });
+  const baseSize = base.size || defaults.size || 18;
+  // Shrink on overflow takes this much off the line spacing, and as much off the space between paragraphs.
+  const reduce = Math.max(0, Math.min(0.9, ctx.lnSpcReduction || 0));
+  paras.forEach((p, i) => {
+    const { props } = p;
+    p.linePx = props.linePx ? round1(props.linePx * (1 - reduce)) : null;
+    p.line = p.linePx ? null : Math.max(0.1, Math.round(((props.lineHeight ?? 1.2) - reduce * 1.2) * 100) / 100);
+    // PowerPoint leaves out the first paragraph's space before.
+    p.gap = i ? round1((spacePx(paras[i - 1].props.spcAft, paras[i - 1].size) + spacePx(props.spcBef, p.size)) * (1 - reduce)) : 0;
+  });
+  const lines = paras.map((p) => p.line).filter((v) => v != null);
+  const lineHeight = lines.length ? commonest(lines) : Math.round((1.2 - reduce * 1.2) * 100) / 100;
+  // A box of one paragraph keeps the space it would put between paragraphs, for ones added to it.
   const lead = paras[0]?.props || {};
-  const size = base.size || defaults.size;
-  return {
-    html: out.join('').replace(/<li>(<[uo]l>)/g, '<li><br>$1'),
-    base,
-    align: uniform ? aligns[0] : null,
-    lineHeight: lead.lineHeight,
-    spacing: emOf(lead.spcAft, size) ?? emOf(lead.spcBef, size),
+  const gapPx = paras.length > 1 ? commonest(paras.slice(1).map((p) => p.gap))
+    : (spacePx(lead.spcAft, paras[0]?.size) + spacePx(lead.spcBef, paras[0]?.size)) * (1 - reduce);
+  const spacing = Math.round((gapPx / baseSize) * 100) / 100;
+
+  const out = [];
+  const stack = []; // open lists, innermost last: { lvl, tag, key, start (where its items' text starts), size (its open item's text size) }
+  const counters = []; // per level: { key, next } of the numbering going on there
+  const closeTo = (lvl) => {
+    while (stack.length && stack[stack.length - 1].lvl >= lvl) out.push(`</li></${stack.pop().tag}>`);
   };
+  const px = (v) => `${round1(v)}px`;
+  const attrs = (dir, css) => `${dir}${css.length ? ` style="${css.join('; ')}"` : ''}`;
+  paras.forEach((para, i) => {
+    const { lvl, props, runs, first, end } = para;
+    const bullet = first && (props.bullet === 'ul' || props.bullet === 'ol') ? props.bullet : null;
+    const marL = props.marL || 0;
+    const indent = props.indent || 0;
+    // Formatting a list item takes from its first run (and its bullet with it).
+    const own = bullet ? { ...base, color: first.props.color, size: first.props.size } : base;
+    const fontSize = own.size || baseSize;
+    const css = [];
+    if (props.align && !uniform) css.push(`text-align: ${props.align}`);
+    if (para.linePx) css.push(`line-height: ${px(para.linePx)}`);
+    else if (Math.abs(para.line - lineHeight) > 0.005) css.push(`line-height: ${para.line}`);
+    // The space above it, where the box's (in em of the text size it's in) isn't right.
+    const gapCss = (size) => (i && Math.abs(para.gap - spacing * size) > 0.5 ? [`margin-top: ${px(para.gap)}`] : []);
+    const dir = props.rtl ? ' dir="rtl"' : '';
+    const inner = runs.map((r) => (r.br ? '<br>' : spanFor(r.text, r.props, own))).join('') || '<br>';
+    if (!bullet) {
+      // Numbering goes on after empty paragraphs, and starts again after one with text at its level or above.
+      if (first) counters.length = Math.min(counters.length, lvl);
+      closeTo(lvl);
+      const top = stack[stack.length - 1];
+      const from = top ? top.start : 0;
+      const inSize = top ? top.size : baseSize;
+      const ownSize = end && Math.abs(end - inSize) > 0.4 ? end : null;
+      css.push(...gapCss(ownSize || inSize));
+      if (ownSize) css.push(`font-size: ${px(ownSize)}`);
+      if (Math.abs(marL - from) > 0.5) css.push(`margin-inline-start: ${px(marL - from)}`);
+      if (Math.abs(indent) > 0.5) css.push(`text-indent: ${px(indent)}`);
+      out.push(`<p${attrs(dir, css)}>${inner}</p>`);
+      return;
+    }
+    const buSize = props.bulletSize ? props.bulletSize.pct ?? props.bulletSize.px / fontSize : 1;
+    // A bullet hangs left of the text (at marL + indent), or sits there with the text after it.
+    const textStart = Math.max(marL, marL + indent + fontSize * buSize * 0.75);
+    closeTo(lvl + 1);
+    const { style: listCss, start: firstNumber } = listStyle(props, stack.some((s) => s.lvl < lvl));
+    const key = `${bullet}|${listCss}|${firstNumber}`;
+    if (stack[stack.length - 1]?.lvl === lvl && stack[stack.length - 1].key !== key) closeTo(lvl);
+    const top = stack[stack.length - 1];
+    counters.length = Math.min(counters.length, lvl + 1);
+    const count = counters[lvl]?.key === key ? counters[lvl] : (counters[lvl] = { key, next: firstNumber });
+    const number = count.next++;
+    if (own.color && own.color !== base.color) css.push(`color: ${own.color}`);
+    if (Math.abs(fontSize - baseSize) > 0.4) css.push(`font-size: ${px(fontSize)}`);
+    if (props.bulletColor && props.bulletColor !== own.color) css.push(`--bu-color: ${props.bulletColor}`);
+    if (Math.abs(buSize - 1) > 0.01) css.push(`--bu-size: ${Math.round(buSize * 100)}%`);
+    if (top?.lvl === lvl) {
+      css.push(...gapCss(fontSize));
+      if (Math.abs(textStart - top.start) > 0.5) css.push(`margin-inline-start: ${px(textStart - top.start)}`);
+      out.push(`</li><li${attrs(dir, css)}>${inner}`);
+      top.size = fontSize;
+      return;
+    }
+    // A new list, inside the open list item if there is one, set in 1.25em (see app.css) unless PowerPoint puts its text elsewhere.
+    const from = top ? top.start : 0;
+    const listSize = top ? top.size : baseSize;
+    const inset = Math.max(0, textStart - from);
+    const ulCss = [listCss, Math.abs(inset - 1.25 * listSize) > 1 && `padding-inline-start: ${px(inset)}`, ...gapCss(listSize)].filter(Boolean);
+    const startAttr = bullet === 'ol' && number > 1 ? ` start="${number}"` : '';
+    out.push(`<${bullet}${attrs(dir, ulCss)}${startAttr}><li${attrs('', css)}>${inner}`);
+    stack.push({ lvl, tag: bullet, key, start: from + inset, size: fontSize });
+  });
+  closeTo(0);
+  return { html: out.join(''), base, align: uniform ? aligns[0] : null, lineHeight, spacing };
+}
+
+// PowerPoint's numbering styles as CSS list styles (the punctuation around the number isn't kept).
+const numberingCss = (type = '') => (/^alphaLc/.test(type) ? 'lower-alpha' : /^alphaUc/.test(type) ? 'upper-alpha'
+  : /^romanLc/.test(type) ? 'lower-roman' : /^romanUc/.test(type) ? 'upper-roman' : null);
+
+/**
+ * A list's own style, and the first number of a numbered one: the
+ * numbering style, or the bullet character (a symbol font's as the Unicode
+ * character that looks like it). Round bullets are the default, but a list
+ * inside another needs saying so (app.css makes those hollow).
+ */
+function listStyle(props, nested) {
+  if (props.bullet === 'ol') {
+    const css = numberingCss(props.numbering?.type);
+    return { style: css ? `list-style-type: ${css}` : '', start: Math.max(1, props.numbering?.start || 1) };
+  }
+  const ch = bulletGlyph(props.bulletChar, props.bulletFont);
+  if (!ch || ch === '•') return { style: nested && ch ? 'list-style-type: disc' : '', start: 1 };
+  if (/['"\\<>&;]/.test(ch)) return { style: '', start: 1 };
+  return { style: `list-style-type: '${ch} '`, start: 1 };
+}
+
+// PowerPoint's default text box margins, in EMU (0.1 in at the sides, 0.05 in at the top and bottom).
+const DEFAULT_INSETS = { l: 91440, t: 45720, r: 91440, b: 45720 };
+
+/** A text box's margins, wrapping, vertical text and columns (see render.js textLayout) from its a:bodyPr attributes. */
+function textLayoutOf(bodyAttr, k) {
+  const out = {};
+  const ins = { l: bodyAttr('lIns'), t: bodyAttr('tIns'), r: bodyAttr('rIns'), b: bodyAttr('bIns') };
+  if (Object.entries(ins).some(([side, v]) => v != null && +v !== DEFAULT_INSETS[side])) {
+    out.inset = Object.fromEntries(Object.entries(ins).map(([side, v]) => [side, Math.round(((v != null ? +v : DEFAULT_INSETS[side]) / EMU_PER_PT) * k * 10) / 10]));
+  }
+  if (bodyAttr('wrap') === 'none') out.wrap = false;
+  const vert = bodyAttr('vert');
+  if (vert === 'vert' || vert === 'vert270' || vert === 'eaVert') out.vertical = vert;
+  else if (vert === 'wordArtVert' || vert === 'mongolianVert') out.vertical = 'eaVert';
+  const cols = +bodyAttr('numCol') || 1;
+  if (cols > 1) {
+    out.columns = Math.min(16, cols);
+    if (bodyAttr('spcCol') != null) out.columnGap = Math.round((+bodyAttr('spcCol') / EMU_PER_PT) * k * 10) / 10;
+  }
+  return out;
+}
+
+/**
+ * WordArt's text warp (see model/warps.js) from the first of a:bodyPr
+ * elements that has one, or null for none (or one that leaves text plain).
+ */
+function warpOf(bodyPrs) {
+  const body = bodyPrs.find((b) => kid(b, 'prstTxWarp'));
+  const warp = kid(body, 'prstTxWarp');
+  if (!warp) return null;
+  const adjust = {};
+  for (const gd of kids(kid(warp, 'avLst'), 'gd')) {
+    const m = /^val\s+(-?\d+)$/.exec((attr(gd, 'fmla') || '').trim());
+    if (m) adjust[attr(gd, 'name')] = +m[1];
+  }
+  const fromWordArt = attr(body, 'fromWordArt');
+  return cleanWarp({ preset: attr(warp, 'prst'), adjust, stretch: fromWordArt === '1' || fromWordArt === 'true' });
 }
 
 /** A font name made safe to put in a style attribute. */
 const cssFont = (name) => String(name).replace(/["'\\;<>{}()]/g, '').trim();
+
+/** The fonts of a run's text: its Latin font, then those for East Asian and complex scripts it has text in. */
+function fontsOf(text, props) {
+  const fonts = [props.font];
+  if (props.fontEa && EAST_ASIAN.test(text)) fonts.push(props.fontEa);
+  if (props.fontCs && COMPLEX_SCRIPT.test(text)) fonts.push(props.fontCs);
+  return [...new Set(fonts.filter((f) => f && cssFont(f)).map(cssFont))];
+}
 
 /** A run as HTML, with inline styles only where it differs from the box's base style. */
 function spanFor(text, props, base) {
   const css = [];
   if (props.size && Math.abs(props.size - (base.size || 0)) > 0.4) css.push(`font-size: ${Math.round(props.size * 10) / 10}px`);
   if (props.color && props.color !== base.color) css.push(`color: ${props.color}`);
-  if (props.font && props.font !== base.font && cssFont(props.font)) css.push(`font-family: '${cssFont(props.font)}'`);
+  const fonts = fontsOf(text, props);
+  // Text in several scripts falls back from font to font, then to the kind of font the first is.
+  if (fonts.length > 1) css.push(`font-family: ${fonts.map((f) => `'${f}'`).join(', ')}, ${fontStack(fonts[0]).split(', ').pop()}`);
+  else if (fonts[0] && props.font !== base.font) css.push(`font-family: '${fonts[0]}'`);
   if (props.highlight) css.push(`background-color: ${props.highlight}`);
   // Formatting left unset is off, so compare as booleans.
   if (!!props.bold !== !!base.bold) css.push(`font-weight: ${props.bold ? 700 : 400}`);
@@ -166,28 +449,46 @@ function spanFor(text, props, base) {
   if (!!props.underline !== !!base.underline || !!props.strike !== !!base.strike) {
     css.push(`text-decoration: ${[props.underline && 'underline', props.strike && 'line-through'].filter(Boolean).join(' ') || 'none'}`);
   }
+  // Kept on every run: the box's own style has nothing for these.
+  if (props.caps) css.push(props.caps === 'small' ? 'font-variant: small-caps' : 'text-transform: uppercase');
+  if (props.letterSpacing) css.push(`letter-spacing: ${props.letterSpacing}px`);
+  if (props.outline) css.push(`-webkit-text-stroke: ${props.outline}`);
+  if (props.shadow) css.push(`text-shadow: ${props.shadow}`);
+  if (props.gradient) css.push(`background-image: ${props.gradient}; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent`);
   let html = esc(text);
+  if (props.field) html = `<span data-field="${props.field}">${html}</span>`;
   if (css.length) html = `<span style="${css.join('; ')}">${html}</span>`;
+  if (props.baseline) html = `<${props.baseline}>${html}</${props.baseline}>`;
   return props.link ? `<a href="${esc(props.link)}">${html}</a>` : html;
 }
 
 // ------------------------------------------------------------------ shapes
 
 function xfrmOf(spPr) {
-  const x = kid(spPr, 'xfrm');
+  return boxOfXfrm(kid(spPr, 'xfrm'));
+}
+
+/** An EMU coordinate as points: 0 for anything that isn't a number. */
+const ptOf = (v) => (Number.isFinite(+v) ? +v / EMU_PER_PT : 0);
+
+/** An a:xfrm (or a SmartArt dsp:txXfrm) as a box in points, with its rotation and flips. */
+function boxOfXfrm(x) {
   if (!x) return null;
   const off = kid(x, 'off');
   const ext = kid(x, 'ext');
   if (!off || !ext) return null;
   return {
-    x: +attr(off, 'x') / EMU_PER_PT, y: +attr(off, 'y') / EMU_PER_PT,
-    w: +attr(ext, 'cx') / EMU_PER_PT, h: +attr(ext, 'cy') / EMU_PER_PT,
-    rot: (+(attr(x, 'rot') || 0)) / 60000, flipH: attr(x, 'flipH') === '1', flipV: attr(x, 'flipV') === '1',
+    x: ptOf(attr(off, 'x')), y: ptOf(attr(off, 'y')),
+    w: Math.max(0, ptOf(attr(ext, 'cx'))), h: Math.max(0, ptOf(attr(ext, 'cy'))),
+    rot: ((+attr(x, 'rot') || 0) / 60000) % 360, flipH: isTrue(attr(x, 'flipH')), flipV: isTrue(attr(x, 'flipV')),
   };
 }
 
+/** A shape's non-visual properties (p:nvSpPr, p:nvPicPr…), where its id, name, link and placeholder are. */
+const nvOf = (node) => [...node.children].find((c) => /^nv/.test(c.localName)) || null;
+
 function phOf(sp) {
-  const nv = [...sp.children].find((c) => /^nv/.test(c.localName));
+  const nv = nvOf(sp);
   const ph = nv && desc(nv, 'ph')[0];
   if (!ph) return null;
   return { type: attr(ph, 'type') || 'body', idx: attr(ph, 'idx') };
@@ -195,14 +496,18 @@ function phOf(sp) {
 
 const PH_ROLE = { title: 'title', ctrTitle: 'title', subTitle: 'subtitle', body: 'body', obj: 'body' };
 
-/** Placeholder shapes of a layout or master, for looking up inherited positions and text styles. */
+/** Placeholder shapes of a layout or master, for looking up inherited positions and text styles (found once per part). */
+const placeholderLists = new WeakMap();
 function placeholders(doc) {
-  const list = [];
-  for (const sp of desc(doc, 'sp')) {
-    const ph = phOf(sp);
-    if (ph) list.push({ ...ph, sp });
+  if (!placeholderLists.has(doc)) {
+    const list = [];
+    for (const sp of desc(doc, 'sp')) {
+      const ph = phOf(sp);
+      if (ph) list.push({ ...ph, sp });
+    }
+    placeholderLists.set(doc, list);
   }
-  return list;
+  return placeholderLists.get(doc);
 }
 
 function findPh(list, ph) {
@@ -220,41 +525,107 @@ function lineOf(ln, scheme, k) {
   const fill = kid(ln, 'solidFill') || kid(ln, 'gradFill');
   // An outline with no fill of its own takes the shape style's line (or has none).
   if (!fill) return null;
-  const color = colorOf(fill.localName === 'gradFill' ? desc(fill, 'gs')[0] : fill, scheme);
+  const holder = fill.localName === 'gradFill' ? desc(fill, 'gs')[0] : fill;
+  // A see-through outline keeps its transparency.
+  const color = colorOf(holder, scheme) && withOpacity(colorOf(holder, scheme), alphaOf(holder));
   const w = attr(ln, 'w') ? (+attr(ln, 'w') / EMU_PER_PT) * k : 0.75;
   const dash = attr(kid(ln, 'prstDash'), 'val');
   return { color: color || '#000000', width: Math.round(w * 10) / 10, dash: !dash || dash === 'solid' ? 'solid' : /dot/i.test(dash) && !/dash/i.test(dash) ? 'dot' : /lgDash/.test(dash) ? 'longDash' : /dashDot/i.test(dash) ? 'dashDot' : 'dash' };
 }
 
-/** A shape's fill as { color, alpha } ('none' for no fill), or undefined when it takes the style's. */
-function fillOf(spPr, scheme) {
-  if (!spPr) return undefined;
-  if (kid(spPr, 'noFill')) return { color: 'none', alpha: 1 };
-  const solid = kid(spPr, 'solidFill');
-  if (solid) {
-    const color = colorOf(solid, scheme);
-    return color ? { color, alpha: alphaOf(solid) } : undefined;
+const FILLS = ['noFill', 'solidFill', 'gradFill', 'blipFill', 'pattFill', 'grpFill'];
+
+/**
+ * A fill element (a:solidFill, a:gradFill…) as { color, alpha, gradient? }:
+ * 'none' for no fill, the first colour standing in for a gradient (see
+ * model/deck.js). Undefined for fills LibreSlides can't show.
+ */
+function fillFrom(f, scheme) {
+  if (!f) return undefined;
+  if (f.localName === 'noFill') return { color: 'none', alpha: 1 };
+  if (f.localName === 'solidFill') {
+    const color = colorOf(f, scheme);
+    return color ? { color, alpha: alphaOf(f) } : undefined;
   }
-  const grad = kid(spPr, 'gradFill');
-  if (grad) {
-    const stop = desc(grad, 'gs')[0];
-    const color = colorOf(stop, scheme);
-    return color ? { color, alpha: alphaOf(stop) } : undefined;
+  if (f.localName === 'pattFill') {
+    // A pattern (see model/patterns.js), its foreground colour standing in for it;
+    // one that says neither which nor in what colour shows nothing (as LibreOffice has it).
+    if (!attr(f, 'prst') && !kid(f, 'fgClr')) return { color: 'none', alpha: 1 };
+    const fg = colorOf(kid(f, 'fgClr'), scheme) || '#000000';
+    const bg = colorOf(kid(f, 'bgClr'), scheme) || '#ffffff';
+    const preset = attr(f, 'prst');
+    return { color: fg, alpha: 1, pattern: { preset: isPattern(preset) ? preset : 'pct50', fg, bg } };
   }
-  return undefined;
+  if (f.localName !== 'gradFill') return undefined;
+  const stops = desc(kid(f, 'gsLst'), 'gs')
+    .map((gs) => ({ pos: Math.max(0, Math.min(1, +attr(gs, 'pos') / 100000 || 0)), color: colorOf(gs, scheme), opacity: alphaOf(gs) }))
+    .filter((s) => s.color)
+    .sort((a, b) => a.pos - b.pos)
+    .map(({ opacity, ...s }) => (opacity < 1 ? { ...s, opacity: Math.round(opacity * 100) / 100 } : s));
+  if (!stops.length) return undefined;
+  const gradient = { type: 'linear', angle: 180, stops };
+  const lin = kid(f, 'lin');
+  const shade = kid(f, 'path');
+  if (shade) {
+    // A path gradient: from the centre of its fill-to rectangle outwards.
+    const r = kid(shade, 'fillToRect');
+    const side = (n) => (+attr(r, n) || 0) / 100000;
+    Object.assign(gradient, { type: 'radial', cx: Math.round(((side('l') + 1 - side('r')) / 2) * 100) / 100, cy: Math.round(((side('t') + 1 - side('b')) / 2) * 100) / 100 });
+    // (Its first stop is at the centre, as LibreSlides' are.)
+    delete gradient.angle;
+  } else if (lin) gradient.angle = Math.round((+attr(lin, 'ang') / 60000 + 90) % 360);
+  return { color: stops[0].color, alpha: 1, gradient: stops.length > 1 ? gradient : undefined };
 }
 
-/** Theme default fill/line/font colour from <p:style> references. */
-function styleRefs(sp, scheme) {
+/** A shape's own fill (see fillFrom), or undefined when it takes the style's. */
+function fillOf(spPr, scheme) {
+  const f = spPr && [...spPr.children].find((c) => FILLS.includes(c.localName));
+  return fillFrom(f, scheme);
+}
+
+/**
+ * The look a shape takes from the theme through its <p:style>: fill (with
+ * the theme's fill style, so Office themes' gradients and pictures come
+ * through), line (with the theme's line style's width and dash), font
+ * colour, and whether the theme's effect gives it a shadow.
+ */
+function styleRefs(sp, ctx) {
   const st = kid(sp, 'style');
   if (!st) return {};
+  const ref = (name) => kid(st, name);
+  const fillIdx = +(attr(ref('fillRef'), 'idx') || 0);
+  const fillColor = colorOf(ref('fillRef'), ctx.scheme);
+  // The style's colour stands in for "phClr" in the theme's fill.
+  const themeFill = fillIdx > 0 && fillColor ? (fillIdx >= 1001 ? ctx.themeBgFills : ctx.themeFills)?.[(fillIdx % 1000) - 1] : null;
+  const effect = ctx.themeEffects?.[+(attr(ref('effectRef'), 'idx') || 0) - 1];
+  // The theme's line style: its width and dash, in the style's colour.
+  const lineColor = colorOf(ref('lnRef'), ctx.scheme);
+  const themeLine = ctx.themeLines?.[+(attr(ref('lnRef'), 'idx') || 0) - 1];
+  const lineStyle = themeLine && lineColor ? lineOf(themeLine, { ...ctx.scheme, phClr: lineColor.slice(1) }, ctx.k) : null;
   return {
-    fill: colorOf(kid(st, 'fillRef'), scheme),
-    line: colorOf(kid(st, 'lnRef'), scheme),
-    font: colorOf(kid(st, 'fontRef'), scheme),
-    hasLine: +(attr(kid(st, 'lnRef'), 'idx') || 0) > 0,
-    hasFill: +(attr(kid(st, 'fillRef'), 'idx') || 0) > 0,
+    fill: fillColor,
+    fillStyle: themeFill ? fillFrom(themeFill, { ...ctx.scheme, phClr: fillColor.slice(1) }) : undefined,
+    fillPicture: themeFill?.localName === 'blipFill' ? themeFill : null, // its picture is the theme's (ctx.themeRels)
+    line: lineStyle?.color || lineColor,
+    lineWidth: lineStyle?.width,
+    lineDash: lineStyle?.dash,
+    font: colorOf(ref('fontRef'), ctx.scheme),
+    hasLine: +(attr(ref('lnRef'), 'idx') || 0) > 0,
+    hasFill: fillIdx > 0,
+    shadow: !!effect && desc(effect, 'outerShdw').length > 0,
   };
+}
+
+/** Whether a shape has a shadow: its own effects, else its style's. */
+const shadowOf = (spPr, refs) => {
+  const own = kid(spPr, 'effectLst');
+  return own ? kid(own, 'outerShdw') != null : !!refs.shadow;
+};
+
+/** How far a shape's or picture's soft edges (a:softEdge) fade in, in points; 0 for none. */
+function softEdgeOf(spPr, k) {
+  const rad = +attr(kid(kid(spPr, 'effectLst'), 'softEdge'), 'rad');
+  return rad > 0 ? Math.min(400, Math.round((rad / EMU_PER_PT) * k * 10) / 10) : 0;
 }
 
 /** The part of a picture shown (a:srcRect), as fractions cut from each side; null when uncropped. */
@@ -267,147 +638,389 @@ function cropOf(blipFill) {
   return Object.values(crop).some((v) => v > 0.0005) ? crop : null;
 }
 
-/** Closest LibreSlides shape for PowerPoint presets it doesn't draw itself. */
-const PRESET_ALIAS = {
-  flowChartProcess: 'rect', flowChartAlternateProcess: 'roundRect', flowChartTerminator: 'roundRect', snipRoundRect: 'roundRect', round2SameRect: 'roundRect',
-  flowChartDecision: 'diamond', flowChartConnector: 'ellipse', flowChartInputOutput: 'parallelogram', flowChartPreparation: 'hexagon',
-  notchedRightArrow: 'rightArrow', stripedRightArrow: 'rightArrow', star6: 'star5', star7: 'star5', star8: 'star5',
-};
+// ------------------------------------------------------------------ table styles
 
 /**
- * A custom geometry (a:custGeom) as freeform paths (see model/shapes.js), or
- * null when it uses formulas this reader doesn't evaluate. `w` and `h` are
- * the shape's size in EMU, the units of paths that don't give their own.
+ * A cell border (an a:ln of a cell or a table style): a stroke, NO_BORDER for
+ * none, undefined when it doesn't say (another part of the table style does).
  */
-function customGeometry(custGeom, w, h) {
-  const guides = {};
-  for (const gd of desc(kid(custGeom, 'gdLst'), 'gd')) {
-    const m = /^val\s+(-?[\d.]+)$/.exec(attr(gd, 'fmla') || '');
-    if (m) guides[attr(gd, 'name')] = +m[1];
+function borderOf(ln, ctx) {
+  if (!ln) return undefined;
+  if (kid(ln, 'noFill')) return NO_BORDER;
+  return lineOf(ln, ctx.scheme, ctx.k) || undefined;
+}
+
+/** A table style's border for one side (a:left…): its a:ln, or the theme line it refers to (a:lnRef, taken as 1pt in its colour). */
+function styleBorderOf(side, ctx) {
+  const ref = kid(side, 'lnRef');
+  if (!kid(side, 'ln') && ref) {
+    const color = colorOf(ref, ctx.scheme);
+    return color && +attr(ref, 'idx') > 0 ? { color, width: Math.round(ctx.k * 10) / 10, dash: 'solid' } : NO_BORDER;
   }
-  const paths = [];
-  let count = 0;
-  for (const p of kids(kid(custGeom, 'pathLst'), 'path')) {
-    const pw = +attr(p, 'w') || w;
-    const ph = +attr(p, 'h') || h;
-    if (!pw || !ph) return null;
-    const known = { l: 0, t: 0, r: pw, b: ph, w: pw, h: ph, hc: pw / 2, vc: ph / 2, wd2: pw / 2, hd2: ph / 2 };
-    const num = (v) => (v == null ? NaN : /^-?[\d.]+$/.test(v) ? +v : known[v] ?? guides[v] ?? NaN);
-    const pts = (el) => kids(el, 'pt').flatMap((pt) => [num(attr(pt, 'x')), num(attr(pt, 'y'))]);
-    const cmds = [];
-    let cur = [0, 0];
-    let start = [0, 0];
-    for (const c of p.children) {
-      const name = c.localName;
-      if (name === 'moveTo' || name === 'lnTo') {
-        cur = pts(c);
-        if (name === 'moveTo') start = cur;
-        cmds.push([name === 'moveTo' ? 'M' : 'L', ...cur]);
-      } else if (name === 'cubicBezTo' || name === 'quadBezTo') {
-        const n = pts(c);
-        cmds.push([name === 'cubicBezTo' ? 'C' : 'Q', ...n]);
-        cur = n.slice(-2);
-      } else if (name === 'arcTo') {
-        const arc = arcToCurves(cur, num(attr(c, 'wR')), num(attr(c, 'hR')), num(attr(c, 'stAng')) / 60000, num(attr(c, 'swAng')) / 60000);
-        cmds.push(...arc.cmds);
-        cur = arc.end;
-      } else if (name === 'close') {
-        cmds.push(['Z']);
-        cur = start;
-      }
-    }
-    const flat = cmds.flat().filter((v) => typeof v === 'number');
-    if (!cmds.length || flat.some((v) => !Number.isFinite(v))) return null;
-    count += cmds.length;
-    const path = { cmds: cmds.map(([op, ...n]) => [op, ...n.map((v, i) => Math.round((v / (i % 2 ? ph : pw)) * 10000) / 10000 || 0)]) };
-    if (attr(p, 'fill') === 'none') path.fill = false;
-    if (attr(p, 'stroke') === '0' || attr(p, 'stroke') === 'false') path.stroke = false;
-    paths.push(path);
+  return borderOf(kid(side, 'ln'), ctx);
+}
+
+/** A table style part's fill: its own (a see-through one as it shows over white), the theme fill it refers to, 'none', or null. */
+function styleFillOf(tcStyle, ctx) {
+  const fill = kid(tcStyle, 'fill');
+  if (fill) {
+    if (kid(fill, 'noFill')) return 'none';
+    const solid = kid(fill, 'solidFill');
+    const color = colorOf(solid, ctx.scheme);
+    const alpha = alphaOf(solid);
+    return color && alpha < 1 ? blend(color, '#ffffff', alpha) : color;
   }
-  return paths.length && count <= 20000 ? paths : null;
+  return colorOf(kid(tcStyle, 'fillRef'), ctx.scheme);
 }
 
 /**
- * An a:arcTo from point `from` as cubic Béziers. The angles (degrees) are where
- * the arc starts and how far it turns, measured as seen on the ellipse, which
- * is what PowerPoint means by them.
+ * How a table style colours each cell: { cell(r, c, rs, cs) → { fill, color,
+ * bold, borders: { t?, r?, b?, l? } } } (rs and cs: the cell's spans), or
+ * null when the table has no style LibreSlides can find.
  */
-function arcToCurves(from, wR, hR, stAng, swAng) {
-  if (![wR, hR, stAng, swAng].every(Number.isFinite) || !wR || !hR || !swAng) return { cmds: [], end: from };
-  const rad = (d) => (d * Math.PI) / 180;
-  // The ellipse's own (parametric) angle for an angle seen from its centre.
-  const param = (a) => Math.atan2(wR * Math.sin(rad(a)), hR * Math.cos(rad(a)));
-  const t0 = param(stAng);
-  let sweep = param(stAng + swAng) - t0;
-  const full = Math.abs(swAng) >= 360;
-  if (full) sweep = Math.sign(swAng) * 2 * Math.PI;
-  else {
-    while (swAng > 0 && sweep <= 0) sweep += 2 * Math.PI;
-    while (swAng < 0 && sweep >= 0) sweep -= 2 * Math.PI;
+function tableLook(tblPr, ctx, rows, cols) {
+  const id = path(tblPr, 'tableStyleId')?.textContent.trim();
+  // The deck's own definition, else PowerPoint's built-in style of that id (see pptx-table-styles.js).
+  const style = id && (ctx.tableStyles?.get(id) || builtInTableStyle(id));
+  if (!style) return null;
+  const on = (name) => isTrue(attr(tblPr, name));
+  const partLook = (name) => {
+    const p = kid(style, name);
+    if (!p) return null;
+    const tx = kid(p, 'tcTxStyle');
+    const bdr = path(p, 'tcStyle', 'tcBdr');
+    return {
+      // The part's borders: around it (left, right, top, bottom) and between its cells (insideH, insideV).
+      borders: Object.fromEntries(['left', 'right', 'top', 'bottom', 'insideH', 'insideV'].map((n) => [n, kid(bdr, n) ? styleBorderOf(kid(bdr, n), ctx) : undefined])),
+      fill: styleFillOf(kid(p, 'tcStyle'), ctx),
+      color: colorOf(tx, ctx.scheme) || colorOf(kid(tx, 'fontRef'), ctx.scheme),
+      bold: attr(tx, 'b') === 'on' ? true : attr(tx, 'b') === 'off' ? false : undefined,
+    };
+  };
+  const looks = Object.fromEntries(['wholeTbl', 'band1H', 'band2H', 'band1V', 'band2V', 'lastCol', 'firstCol', 'lastRow', 'firstRow'].map((n) => [n, partLook(n)]));
+  return {
+    cell(r, c, rs = 1, cs = 1) {
+      const head = on('firstRow') ? 1 : 0;
+      const all = [0, Infinity];
+      // Each part that applies, with the rows and columns it covers. Later parts win, in PowerPoint's order.
+      const parts = [['wholeTbl', all, all]];
+      if (on('bandRow') && r >= head && !(on('lastRow') && r === rows - 1)) parts.push([(r - head) % 2 ? 'band2H' : 'band1H', [r, r], all]);
+      if (on('bandCol')) parts.push([(c - (on('firstCol') ? 1 : 0)) % 2 ? 'band2V' : 'band1V', all, [c, c]]);
+      if (on('lastCol') && c + cs === cols) parts.push(['lastCol', all, [cols - 1, cols - 1]]);
+      if (on('firstCol') && c === 0) parts.push(['firstCol', all, [0, 0]]);
+      if (on('lastRow') && r + rs === rows) parts.push(['lastRow', [rows - 1, rows - 1], all]);
+      if (on('firstRow') && r === 0) parts.push(['firstRow', [0, 0], all]);
+      const out = { borders: {} };
+      for (const [p, [r0, r1], [c0, c1]] of parts) {
+        const l = looks[p];
+        if (!l) continue;
+        if (l.fill) out.fill = l.fill === 'none' ? null : l.fill;
+        if (l.color) out.color = l.color;
+        if (l.bold !== undefined) out.bold = l.bold;
+        // A side on the edge of the part takes its outer border, else the one between its cells.
+        const sides = {
+          t: r === r0 ? 'top' : 'insideH', b: r + rs - 1 >= Math.min(r1, rows - 1) ? 'bottom' : 'insideH',
+          l: c === c0 ? 'left' : 'insideV', r: c + cs - 1 >= Math.min(c1, cols - 1) ? 'right' : 'insideV',
+        };
+        for (const [side, name] of Object.entries(sides)) if (l.borders[name]) out.borders[side] = l.borders[name];
+      }
+      return out;
+    },
+  };
+}
+
+/**
+ * The table's border: the one most of its cells' sides have. Sides that have
+ * it are left to it; sides nothing gives a border have none. A table without
+ * a single border anywhere (and no style) gets a light grid to edit by.
+ */
+function tableBorders(cells, look) {
+  const anchors = cells.flat().filter((cell) => !cell.merged);
+  const key = (s) => JSON.stringify([s.color, s.width, s.dash]);
+  if (!anchors.some((cell) => Object.keys(cell.borders || {}).length)) {
+    for (const cell of anchors) delete cell.borders;
+    return look ? { ...NO_BORDER } : { color: '#94a3b8', width: 1, dash: 'solid' };
   }
-  const cx = from[0] - wR * Math.cos(t0);
-  const cy = from[1] - hR * Math.sin(t0);
-  const at = (t) => [cx + wR * Math.cos(t), cy + hR * Math.sin(t)];
-  const steps = Math.max(1, Math.ceil(Math.abs(sweep) / (Math.PI / 2)));
-  const d = sweep / steps;
-  const k = (4 / 3) * Math.tan(d / 4);
-  const cmds = [];
-  let t = t0;
-  for (let i = 0; i < steps; i++) {
-    const [x1, y1] = at(t);
-    const [x2, y2] = at(t + d);
-    cmds.push(['C', x1 - k * wR * Math.sin(t), y1 + k * hR * Math.cos(t), x2 + k * wR * Math.sin(t + d), y2 - k * hR * Math.cos(t + d), x2, y2]);
-    t += d;
+  const counts = new Map();
+  for (const cell of anchors) {
+    for (const side of SIDES) {
+      const s = cell.borders?.[side] || NO_BORDER;
+      const hit = counts.get(key(s)) || { stroke: s, n: 0 };
+      hit.n++;
+      counts.set(key(s), hit);
+    }
   }
-  return { cmds, end: at(t0 + sweep) };
+  const stroke = [...counts.values()].sort((a, b) => b.n - a.n)[0].stroke;
+  for (const cell of cells.flat()) {
+    if (cell.merged) {
+      delete cell.borders;
+      continue;
+    }
+    const own = {};
+    for (const side of SIDES) {
+      const s = cell.borders?.[side] || NO_BORDER;
+      if (key(s) !== key(stroke)) own[side] = { ...s };
+    }
+    if (Object.keys(own).length) cell.borders = own;
+    else delete cell.borders;
+  }
+  return { ...stroke };
+}
+
+/** A line end's type (a:headEnd / a:tailEnd) as LibreSlides': true (a triangle), a style name, or false. */
+const arrowOf = (type) => (!type || type === 'none' ? false : ['arrow', 'stealth', 'diamond', 'oval'].includes(type) ? type : true);
+
+/** Make elements read from one PowerPoint group a LibreSlides group. */
+function groupElements(els) {
+  if (els.length < 2) return;
+  const groupId = uid();
+  for (const el of els) el.groupId = groupId;
+}
+
+/**
+ * A shape's outline when LibreSlides doesn't draw it itself: a custom
+ * geometry, a preset it has no drawing of, or a preset with adjust values of
+ * its own (corner radius, arrow head size…). Worked out for the shape's size
+ * as freeform paths (see model/geometry.js): { paths, textRect, preset? },
+ * preset being { name, adj } so the shape can be written back as that preset.
+ * Null when the shape is drawn as LibreSlides' own shape.
+ */
+function outlineOf(spPr, box) {
+  if (!box?.w || !box?.h) return null;
+  const [w, h] = [box.w * EMU_PER_PT, box.h * EMU_PER_PT];
+  try {
+    const cust = kid(spPr, 'custGeom');
+    let out;
+    if (cust) out = evaluateGeometry(definitionFromXml(cust), w, h);
+    else {
+      const geom = kid(spPr, 'prstGeom');
+      const name = attr(geom, 'prst');
+      if (!name || !PRESETS[name]) return null;
+      const adj = {};
+      for (const gd of kids(kid(geom, 'avLst'), 'gd')) {
+        const m = /^val\s+(-?[\d.]+)$/.exec(attr(gd, 'fmla') || '');
+        if (m) adj[attr(gd, 'name')] = +m[1];
+      }
+      const adjusted = Object.keys(adj).length > 0;
+      if (SHAPE_IDS.has(name) && !adjusted) return null;
+      out = { ...evaluateGeometry(PRESETS[name], w, h, adj), preset: adjusted ? { name, adj } : { name } };
+    }
+    const count = out.paths.reduce((n, p) => n + p.cmds.length, 0);
+    return out.paths.length && count <= 20000 ? out : null;
+  } catch {
+    return null; // formulas it can't work out: drawn as a rectangle
+  }
+}
+
+// ------------------------------------------------------------------ themes and backgrounds
+
+/** A slide's layout and master parts (null where it has none). */
+async function masterOfSlide(pkg, slidePath) {
+  const layoutRel = Object.values(await pkg.rels(slidePath)).find((r) => r.type === 'slideLayout' && !r.external);
+  const masterRel = layoutRel && Object.values(await pkg.rels(layoutRel.path)).find((r) => r.type === 'slideMaster' && !r.external);
+  return { layoutPath: layoutRel?.path || null, masterPath: masterRel?.path || null };
+}
+
+// The colours a colour map maps, and what each is when it doesn't say.
+const CLR_MAP_DEFAULTS = {
+  ...SCHEME_ALIAS,
+  ...Object.fromEntries(['accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6', 'hlink', 'folHlink'].map((n) => [n, n])),
+};
+
+/** A p:clrMap or a:overrideClrMapping as { bg1: 'lt1', … }, or null for none. */
+function clrMapOf(el) {
+  if (!el) return null;
+  return Object.fromEntries(Object.entries(CLR_MAP_DEFAULTS).map(([name, fallback]) => [name, attr(el, name) || fallback]));
+}
+
+/**
+ * A master's theme and text styles, read once however many slides use it:
+ * { colors (the theme's colour scheme, "RRGGBB" by name), clrMap, fonts,
+ * txStyles, themeFills, themeBgFills, themeEffects, themeLines (the theme's
+ * fill, effect and line styles, which shapes refer to by number), themeRels, name }.
+ */
+function masterTheme(pkg, masterPath, ctx) {
+  const key = masterPath || '';
+  if (!ctx.masters.has(key)) ctx.masters.set(key, readMasterTheme(pkg, masterPath, ctx.presRels));
+  return ctx.masters.get(key);
+}
+
+async function readMasterTheme(pkg, masterPath, presRels) {
+  const masterDoc = masterPath ? await pkg.doc(masterPath) : null;
+  const masterRels = masterPath ? await pkg.rels(masterPath) : {};
+  const themeRel = [...Object.values(masterRels), ...Object.values(presRels)].find((r) => r.type === 'theme' && !r.external);
+  const themeDoc = themeRel ? await pkg.doc(themeRel.path) : null;
+  const colors = {};
+  for (const c of desc(themeDoc, 'clrScheme')[0]?.children || []) {
+    const v = c.firstElementChild;
+    const hex = v?.localName === 'srgbClr' ? attr(v, 'val') : v?.localName === 'sysClr' ? attr(v, 'lastClr') || (attr(v, 'val') === 'window' ? 'FFFFFF' : '000000') : null;
+    if (/^[0-9a-f]{6}$/i.test(hex || '')) colors[c.localName] = hex;
+  }
+  const styleList = (name) => [...(desc(themeDoc, name)[0]?.children || [])];
+  const face = (name) => attr(path(desc(themeDoc, name)[0], 'latin'), 'typeface');
+  return {
+    colors,
+    clrMap: clrMapOf(kid(masterDoc?.documentElement, 'clrMap')) || { ...CLR_MAP_DEFAULTS },
+    fonts: { major: face('majorFont') || 'Calibri', minor: face('minorFont') || 'Calibri' },
+    txStyles: desc(masterDoc, 'txStyles')[0] || null,
+    themeFills: styleList('fillStyleLst'),
+    themeBgFills: styleList('bgFillStyleLst'),
+    themeEffects: styleList('effectStyleLst'),
+    themeLines: styleList('lnStyleLst'),
+    themeRels: themeRel ? await pkg.rels(themeRel.path) : {},
+    name: attr(themeDoc?.documentElement, 'name') || '',
+  };
+}
+
+/**
+ * The colours schemeClr names mean ("RRGGBB" by name): the theme's own
+ * (dk1, lt1, accent1…), and the ones the colour map maps (bg1, tx1…).
+ */
+function schemeOf(colors, clrMap) {
+  const scheme = { ...colors };
+  for (const [name, fallback] of Object.entries(CLR_MAP_DEFAULTS)) scheme[name] = colors[clrMap[name]] || colors[fallback];
+  return scheme;
+}
+
+/**
+ * What reading a slide needs from its master: the theme's colours (in the
+ * master's colour map, unless the layout or the slide override it), fonts,
+ * fill styles and text styles, added to the presentation's `ctx`.
+ */
+async function slideContext(pkg, ctx, masterPath, parts) {
+  const theme = await masterTheme(pkg, masterPath, ctx);
+  let { clrMap } = theme;
+  for (const d of parts) clrMap = clrMapOf(path(d?.documentElement, 'clrMapOvr', 'overrideClrMapping')) || clrMap;
+  const { colors, name, ...rest } = theme;
+  return { ...ctx, ...rest, clrMap, scheme: schemeOf(colors, clrMap) };
+}
+
+/**
+ * The deck's theme as PowerPoint had it (see model/deck.js), to write back
+ * into the files it saves: { name, colors: { dk1…folHlink: "#rrggbb" },
+ * dark (text light on dark: the colour map swaps them), fonts { major, minor } }.
+ */
+function importedThemeOf(theme) {
+  const names = ['dk1', 'lt1', 'dk2', 'lt2', 'accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6', 'hlink', 'folHlink'];
+  if (!names.every((n) => theme.colors[n])) return null;
+  return {
+    name: theme.name.slice(0, 100),
+    colors: Object.fromEntries(names.map((n) => [n, `#${theme.colors[n].toLowerCase()}`])),
+    dark: theme.clrMap.bg1 === 'dk1',
+    fonts: { ...theme.fonts },
+  };
+}
+
+const round2 = (v) => Math.round(v * 100) / 100;
+
+/**
+ * A picture fill (a:blipFill) as LibreSlides' (see model/deck.js and
+ * themes.js backgroundCss): { media, crop?, opacity?, tile? }, a tiled
+ * picture's tiles in points at the picture's own size (its resolution, or
+ * the fill's) times their scale. Null when the picture can't be shown.
+ */
+async function pictureFillOf(pkg, blipFill, rels, ctx, deck, scheme = ctx.scheme) {
+  const blip = kid(blipFill, 'blip');
+  const target = rels?.[rid(blip, 'embed')];
+  let data = target && !target.external ? await pkg.dataUrl(target.path) : null;
+  if (!data) return null;
+  // Recoloured in two colours (as themes' background pictures are), where pictures can be drawn.
+  const duo = kid(blip, 'duotone');
+  const [dark, light] = [...(duo?.children || [])].map((c) => colorOf({ children: [c] }, scheme));
+  if (dark && light) {
+    const key = `${dark} ${light} ${target.path}`;
+    if (!ctx.recolored.has(key)) ctx.recolored.set(key, duotoneImage(data, dark, light));
+    data = (await ctx.recolored.get(key)) || data;
+  }
+  const out = { media: addMediaTo(deck, data) };
+  const crop = cropOf(blipFill);
+  if (crop) out.crop = crop;
+  const amt = attr(kid(blip, 'alphaModFix'), 'amt');
+  if (amt != null && +amt < 100000) out.opacity = Math.max(0, Math.round(+amt / 1000) / 100);
+  const tile = kid(blipFill, 'tile');
+  const size = tile && pictureSize(data);
+  if (size) {
+    const num = (name, fallback) => (attr(tile, name) != null && Number.isFinite(+attr(tile, name)) ? +attr(tile, name) : fallback);
+    const dpi = +attr(blipFill, 'dpi') > 0 ? +attr(blipFill, 'dpi') : null;
+    const scale = (name) => Math.abs(num(name, 100000)) / 100000 || 1;
+    const w = ((size.w * 72) / (dpi || size.dpiX)) * scale('sx') * ctx.k;
+    const h = ((size.h * 72) / (dpi || size.dpiY)) * scale('sy') * ctx.k;
+    if (w >= 0.5 && h >= 0.5) {
+      out.tile = { w: round2(w), h: round2(h), x: round2((num('tx', 0) / EMU_PER_PT) * ctx.k), y: round2((num('ty', 0) / EMU_PER_PT) * ctx.k), align: attr(tile, 'algn') || 'tl' };
+      const flip = attr(tile, 'flip');
+      if (flip === 'x' || flip === 'y' || flip === 'xy') out.tile.flip = flip;
+    }
+  }
+  return out;
+}
+
+/** A gradient fill (see fillFrom) as a gradient background: its first and last colours, and all of it when there's more. */
+function gradientBackground(g) {
+  const { stops } = g;
+  const out = { type: 'gradient', from: stops[0].color, to: stops[stops.length - 1].color, angle: g.angle ?? 180 };
+  const plain = g.type === 'linear' && stops.length === 2 && stops[0].pos === 0 && stops[1].pos === 1 && stops.every((s) => s.opacity == null);
+  if (!plain) out.gradient = g;
+  return out;
+}
+
+/**
+ * A slide background (p:bg) as LibreSlides' (see themes.js backgroundCss):
+ * its own fill, or the theme's background fill it refers to, in its colour.
+ * Null when it has none LibreSlides can show.
+ */
+async function backgroundOf(pkg, bg, rels, ctx, deck) {
+  const bgPr = kid(bg, 'bgPr');
+  const bgRef = kid(bg, 'bgRef');
+  let f = bgPr && [...bgPr.children].find((c) => FILLS.includes(c.localName));
+  let { scheme } = ctx;
+  let refColor = null;
+  if (!f && bgRef) {
+    const idx = +attr(bgRef, 'idx') || 0;
+    refColor = colorOf(bgRef, ctx.scheme);
+    f = idx >= 1001 ? ctx.themeBgFills?.[idx - 1001] : idx > 0 ? ctx.themeFills?.[idx - 1] : null;
+    // The theme's fill, in the reference's colour; its pictures are the theme's.
+    rels = ctx.themeRels;
+    scheme = refColor ? { ...ctx.scheme, phClr: refColor.slice(1) } : ctx.scheme;
+  }
+  let out = null;
+  if (f?.localName === 'blipFill') {
+    const picture = await pictureFillOf(pkg, f, rels, ctx, deck, scheme);
+    if (picture) out = { type: 'image', media: picture.media, color: '#000000', ...(picture.tile && { tile: picture.tile }) };
+  } else if (f) {
+    const fill = fillFrom(f, scheme);
+    if (fill?.pattern) out = { type: 'pattern', pattern: fill.pattern };
+    else if (fill?.gradient) out = gradientBackground(fill.gradient);
+    else if (fill?.color && fill.color !== 'none') out = { type: 'solid', color: fill.color };
+  }
+  return out || (refColor ? { type: 'solid', color: refColor } : null);
 }
 
 // ------------------------------------------------------------------ slides
 
-async function readSlide(pkg, slidePath, ctx, deck) {
+const MAX_GROUP_DEPTH = 32;
+
+async function readSlide(pkg, slidePath, deckCtx, deck) {
   const doc = await pkg.doc(slidePath);
   const rels = await pkg.rels(slidePath);
-  const layoutRel = Object.values(rels).find((r) => r.type === 'slideLayout');
-  const layoutDoc = layoutRel ? await pkg.doc(layoutRel.path) : null;
-  const layoutRels = layoutRel ? await pkg.rels(layoutRel.path) : {};
-  const masterRel = Object.values(layoutRels).find((r) => r.type === 'slideMaster');
-  const masterDoc = masterRel ? await pkg.doc(masterRel.path) : null;
-  const masterRels = masterRel ? await pkg.rels(masterRel.path) : {};
+  const { layoutPath, masterPath } = await masterOfSlide(pkg, slidePath);
+  const layoutDoc = layoutPath ? await pkg.doc(layoutPath) : null;
+  const layoutRels = layoutPath ? await pkg.rels(layoutPath) : {};
+  const masterDoc = masterPath ? await pkg.doc(masterPath) : null;
+  const masterRels = masterPath ? await pkg.rels(masterPath) : {};
   const layoutPh = layoutDoc ? placeholders(layoutDoc) : [];
   const masterPh = masterDoc ? placeholders(masterDoc) : [];
+  // The slide's master's theme, in the colour map its layout or the slide itself may change.
+  const ctx = await slideContext(pkg, deckCtx, masterPath || deckCtx.firstMaster, [layoutDoc, doc]);
   const { k } = ctx;
   const slide = { id: uid(), layout: 'blank', background: null, elements: [], notes: '', transition: { type: 'none', duration: 0.6 }, hidden: attr(doc.documentElement, 'show') === '0', hideDecor: true };
 
   // Background: the slide's own, else the layout's, else the master's.
   for (const [d, r] of [[doc, rels], [layoutDoc, layoutRels], [masterDoc, masterRels]]) {
     const bg = d && path(d.documentElement, 'cSld', 'bg');
-    if (!bg) continue;
-    const bgPr = kid(bg, 'bgPr');
-    const bgRef = kid(bg, 'bgRef');
-    if (bgPr && kid(bgPr, 'blipFill')) {
-      const blip = desc(bgPr, 'blip')[0];
-      const target = r[rid(blip, 'embed')];
-      const data = target && (await pkg.dataUrl(target.path));
-      if (data) {
-        slide.background = { type: 'image', media: addMediaTo(deck, data), color: '#000000' };
-        break;
-      }
-    }
-    const grad = bgPr && kid(bgPr, 'gradFill');
-    if (grad) {
-      const stops = desc(grad, 'gs');
-      const lin = kid(grad, 'lin');
-      const ang = lin ? (+attr(lin, 'ang') / 60000 + 90) % 360 : 180;
-      slide.background = { type: 'gradient', from: colorOf(stops[0], ctx.scheme) || '#ffffff', to: colorOf(stops[stops.length - 1], ctx.scheme) || '#ffffff', angle: Math.round(ang) };
-      break;
-    }
-    const color = colorOf(bgPr && kid(bgPr, 'solidFill'), ctx.scheme) || colorOf(bgRef, ctx.scheme);
-    if (color) {
-      slide.background = { type: 'solid', color };
-      break;
-    }
+    slide.background = bg ? await backgroundOf(pkg, bg, r, ctx, deck) : null;
+    if (slide.background) break;
   }
-  const bgColor = slide.background?.type === 'solid' ? slide.background.color : slide.background?.from || '#ffffff';
+  const bgColor = slide.background?.type === 'image' ? '#ffffff' : backgroundBaseColor(slide.background);
   const darkBg = isDarkColor(bgColor);
   const defaultText = darkBg ? (ctx.scheme.lt1 ? `#${ctx.scheme.lt1}` : '#ffffff') : (ctx.scheme.dk1 ? `#${ctx.scheme.dk1}` : '#000000');
   const masterStyle = (name, c) => lstStyleLevels(kid(ctx.txStyles, name), c);
@@ -416,8 +1029,8 @@ async function readSlide(pkg, slidePath, ctx, deck) {
   const lineElement = (node, b) => {
     if (!b) return null;
     const ln = kid(kid(node, 'spPr'), 'ln');
-    const refs = styleRefs(node, ctx.scheme);
-    const stroke = lineOf(ln, ctx.scheme, k) || { color: refs.line || defaultText, width: attr(ln, 'w') ? (+attr(ln, 'w') / EMU_PER_PT) * k : 1, dash: 'solid' };
+    const refs = styleRefs(node, ctx);
+    const stroke = lineOf(ln, ctx.scheme, k) || { color: refs.line || defaultText, width: attr(ln, 'w') ? (+attr(ln, 'w') / EMU_PER_PT) * k : refs.lineWidth ?? 1, dash: refs.lineDash || 'solid' };
     let [x1, x2] = [b.x, b.x + b.w];
     let [y1, y2] = [b.y, b.y + b.h];
     if (b.flipH) [x1, x2] = [x2, x1];
@@ -434,20 +1047,80 @@ async function readSlide(pkg, slidePath, ctx, deck) {
     const tail = attr(kid(ln, 'tailEnd'), 'type');
     return {
       id: uid(), type: 'line', x1, y1, x2, y2, rot: 0, stroke: { color: stroke.color, width: Math.round(stroke.width * 10) / 10, dash: stroke.dash },
-      arrowStart: !!head && head !== 'none', arrowEnd: !!tail && tail !== 'none',
+      arrowStart: arrowOf(head), arrowEnd: arrowOf(tail),
     };
   };
 
+  /**
+   * A picture (p:pic) in `box` (placed on the slide), with its crop, clip,
+   * transparency and colour adjustments; `data` stands in for its own picture
+   * (an OLE object's preview from its VML drawing). Null without a picture or box.
+   */
+  const pictureElement = async (node, box, rels, data = null) => {
+    const blipFill = kid(node, 'blipFill');
+    const blip = desc(blipFill || node, 'blip')[0];
+    if (!data) {
+      const target = rels[rid(blip, 'embed')];
+      data = target && !target.external ? await pkg.dataUrl(target.path) : null;
+    }
+    if (!data || !box) return null;
+    const spPr = kid(node, 'spPr');
+    const descr = attr(kid(nvOf(node), 'cNvPr'), 'descr');
+    const amt = attr(kid(blip, 'alphaModFix'), 'amt');
+    const el = {
+      id: uid(), type: 'image', media: addMediaTo(deck, data), x: box.x, y: box.y, w: box.w, h: box.h, rot: box.rot,
+      flipH: box.flipH || undefined, flipV: box.flipV || undefined, alt: descr || '', fit: 'fill',
+      stroke: lineOf(kid(spPr, 'ln'), ctx.scheme, k) || { color: 'none', width: 2, dash: 'solid' },
+    };
+    const crop = cropOf(blipFill);
+    if (crop) el.crop = crop;
+    if (amt != null && +amt < 100000) el.opacity = Math.max(0, Math.round(+amt / 1000) / 100);
+    if (spPr && shadowOf(spPr, styleRefs(node, ctx))) el.shadow = true;
+    const soft = softEdgeOf(spPr, k);
+    if (soft) el.softEdge = soft;
+    // Cropped to a shape, and colour adjustments.
+    const clipName = attr(kid(spPr, 'prstGeom'), 'prst');
+    if ((clipName && clipName !== 'rect') || kid(spPr, 'custGeom')) {
+      const outline = outlineOf(spPr, xfrmOf(spPr));
+      if (outline) el.clip = { shape: 'custom', paths: outline.paths, ...(outline.preset && { preset: outline.preset }) };
+      else if (SHAPE_IDS.has(clipName)) el.clip = { shape: clipName };
+    }
+    const adjust = {};
+    if (kid(blip, 'grayscl')) adjust.grayscale = true;
+    const lum = kid(blip, 'lum');
+    if (+attr(lum, 'bright')) adjust.brightness = Math.max(-1, Math.min(1, +attr(lum, 'bright') / 100000));
+    if (+attr(lum, 'contrast')) adjust.contrast = Math.max(-1, Math.min(1, +attr(lum, 'contrast') / 100000));
+    if (Object.keys(adjust).length) el.adjust = adjust;
+    return el;
+  };
+
+  // The elements each of the slide's shapes became (by shape id), for its animations.
+  const byShapeId = new Map();
   /**
    * Add the shapes of a shape tree. `part` is the slide, or the layout or
    * master whose graphics show on it (their placeholders are only templates
    * for the slide's own, so they're skipped).
    */
-  const walk = async (container, group, part) => {
+  const walk = async (container, group, part, depth = 0) => {
     const tctx = { ...ctx, rels: part.rels };
-    for (const node of container.children) {
+    let pending = null; // the shape just read, and where its elements start
+    const settle = () => {
+      if (!pending) return;
+      const made = slide.elements.slice(pending.from);
+      if (pending.id && part.isSlide && !part.inner) byShapeId.set(pending.id, made);
+      // A click on the shape follows its link.
+      if (pending.link) for (const el of made) el.link ||= pending.link;
+    };
+    for (const node of contentOf(container)) {
+      settle();
+      const cNvPr = kid(nvOf(node), 'cNvPr');
+      pending = { id: attr(cNvPr, 'id'), from: slide.elements.length, link: linkOf(kid(cNvPr, 'hlinkClick'), part.rels) };
       const name = node.localName;
+      // Shapes hidden in PowerPoint's selection pane don't show (nor does anything in a hidden group).
+      if (isTrue(attr(cNvPr, 'hidden'))) continue;
       if (name === 'grpSp') {
+        // Groups nested deeper than anyone draws them are left out.
+        if (depth >= MAX_GROUP_DEPTH) continue;
         const gx = xfrmOf(kid(node, 'grpSpPr'));
         const ch = kid(kid(node, 'grpSpPr'), 'xfrm');
         const chOff = kid(ch, 'chOff');
@@ -458,20 +1131,34 @@ async function readSlide(pkg, slidePath, ctx, deck) {
           const chh = +attr(chExt, 'cy') / EMU_PER_PT || 1;
           const inner = { sx: gx.w / cw, sy: gx.h / chh, ox: gx.x - (+attr(chOff, 'x') / EMU_PER_PT) * (gx.w / cw), oy: gx.y - (+attr(chOff, 'y') / EMU_PER_PT) * (gx.h / chh) };
           g = group ? { sx: group.sx * inner.sx, sy: group.sy * inner.sy, ox: group.ox + inner.ox * group.sx, oy: group.oy + inner.oy * group.sy } : inner;
+          // A turned group turns its members about its centre (inner groups' turns first).
+          const cx = gx.x + gx.w / 2;
+          const cy = gx.y + gx.h / 2;
+          const turn = gx.rot ? [{ rot: gx.rot, cx: group ? group.ox + cx * group.sx : cx, cy: group ? group.oy + cy * group.sy : cy }] : [];
+          g.rots = [...turn, ...(group?.rots || [])];
         }
-        await walk(node, g, part);
+        const from = slide.elements.length;
+        await walk(node, g, part, depth + 1);
+        if (!group) groupElements(slide.elements.slice(from));
         continue;
       }
       const place = (b) => {
         if (!b) return null;
-        let { x, y, w, h: hh } = b;
+        let { x, y, w, h: hh, rot } = b;
         if (group) {
           x = group.ox + x * group.sx;
           y = group.oy + y * group.sy;
           w *= group.sx;
           hh *= group.sy;
+          for (const t of group.rots || []) {
+            const a = (t.rot * Math.PI) / 180;
+            const [dx, dy] = [x + w / 2 - t.cx, y + hh / 2 - t.cy];
+            x = t.cx + dx * Math.cos(a) - dy * Math.sin(a) - w / 2;
+            y = t.cy + dx * Math.sin(a) + dy * Math.cos(a) - hh / 2;
+            rot = (rot + t.rot) % 360;
+          }
         }
-        return { ...b, x: x * k + ctx.ox, y: y * k + ctx.oy, w: w * k, h: hh * k };
+        return { ...b, rot, x: x * k + ctx.ox, y: y * k + ctx.oy, w: w * k, h: hh * k };
       };
       if (!part.isSlide && (name === 'sp' || name === 'pic') && phOf(node)) continue;
 
@@ -490,22 +1177,32 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         const txBody = kid(node, 'txBody');
         const role = ph ? PH_ROLE[ph.type] : null;
         if (ph && !role && !txBody?.textContent.trim()) continue; // empty date/footer/slide number
-        const refs = styleRefs(node, ctx.scheme);
+        const refs = styleRefs(node, ctx);
         const prst = attr(kid(spPr, 'prstGeom'), 'prst') || 'rect';
         const own = xfrmOf(spPr);
-        const paths = kid(spPr, 'custGeom') && own ? customGeometry(kid(spPr, 'custGeom'), own.w * EMU_PER_PT, own.h * EMU_PER_PT) : null;
-        const ownFill = fillOf(spPr, ctx.scheme);
+        const outline = outlineOf(spPr, own);
+        const paths = outline?.paths || null;
+        const ownFill = fillOf(spPr, ctx.scheme) ?? (refs.hasFill ? refs.fillStyle : undefined);
         let fill = ownFill?.color;
         if (fill === undefined) fill = refs.hasFill ? refs.fill : 'none';
         const alpha = ownFill?.alpha ?? 1;
+        const { gradient, pattern } = ownFill || {};
+        // A picture filling the shape (a photo in a circle…) or tiled over it: its own, or its style's from the theme.
+        const ownBlip = kid(spPr, 'blipFill');
+        const blipFill = ownBlip || (refs.hasFill && ![...(spPr?.children || [])].some((c) => FILLS.includes(c.localName)) ? refs.fillPicture : null);
+        const styleScheme = refs.fill ? { ...ctx.scheme, phClr: refs.fill.slice(1) } : ctx.scheme;
+        const picture = blipFill ? await pictureFillOf(pkg, blipFill, ownBlip ? part.rels : ctx.themeRels, ctx, deck, ownBlip ? ctx.scheme : styleScheme) : null;
+        if (picture && fill === 'none') fill = '#ffffff';
         const ln = kid(spPr, 'ln');
         let stroke = lineOf(ln, ctx.scheme, k);
         if (!stroke && refs.hasLine && refs.line && !kid(ln, 'noFill')) {
-          stroke = { color: refs.line, width: attr(ln, 'w') ? Math.round((+attr(ln, 'w') / EMU_PER_PT) * k * 10) / 10 : 0.75, dash: 'solid' };
+          stroke = { color: refs.line, width: attr(ln, 'w') ? Math.round((+attr(ln, 'w') / EMU_PER_PT) * k * 10) / 10 : refs.lineWidth ?? 0.75, dash: refs.lineDash || 'solid' };
         }
         const bodyPr = kid(txBody, 'bodyPr');
-        const fontScale = +(attr(kid(bodyPr, 'normAutofit'), 'fontScale') || 100000) / 100000;
-        const lctx = { ...tctx, fontScale };
+        // Shrink text on overflow: PowerPoint stores how far it shrank the text and its line spacing.
+        const autofit = kid(bodyPr, 'normAutofit');
+        const fontScale = attr(autofit, 'fontScale') != null ? pctOf(attr(autofit, 'fontScale')) || 1 : 1;
+        const lctx = { ...tctx, fontScale, lnSpcReduction: pctOf(attr(autofit, 'lnSpcReduction')) };
         const isTitle = role === 'title';
         // Text formatting, lowest priority first: the master's text styles (or
         // the presentation's defaults for ordinary text boxes), the master's
@@ -522,13 +1219,20 @@ async function readSlide(pkg, slidePath, ctx, deck) {
           font: isTitle ? ctx.fonts.major : ctx.fonts.minor,
           color: fill && fill !== 'none' && prst !== 'rect' ? '#ffffff' : defaultText,
         };
-        const anchor = attr(bodyPr, 'anchor') || (inherited && attr(path(inherited.sp, 'txBody', 'bodyPr'), 'anchor')) || (masterMatch && attr(path(masterMatch.sp, 'txBody', 'bodyPr'), 'anchor')) || (isTitle ? 'ctr' : 't');
+        // Text box settings: the shape's own, else its layout's or master's placeholder's.
+        const bodyPrs = [bodyPr, inherited && path(inherited.sp, 'txBody', 'bodyPr'), masterMatch && path(masterMatch.sp, 'txBody', 'bodyPr')];
+        const bodyAttr = (name) => bodyPrs.map((b) => attr(b, name)).find((v) => v != null) ?? null;
+        const anchor = bodyAttr('anchor') || (isTitle ? 'ctr' : 't');
+        const layout = textLayoutOf(bodyAttr, k);
+        const warp = warpOf(bodyPrs);
+        if (warp) layout.warp = warp;
         const text = txBody ? textBody(txBody, lctx, { chain, defaults }) : { html: '', base: defaults };
         const hasText = !!txBody?.textContent.trim();
         const { base } = text;
-        // A see-through fill: shown through the element's opacity when there's no text to fade with it.
-        const fadeAll = alpha < 1 && !hasText && fill !== 'none' && (!stroke || !stroke.width);
-        if (alpha < 1 && !fadeAll && fill && fill !== 'none') fill = blend(fill, bgColor, alpha);
+        // A see-through fill keeps its transparency: the element's opacity when there's nothing else
+        // to fade with it (as LibreSlides writes see-through shapes), else the fill's own.
+        const fadeAll = alpha < 1 && !hasText && fill !== 'none' && !gradient && !pattern && !picture && (!stroke || !stroke.width);
+        if (alpha < 1 && !fadeAll && fill && fill !== 'none') fill = withOpacity(fill, alpha);
         const plainBox = !paths && prst === 'rect' && fill === 'none' && !stroke;
         const el = {
           id: uid(), type: plainBox ? 'text' : 'shape', x: box.x, y: box.y, w: box.w, h: box.h, rot: box.rot, flipH: box.flipH || undefined, flipV: box.flipV || undefined,
@@ -541,15 +1245,37 @@ async function readSlide(pkg, slidePath, ctx, deck) {
             valign: anchor === 'ctr' ? 'middle' : anchor === 'b' ? 'bottom' : 'top',
             lineHeight: Math.round((text.lineHeight || 1.2) * 100) / 100,
             spacing: Math.round((text.spacing || 0) * 100) / 100,
+            ...layout,
           },
         };
         if (fadeAll) el.opacity = Math.round(alpha * 100) / 100;
+        if (gradient && fill !== 'none') el.gradient = gradient;
+        if (pattern && fill !== 'none') el.pattern = pattern;
+        if (picture) el.fillImage = picture;
+        if (shadowOf(spPr, refs)) el.shadow = true;
+        const soft = softEdgeOf(spPr, k);
+        if (soft) el.softEdge = soft;
         if (paths) {
-          el.shape = 'custom';
-          el.paths = paths;
-        } else if (!plainBox) el.shape = SHAPE_IDS.has(prst) ? prst : PRESET_ALIAS[prst] || 'rect';
-        if (role && hasText) el.ph = role;
-        if (!hasText && (plainBox || (paths && fill === 'none' && !stroke))) continue; // nothing to show
+          Object.assign(el, { shape: 'custom', paths });
+          if (outline.textRect) el.textRect = outline.textRect;
+          if (outline.preset) el.preset = outline.preset;
+          // Open outlines (freeform curves, connector-like presets) can end in arrowheads.
+          for (const [end, key] of [['headEnd', 'arrowStart'], ['tailEnd', 'arrowEnd']]) {
+            const type = arrowOf(attr(kid(kid(spPr, 'ln'), end), 'type'));
+            if (type) el[key] = type;
+          }
+        } else if (!plainBox) el.shape = SHAPE_IDS.has(prst) ? prst : 'rect';
+        // Empty title and text placeholders stay, as PowerPoint's do: shown only while editing.
+        if (role && (hasText || (plainBox && part.isSlide))) el.ph = role;
+        if (el.ph === 'body' && !hasText && levelProps(chain, 0).bullet === 'ul') el.bullets = true;
+        if (!hasText && !el.ph && (plainBox || (paths && fill === 'none' && !stroke))) continue; // nothing to show
+        // SmartArt can put a shape's text somewhere else (beside an icon, under a picture): a text box of its own there.
+        const txBox = hasText && place(boxOfXfrm(kid(node, 'txXfrm')));
+        if (txBox && ['x', 'y', 'w', 'h'].some((key) => Math.abs(txBox[key] - box[key]) > 2)) {
+          slide.elements.push({ ...el, text: '' });
+          slide.elements.push({ ...el, id: uid(), type: 'text', shape: undefined, paths: undefined, gradient: undefined, shadow: undefined, opacity: undefined, fill: 'none', stroke: null, x: txBox.x, y: txBox.y, w: txBox.w, h: txBox.h, rot: txBox.rot });
+          continue;
+        }
         slide.elements.push(el);
       } else if (name === 'pic') {
         const media = await readMedia({ pkg, node, rels: part.rels, box: place(xfrmOf(kid(node, 'spPr'))), ctx: tctx, deck });
@@ -557,37 +1283,50 @@ async function readSlide(pkg, slidePath, ctx, deck) {
           slide.elements.push(media);
           continue;
         }
-        const blipFill = kid(node, 'blipFill');
-        const blip = desc(node, 'blip')[0];
-        const target = part.rels[rid(blip, 'embed')];
-        const data = target && !target.external ? await pkg.dataUrl(target.path) : null;
         const ph = phOf(node);
         let box = xfrmOf(kid(node, 'spPr'));
         if (!box && ph) {
           const inherited = findPh(layoutPh, ph) || findPh(masterPh, ph);
           box = inherited && xfrmOf(kid(inherited.sp, 'spPr'));
         }
-        box = place(box);
-        if (!data || !box) continue;
-        const descr = attr(desc(node, 'cNvPr')[0], 'descr');
-        const amt = attr(kid(blip, 'alphaModFix'), 'amt');
-        const el = {
-          id: uid(), type: 'image', media: addMediaTo(deck, data), x: box.x, y: box.y, w: box.w, h: box.h, rot: box.rot,
-          flipH: box.flipH || undefined, flipV: box.flipV || undefined, alt: descr || '', fit: 'fill',
-          stroke: lineOf(kid(kid(node, 'spPr'), 'ln'), ctx.scheme, k) || { color: 'none', width: 2, dash: 'solid' },
-        };
-        const crop = cropOf(blipFill);
-        if (crop) el.crop = crop;
-        if (amt != null && +amt < 100000) el.opacity = Math.max(0, Math.round(+amt / 1000) / 100);
-        slide.elements.push(el);
+        const el = await pictureElement(node, place(box), part.rels);
+        if (el) slide.elements.push(el);
       } else if (name === 'cxnSp') {
-        const line = lineElement(node, place(xfrmOf(kid(node, 'spPr'))));
-        if (line) slide.elements.push(line);
+        const spPr = kid(node, 'spPr');
+        const b = place(xfrmOf(spPr));
+        const line = lineElement(node, b);
+        // Elbow and curved connectors keep their route; straight ones are lines.
+        const outline = /^(line|straightConnector1)$/.test(attr(kid(spPr, 'prstGeom'), 'prst') || 'line') ? null : outlineOf(spPr, xfrmOf(spPr));
+        if (outline && line) {
+          slide.elements.push({
+            id: uid(), type: 'shape', shape: 'custom', paths: outline.paths.map((p) => ({ ...p, fill: false })), preset: outline.preset,
+            x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot, flipH: b.flipH || undefined, flipV: b.flipV || undefined,
+            fill: 'none', stroke: line.stroke, arrowStart: line.arrowStart || undefined, arrowEnd: line.arrowEnd || undefined, text: '', style: {},
+          });
+        } else if (line) slide.elements.push(line);
       } else if (name === 'graphicFrame') {
         const uri = attr(desc(node, 'graphicData')[0], 'uri') || '';
         if (/\/chart$/.test(uri)) {
           const chart = await readChart({ pkg, node, rels: part.rels, box: place(xfrmOf(node)), ctx: tctx, deck });
           if (chart) slide.elements.push(chart);
+          continue;
+        }
+        if (/\/diagram$/.test(uri)) {
+          // (Not inside another diagram's drawing, which could lead back to itself.)
+          if (!part.inner) await readSmartArt(node, group, part, depth);
+          continue;
+        }
+        const ole = oleObjectOf(desc(node, 'graphicData')[0]);
+        if (ole) {
+          // An embedded object: the picture of it PowerPoint shows, in the frame's box.
+          const preview = await olePreview(pkg, ole, part.rels);
+          const box = place(xfrmOf(node));
+          const data = preview?.path ? await pkg.dataUrl(preview.path) : null;
+          const el = preview && (await pictureElement(preview.pic || node, box, part.rels, data));
+          if (el) {
+            el.alt ||= attr(cNvPr, 'descr') || '';
+            slide.elements.push(el);
+          }
           continue;
         }
         const tbl = desc(node, 'tbl')[0];
@@ -599,30 +1338,102 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         // The table's own text style: the formatting of its last row (the header is often set apart).
         const rows = kids(tbl, 'tr');
         const sample = { ...runProps(desc(rows[0], 'rPr')[0], tctx), ...runProps(desc(rows[rows.length - 1], 'rPr')[0], tctx) };
-        const tableStyle = { size: Math.round(sample.size || 18 * k), color: sample.color || defaultText, font: sample.font, bold: false };
-        const cells = rows.map((tr) => kids(tr, 'tc').map((tc) => {
+        const tableStyle = { size: Math.round(sample.size || 18 * k), color: sample.color || defaultText, font: sample.font || ctx.fonts.minor, bold: false };
+        // The table style's colours, written into the cells so the table looks the same and stays that way.
+        const look = tableLook(tblPr, ctx, rows.length, cols.length);
+        const cells = rows.map((tr, r) => kids(tr, 'tc').map((tc, c) => {
           const body = kid(tc, 'txBody');
+          const tcPr = kid(tc, 'tcPr');
+          const rs = Math.max(1, +attr(tc, 'rowSpan') || 1);
+          const cs = Math.max(1, +attr(tc, 'gridSpan') || 1);
+          const part = look?.cell(r, c, rs, cs) || {};
           // Formatting is relative to the table's, so a header's white bold text is kept.
-          const t = body ? textBody(body, { ...tctx, fontScale: 1 }, { defaults: tableStyle, base: tableStyle }) : { html: '' };
+          const defaults = { ...tableStyle, ...(part.color && { color: part.color }), ...(part.bold && { bold: true }) };
+          const t = body ? textBody(body, { ...tctx, fontScale: 1 }, { defaults, base: tableStyle }) : { html: '' };
           const cell = { text: body?.textContent.trim() ? t.html : '' };
-          const fill = colorOf(kid(kid(tc, 'tcPr'), 'solidFill'), ctx.scheme);
+          const fill = kid(tcPr, 'noFill') ? null : colorOf(kid(tcPr, 'solidFill'), ctx.scheme) || part.fill;
           if (fill) cell.fill = fill;
+          if (+attr(tc, 'gridSpan') > 1) cell.colSpan = +attr(tc, 'gridSpan');
+          if (+attr(tc, 'rowSpan') > 1) cell.rowSpan = +attr(tc, 'rowSpan');
+          if (isTrue(attr(tc, 'hMerge')) || isTrue(attr(tc, 'vMerge'))) cell.merged = true;
+          // Text turned a quarter either way, or stacked (East Asian and WordArt vertical text).
+          const vert = attr(tcPr, 'vert');
+          if (vert === 'vert' || vert === 'vert270' || vert === 'eaVert') cell.vertical = vert;
+          else if (vert === 'wordArtVert' || vert === 'mongolianVert' || vert === 'wordArtVertRtl') cell.vertical = 'eaVert';
+          const anchor = attr(tcPr, 'anchor');
+          // PowerPoint puts cell text at the top unless told otherwise; LibreSlides' tables default to the middle.
+          cell.valign = { ctr: 'middle', b: 'bottom' }[anchor] || 'top';
+          // Its borders: its own, else the table style's (sorted out against the table's border below).
+          const own = { t: 'lnT', r: 'lnR', b: 'lnB', l: 'lnL' };
+          cell.borders = Object.fromEntries(SIDES.map((side) => [side, borderOf(kid(tcPr, own[side]), ctx) || part.borders?.[side]]).filter(([, v]) => v));
+          // Margins, in EMU (PowerPoint's defaults when left out).
+          const margin = Object.fromEntries(SIDES.map((side) => {
+            const v = attr(tcPr, `mar${side.toUpperCase()}`);
+            return [side, v != null && Number.isFinite(+v) ? Math.round((+v / EMU_PER_PT) * k * 10) / 10 : CELL_MARGIN[side]];
+          }));
+          if (SIDES.some((side) => Math.abs(margin[side] - CELL_MARGIN[side]) > 0.05)) cell.margin = margin;
           return cell;
         }));
         if (!cells.length) continue;
         const width = Math.max(...cells.map((r) => r.length));
         for (const row of cells) while (row.length < width) row.push({ text: '' });
-        slide.elements.push({
+        const stroke = tableBorders(cells, look);
+        // Row heights are least heights; a row of 0 is as tall as its text, so it takes
+        // its share of what the other rows leave of the frame (at least a line).
+        const heights = rows.map((tr) => Math.max(0, ((+attr(tr, 'h') || 0) / EMU_PER_PT) * k));
+        const unsized = heights.filter((v) => !v).length;
+        if (unsized) {
+          const line = tableStyle.size * 1.2 + CELL_MARGIN.t + CELL_MARGIN.b;
+          const share = Math.max(line, (b.h - heights.reduce((s, v) => s + v, 0)) / unsized);
+          heights.forEach((v, i) => { if (!v) heights[i] = share; });
+        }
+        const allHeights = heights.reduce((s, v) => s + v, 0);
+        const table = {
           id: uid(), type: 'table', x: b.x, y: b.y, w: b.w, h: b.h, rot: 0,
-          header: attr(tblPr, 'firstRow') === '1' && !cells[0].some((c) => c.fill),
-          banded: attr(tblPr, 'bandRow') === '1' || undefined,
+          header: !look && attr(tblPr, 'firstRow') === '1' && !cells[0].some((c) => c.fill),
+          banded: (!look && attr(tblPr, 'bandRow') === '1') || undefined,
           cells, colWidths: cols.length === width ? cols.map((w) => w / total) : Array.from({ length: width }, () => 1 / width),
-          fill: `#${ctx.scheme.accent1 || '4472c4'}`, stroke: { color: '#94a3b8', width: 1, dash: 'solid' },
+          fill: `#${(ctx.scheme.accent1 || '4472c4').toLowerCase()}`, stroke,
           style: { size: tableStyle.size, color: tableStyle.color, font: tableStyle.font },
-        });
+        };
+        if (allHeights > 0 && heights.length === cells.length) table.rowHeights = heights.map((v) => v / allHeights);
+        slide.elements.push(normalizeTable(table));
       }
     }
+    settle();
   };
+
+  /**
+   * SmartArt: a diagram, its outline read from the diagram's data (see
+   * pptx-diagram.js). PowerPoint saves a drawn copy of it (dsp:drawing), made
+   * of ordinary shapes placed relative to the graphic frame: that's what it
+   * shows until it's edited, so it looks as it did in PowerPoint.
+   */
+  async function readSmartArt(node, group, part, depth) {
+    const frame = xfrmOf(node);
+    if (!frame) return;
+    const read = await readDiagram({ pkg, node, rels: part.rels, scheme: ctx.scheme, font: ctx.fonts.minor, deck });
+    if (!read) return;
+    const { diagram, drawingPath } = read;
+    const g = group ? { sx: group.sx, sy: group.sy, ox: group.ox + frame.x * group.sx, oy: group.oy + frame.y * group.sy } : { sx: 1, sy: 1, ox: frame.x, oy: frame.y };
+    const box = { x: g.ox * k + ctx.ox, y: g.oy * k + ctx.oy, w: frame.w * g.sx * k, h: frame.h * g.sy * k };
+    const drawing = drawingPath && (await pkg.doc(drawingPath));
+    const tree = drawing && desc(drawing, 'spTree')[0];
+    if (tree && (kids(tree, 'sp').length || kids(tree, 'grpSp').length)) {
+      // The drawn shapes, in the diagram's box (its corner at 0, 0).
+      const from = slide.elements.length;
+      await walk(tree, g, { rels: await pkg.rels(drawingPath), isSlide: true, inner: true }, depth + 1);
+      const elements = slide.elements.splice(from).map((el) => {
+        delete el.groupId;
+        if (el.type === 'line') Object.assign(el, { x1: el.x1 - box.x, y1: el.y1 - box.y, x2: el.x2 - box.x, y2: el.y2 - box.y });
+        else Object.assign(el, { x: el.x - box.x, y: el.y - box.y });
+        return el;
+      });
+      if (elements.length) diagram.drawn = { w: box.w, h: box.h, elements };
+    }
+    if (!diagram.nodes.length && !diagram.drawn) return;
+    slide.elements.push({ id: uid(), type: 'diagram', ...box, rot: 0, diagram });
+  }
 
   // "Hide background graphics" on the slide hides the layout's and the master's; on the layout, the master's.
   const tree = (d) => path(d.documentElement, 'cSld', 'spTree');
@@ -631,6 +1442,14 @@ async function readSlide(pkg, slidePath, ctx, deck) {
     if (layoutDoc) await walk(tree(layoutDoc), null, { rels: layoutRels });
   }
   await walk(tree(doc), null, { rels, isSlide: true });
+
+  // Animations, on the elements their shapes became (a group's or a diagram's play together).
+  let order = 0;
+  for (const a of readAnimations(doc)) {
+    (byShapeId.get(a.spid) || []).forEach((el, k) => {
+      el[a.kind] = { effect: a.effect, duration: Math.round(a.duration * 100) / 100, start: k ? 'with' : a.start, order: ++order, ...(a.path && { path: a.path }) };
+    });
+  }
 
   // Transition (PowerPoint 2010+ effects sit inside mc:AlternateContent; the fallback is plain).
   const tr = desc(doc, 'transition')[0];
@@ -659,76 +1478,115 @@ async function readSlide(pkg, slidePath, ctx, deck) {
     }
   }
 
+  // Comments, classic or Microsoft 365's threaded kind (see pptx-comments.js).
+  const comments = await readComments(pkg, slidePath, rels, ctx);
+  if (comments.length) slide.comments = comments;
+
   // Give the slide a layout name that matches what's on it, for "Apply layout".
   const roles = slide.elements.map((e) => e.ph).filter(Boolean);
   slide.layout = roles.includes('title') ? (roles.includes('body') ? 'titleContent' : roles.includes('subtitle') ? 'title' : 'titleOnly') : 'blank';
   return slide;
 }
 
-/** Read a .pptx (ArrayBuffer) into a deck. */
+const badFile = (message = 'This file is damaged or isn’t a PowerPoint presentation.') => Object.assign(new Error(message), { code: 'bad-file' });
+
+/**
+ * Read a .pptx (ArrayBuffer) into a deck. A file that can't be read fails
+ * with an error that has a `code` ('bad-file', 'too-big'), whatever is wrong with it.
+ */
 export async function importPptx(buffer, fallbackTitle = 'Presentation') {
   let zip;
   try {
     zip = await JSZip.loadAsync(buffer);
   } catch {
-    throw Object.assign(new Error('This file is damaged or isn’t a PowerPoint presentation.'), { code: 'bad-file' });
+    throw badFile();
   }
-  const pkg = new Package(zip);
+  try {
+    return await readPresentation(new Package(zip), fallbackTitle);
+  } catch (err) {
+    if (err?.code) throw err;
+    console.warn('Couldn’t read the presentation', err);
+    throw Object.assign(badFile(), { cause: err });
+  }
+}
+
+async function readPresentation(pkg, fallbackTitle) {
   const presPath = 'ppt/presentation.xml';
   const pres = await pkg.doc(presPath);
-  if (!pres) throw Object.assign(new Error('This isn’t a PowerPoint presentation (.pptx).'), { code: 'bad-file' });
+  if (!pres?.documentElement || pres.documentElement.localName !== 'presentation') throw badFile('This isn’t a PowerPoint presentation (.pptx).');
   const presRels = await pkg.rels(presPath);
 
   // The closest LibreSlides size; anything else (A4, portrait…) is scaled to fit and centred.
+  // (PowerPoint's slides are 1 to 56 inches a side.)
   const sz = desc(pres, 'sldSz')[0];
-  const W = (sz && +attr(sz, 'cx') / EMU_PER_PT) || 960;
-  const H = (sz && +attr(sz, 'cy') / EMU_PER_PT) || 540;
-  const size = Object.keys(SIZES).reduce((best, id) => (Math.abs(SIZES[id].w / SIZES[id].h - W / H) < Math.abs(SIZES[best].w / SIZES[best].h - W / H) ? id : best), '16:9');
-  const k = Math.min(SIZES[size].w / W, SIZES[size].h / H);
-  const ox = (SIZES[size].w - W * k) / 2;
-  const oy = (SIZES[size].h - H * k) / 2;
+  const side = (v, fallback) => (v > 0 ? Math.max(72, Math.min(4032, v / EMU_PER_PT)) : fallback);
+  const W = side(+attr(sz, 'cx'), 960);
+  const H = side(+attr(sz, 'cy'), 540);
+  // A standard size of the same shape (scaled to it), or the file's own.
+  const closest = Object.keys(SIZES).reduce((best, id) => (Math.abs(SIZES[id].w / SIZES[id].h - W / H) < Math.abs(SIZES[best].w / SIZES[best].h - W / H) ? id : best), '16:9');
+  const standard = Math.abs(SIZES[closest].w / SIZES[closest].h - W / H) < 0.01 * (W / H);
+  const own = `${Math.round(W * 10) / 10}x${Math.round(H * 10) / 10}`;
+  const size = standard || !customSize(own) ? closest : own;
+  const { w: SW, h: SH } = slideSize({ size });
+  const k = Math.min(SW / W, SH / H);
+  const ox = (SW - W * k) / 2;
+  const oy = (SH - H * k) / 2;
 
-  // Theme colours and fonts, from the first master's theme; the master's colour map says which is text and background.
-  const scheme = {};
-  const fonts = { major: 'Calibri', minor: 'Calibri' };
-  const masterRel = Object.values(presRels).find((r) => r.type === 'slideMaster');
-  const masterRels = masterRel ? await pkg.rels(masterRel.path) : {};
-  const themeRel = Object.values(masterRels).find((r) => r.type === 'theme') || Object.values(presRels).find((r) => r.type === 'theme');
-  const themeDoc = themeRel ? await pkg.doc(themeRel.path) : null;
-  const clr = desc(themeDoc, 'clrScheme')[0];
-  for (const c of clr ? [...clr.children] : []) {
-    const v = [...c.children][0];
-    scheme[c.localName] = v?.localName === 'srgbClr' ? attr(v, 'val') : v?.localName === 'sysClr' ? attr(v, 'lastClr') : null;
-  }
-  const masterDoc = masterRel ? await pkg.doc(masterRel.path) : null;
-  const clrMap = desc(masterDoc, 'clrMap')[0];
-  for (const [name, fallback] of Object.entries(SCHEME_ALIAS)) scheme[name] = scheme[attr(clrMap, name) || fallback] || scheme[fallback];
-  const major = attr(path(desc(themeDoc, 'majorFont')[0], 'latin'), 'typeface');
-  const minor = attr(path(desc(themeDoc, 'minorFont')[0], 'latin'), 'typeface');
-  if (major) fonts.major = major;
-  if (minor) fonts.minor = minor;
-  const txStyles = masterDoc ? desc(masterDoc, 'txStyles')[0] : null;
+  // Each slide takes its theme (colours, fonts, fill styles) and text styles from its own master
+  // (see slideContext); a slide without one, from the presentation's first master.
+  const masterIds = desc(desc(pres, 'sldMasterIdLst')[0], 'sldMasterId').map((m) => presRels[rid(m, 'id')]).filter((r) => r && !r.external);
+  const firstMaster = (masterIds[0] || Object.values(presRels).find((r) => r.type === 'slideMaster' && !r.external))?.path || null;
   const defaultTextStyle = desc(pres, 'defaultTextStyle')[0] || null;
 
   const core = await pkg.doc('docProps/core.xml');
   const titleEl = core && desc(core, 'title')[0];
   const deck = newDeck({ title: titleEl?.textContent?.trim() || fallbackTitle, size, slides: [] });
-  const ctx = { k, ox, oy, scheme, fonts, txStyles, defaultTextStyle, fontScale: 1 };
+  const stylesRel = Object.values(presRels).find((r) => r.type === 'tableStyles');
+  const tableStyles = new Map(desc(stylesRel ? await pkg.doc(stylesRel.path) : null, 'tblStyle').map((s) => [attr(s, 'styleId'), s]));
+  const ctx = { k, ox, oy, defaultTextStyle, tableStyles, presRels, firstMaster, masters: new Map(), recolored: new Map(), fontScale: 1 };
   await readEmbeddedFonts({ pkg, pres, presRels, deck });
 
   const ids = desc(desc(pres, 'sldIdLst')[0], 'sldId');
+  const slidePaths = []; // in step with deck.slides
+  const sldIds = []; // likewise
   for (const s of ids) {
     const rel = presRels[rid(s, 'id')];
     if (!rel) continue;
     try {
       deck.slides.push(await readSlide(pkg, rel.path, ctx, deck));
+      slidePaths.push(rel.path);
+      sldIds.push(attr(s, 'id'));
     } catch (err) {
+      if (pkg.full) throw err; // a zip bomb, or too much to hold
       console.warn('Skipped a slide that could not be read', err);
     }
   }
-  if (!deck.slides.length) throw Object.assign(new Error('No slides could be read from this file.'), { code: 'bad-file' });
+  if (!deck.slides.length) {
+    if (ids.length) throw badFile('No slides could be read from this file.');
+    // A presentation with no slides yet (a template, say) opens with a blank one.
+    deck.slides.push(newSlide('blank', deck));
+  }
+  readSections(pres, deck.slides, sldIds);
+  // Links to particular slides, now that the slides have ids.
+  const idOfPath = new Map(slidePaths.map((p, i) => [p, deck.slides[i]?.id]));
+  const resolve = (href) => href.replace(/^#slide-path:(.*)$/, (m, p) => (idOfPath.get(p) ? `#slide:${idOfPath.get(p)}` : ''));
+  for (const s of deck.slides) {
+    for (const el of s.elements) {
+      if (el.link) el.link = resolve(el.link) || undefined;
+      const fix = (html) => html.replace(/href="(#slide-path:[^"]*)"/g, (m, href) => `href="${resolve(href.replace(/&amp;/g, '&')) || '#'}"`);
+      if (el.text?.includes('#slide-path:')) el.text = fix(el.text);
+      for (const row of el.cells || []) for (const c of row) if (c.text?.includes('#slide-path:')) c.text = fix(c.text);
+    }
+  }
+  const firstSlideMaster = slidePaths.length ? (await masterOfSlide(pkg, slidePaths[0])).masterPath : null;
   // Dark presentations get the dark theme, so new slides match (a picture background says nothing either way).
   const firstBg = deck.slides[0].background;
-  if (firstBg && firstBg.type !== 'image' && isDarkColor(firstBg.color || firstBg.from)) deck.themeId = 'simple-dark';
+  if (firstBg && firstBg.type !== 'image' && isDarkColor(backgroundBaseColor(firstBg))) deck.themeId = 'simple-dark';
+  // The first slide's theme is the presentation's, written back into the files it saves (see pptx-export.js).
+  const theme = await masterTheme(pkg, firstSlideMaster || firstMaster, ctx);
+  const imported = importedThemeOf(theme);
+  if (imported) deck.importedTheme = imported;
+  // What couldn't be brought in as it was, for the person opening it (not saved with the deck).
+  if (pkg.notes.size) Object.defineProperty(deck, 'importNotes', { value: [...pkg.notes], configurable: true });
   return deck;
 }

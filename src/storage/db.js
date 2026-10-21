@@ -1,5 +1,5 @@
 import { openDB } from 'idb';
-import { normalizeDeck, slideText, uid, pruneMedia } from '../model/deck.js';
+import { normalizeDeck, slideText, uid, pruneMedia, mediaSlots } from '../model/deck.js';
 
 /**
  * Presentations are kept in IndexedDB in two stores:
@@ -48,12 +48,21 @@ export const getDb = () => {
 };
 
 /** The list record for a deck: enough to draw its cover thumbnail. */
-function metaOf(deck) {
+export function metaOf(deck) {
   const cover = deck.slides.find((s) => !s.hidden) || deck.slides[0];
   const media = {};
   if (cover) {
-    if (cover.background?.media) media[cover.background.media] = deck.media?.[cover.background.media];
-    for (const el of cover.elements) if (el.media && deck.media?.[el.media]) media[el.media] = deck.media[el.media];
+    // The pictures its thumbnail draws: pictures, picture fills, posters, the background and those in
+    // a diagram's drawing. A video shows as its poster, and a diagram's SmartArt parts aren't drawn,
+    // so those stay out of the list record.
+    for (const holder of [cover.background, ...cover.elements]) {
+      const drawn = holder?.diagram?.source ? { ...holder, diagram: { ...holder.diagram, source: null } } : holder;
+      for (const [o, key] of mediaSlots(drawn)) {
+        if (holder?.type === 'media' && key === 'media') continue;
+        const id = o[key];
+        if (deck.media?.[id]) media[id] = deck.media[id];
+      }
+    }
   }
   return {
     id: deck.id,

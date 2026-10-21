@@ -1,4 +1,4 @@
-import { h, toast, debounce, showPopover, menu, setFocusFallback, isPopoverOpen, pickFileInput, closePopover, shortcutLabel, downloadBlob } from '../ui/dom.js';
+import { h, toast, debounce, showPopover, menu, setFocusFallback, isPopoverOpen, pickFileInput, closePopover, shortcutLabel, downloadBlob, escapeHtml } from '../ui/dom.js';
 import { icon, LOGO_SVG } from '../ui/icons.js';
 import { openDialog, promptDialog, confirmDialog } from '../ui/dialog.js';
 import {
@@ -10,21 +10,28 @@ import { isDark, toggleTheme } from '../ui/theme.js';
 import { showInstallHelp } from '../ui/install.js';
 import { getDeck, saveDeck, onStorageChange } from '../storage/db.js';
 import {
-  slideSize, newSlide, layoutElements, cloneSlide, cloneElement, canHoldText, boxOf, moveElement, addMedia, newImage, newTable,
-  htmlToText, SIZES, uid,
+  slideSize, newSlide, layoutElements, cloneSlide, cloneElement, canHoldText, boxOf, moveElement, addMedia, newImage, newTable, newChart, newDiagram,
+  htmlToText, namedSize, customSize, uid, mediaSlots, newMedia, regroup, slideAnimations, ANIM_KINDS, slideTitle, newTextBox, fieldText,
+  sectionAt, setSections, moveSlidesWithSections, removeSlidesWithSections, DEFAULT_SECTION,
 } from '../model/deck.js';
-import { themeById, resolveColor } from '../model/themes.js';
+import { anchorOf, insertRow, insertCol, deleteRow, deleteCol, mergeCells, unmergeCell, blockRange, setBorders, setMargins } from '../model/tables.js';
+import { deckTheme, resolveColor } from '../model/themes.js';
 import { FONT_SIZES } from '../model/fonts.js';
+import { cleanWarp } from '../model/warps.js';
 import { textStyle } from '../render/render.js';
-import { sanitizeHtml, sanitizeElement } from '../io/sanitize.js';
+import { sanitizeHtml, sanitizeElement, sectionName, isXmlPart } from '../io/sanitize.js';
 import { readImageFile } from '../io/images.js';
+import { readMediaFile, mediaTypeOf, isMediaData, LARGE_MEDIA_BYTES } from '../io/media-files.js';
 import { SlideCanvas, aabb } from './canvas.js';
 import { Filmstrip } from './filmstrip.js';
 import { Toolbar } from './toolbar.js';
 import { SidePanel } from './sidepanel.js';
 import { History } from './history.js';
-import { stripInline, exec, execFontSize, caretFormat, highlightAll } from './richtext.js';
-import { VERSION, BUILD, diagnostics } from '../diagnostics.js';
+import { startComment } from './comments.js';
+import { pickDiagramLayout, focusDiagramText } from './diagrams.js';
+import { diagramAsShapes } from '../model/diagram-layout.js';
+import { stripInline, exec, execFontSize, caretFormat, highlightAll, effectAll, TEXT_EFFECTS, indentParagraph } from './richtext.js';
+import { showShortcuts, showAbout } from './help.js';
 
 const CLIP_TYPE = 'application/x-libreslides+json';
 const isTextual = (el) => canHoldText(el) || el.type === 'table';
@@ -47,10 +54,49 @@ function toggleListHtml(html, kind) {
   }
   if (!lines.length) lines.push({ html: '<br>', style: null });
   const already = top.length && top.every((n) => n.tagName === kind.toUpperCase());
-  const attr = (s) => (s ? ` style="${s.replace(/"/g, '&quot;')}"` : '');
+  // A paragraph's margin and indent give way to the list's, and a bullet's colour and size go with the bullet.
+  const drop = already ? /^--bu-/ : /^(margin-inline-start|margin-left|text-indent)\s*:/;
+  const attr = (s) => {
+    const css = (s || '').split(';').map((d) => d.trim()).filter((d) => d && !drop.test(d)).join('; ');
+    return css ? ` style="${css.replace(/"/g, '&quot;')}"` : '';
+  };
   return already
     ? lines.map((l) => `<p${attr(l.style)}>${l.html}</p>`).join('')
     : `<${kind}>${lines.map((l) => `<li${attr(l.style)}>${l.html}</li>`).join('')}</${kind}>`;
+}
+
+/**
+ * Move the selected objects one place up (step 1) or down (-1) the stacking
+ * order. Groups move and are stepped over as one, so none is ever split; a
+ * selection inside one group moves within it.
+ */
+export function stepOrder(list, ids, step) {
+  const swapIn = (arr) => {
+    const out = [...arr];
+    const indices = out.map((u, i) => (u.selected ? i : -1)).filter((i) => i >= 0);
+    if (step > 0) indices.reverse();
+    for (const i of indices) {
+      const j = i + step;
+      if (j < 0 || j >= out.length || out[j].selected) continue;
+      [out[i], out[j]] = [out[j], out[i]];
+    }
+    return out;
+  };
+  // Runs of one group are units; ungrouped objects are units of their own.
+  const units = [];
+  for (const el of list) {
+    const last = units.at(-1);
+    if (el.groupId && last?.groupId === el.groupId) last.els.push(el);
+    else units.push({ groupId: el.groupId, els: [el] });
+  }
+  for (const u of units) u.selected = u.els.some((e) => ids.has(e.id));
+  const picked = units.filter((u) => u.selected);
+  if (picked.length === 1 && picked[0].groupId && !picked[0].els.every((e) => ids.has(e.id))) {
+    const inner = swapIn(picked[0].els.map((el) => ({ el, selected: ids.has(el.id) })));
+    picked[0].els = inner.map((u) => u.el);
+    return units.flatMap((u) => u.els);
+  }
+  return swapIn(units).flatMap((u) => u.els);
 }
 
 export class EditorScreen {
@@ -124,7 +170,7 @@ export class EditorScreen {
       { label: 'Present from beginning', icon: 'play', shortcut: 'F5', run: () => this.present({ fromStart: true }) },
       { label: 'Presenter view', icon: 'presenter', run: () => this.presenterView() },
     ], { iconFn: (n) => icon(n) }), { placement: 'bottom-end' }));
-    this.darkBtn = h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Toggle dark mode', title: 'Dark mode', html: icon(isDark() ? 'sun' : 'moon'), onclick: () => this.toggleDarkUi() });
+    this.darkBtn = h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Dark mode', 'aria-pressed': String(isDark()), title: 'Dark mode', html: icon(isDark() ? 'sun' : 'moon'), onclick: () => this.toggleDarkUi() });
 
     const titlebar = h('header', { class: 'titlebar editor-titlebar' },
       h('button', { type: 'button', class: 'app-logo', 'aria-label': 'All presentations', title: 'All presentations', html: LOGO_SVG('#fff', 'transparent', 28), onclick: () => this.goHome() }),
@@ -186,7 +232,9 @@ export class EditorScreen {
       e.preventDefault();
       e.stopPropagation();
       const images = files.filter((f) => f.type.startsWith('image/'));
+      const clips = files.filter((f) => !f.type.startsWith('image/') && mediaTypeOf(f)); // videos and sounds
       if (images.length) this.insertImageFiles(images, this.canvas.toSlide(e));
+      else if (clips.length) for (const f of clips) this.insertMediaFile(f, this.canvas.toSlide(e));
       else {
         // The handle must be requested synchronously, during the drop event.
         handleFromDataTransfer(e.dataTransfer, files[0]).then((handle) => this.options.onOpenFile?.(files[0], handle));
@@ -200,6 +248,7 @@ export class EditorScreen {
     if (save) await this.flush();
     this.saveSoon.cancel();
     this.thumbSoon.cancel();
+    cancelAnimationFrame(this.uiFrame);
     this.canvas.destroy();
     this.unsubscribe?.();
     this.presentation?.exit?.();
@@ -216,7 +265,7 @@ export class EditorScreen {
   // ---------------------------------------------------------------- state
 
   get slide() { return this.deck.slides[this.slideIndex]; }
-  get theme() { return themeById(this.deck.themeId); }
+  get theme() { return deckTheme(this.deck); }
   get size() { return slideSize(this.deck); }
 
   selectedElements() {
@@ -248,13 +297,15 @@ export class EditorScreen {
   }
 
   snapshot() {
-    return JSON.stringify({ slides: this.deck.slides, themeId: this.deck.themeId, size: this.deck.size, slideId: this.slide?.id, selection: this.selection });
+    return JSON.stringify({ slides: this.deck.slides, themeId: this.deck.themeId, importedTheme: this.deck.importedTheme ?? null, size: this.deck.size, slideId: this.slide?.id, selection: this.selection });
   }
 
   restore(snap) {
     const s = JSON.parse(snap);
     this.deck.slides = s.slides;
     this.deck.themeId = s.themeId;
+    if (s.importedTheme) this.deck.importedTheme = s.importedTheme;
+    else delete this.deck.importedTheme;
     this.deck.size = s.size;
     let i = this.deck.slides.findIndex((x) => x.id === s.slideId);
     if (i < 0) i = Math.min(this.slideIndex, this.deck.slides.length - 1);
@@ -459,7 +510,7 @@ export class EditorScreen {
     const idx = this.slideIndices();
     const first = idx[0];
     this.change(() => {
-      this.deck.slides = this.deck.slides.filter((s) => !this.slideSelection.has(s.id));
+      this.deck.slides = removeSlidesWithSections(this.deck.slides, this.slideSelection);
       if (!this.deck.slides.length) this.deck.slides.push(newSlide('title', this.deck));
     }, { structure: true, render: false });
     this.goToSlide(Math.min(first, this.deck.slides.length - 1));
@@ -475,17 +526,16 @@ export class EditorScreen {
     this.moveSlidesTo(Math.max(0, Math.min(this.deck.slides.length, target)));
   }
 
-  /** Move the selected slides so they start at position `index` (counted before the move). */
+  /** Move the selected slides so they start at position `index` (counted before the move), keeping sections sensible. */
   moveSlidesTo(index) {
-    const ids = this.slideSelection;
-    const moving = this.deck.slides.filter((s) => ids.has(s.id));
-    const before = this.deck.slides.slice(0, index).filter((s) => !ids.has(s.id));
-    const after = this.deck.slides.slice(index).filter((s) => !ids.has(s.id));
-    const order = [...before, ...moving, ...after];
-    if (order.every((s, i) => s === this.deck.slides[i])) return;
+    const move = moveSlidesWithSections(this.deck.slides, this.slideSelection, index);
+    if (!move) return;
     const currentId = this.slide.id;
-    this.change(() => { this.deck.slides = order; }, { structure: true, render: false });
-    this.goToSlide(order.findIndex((s) => s.id === currentId), { keepSlideSelection: true });
+    this.change(() => {
+      setSections(move.order, move.sections);
+      this.deck.slides = move.order;
+    }, { structure: true, render: false });
+    this.goToSlide(move.order.findIndex((s) => s.id === currentId), { keepSlideSelection: true });
   }
 
   toggleSkip() {
@@ -512,6 +562,60 @@ export class EditorScreen {
     }, { structure: true, render: false });
     this.slideSelection = new Set(copies.map((s) => s.id));
     this.goToSlide(this.slideIndex + 1, { keepSlideSelection: true });
+  }
+
+  // ---------------------------------------------------------------- sections
+
+  async sectionNamePrompt(title, value, confirmLabel) {
+    const r = await promptDialog({ title, fields: [{ name: 'name', label: 'Section name', value }], confirmLabel });
+    return r ? sectionName(r.name) || null : null;
+  }
+
+  /** Start a section at the first selected slide, as PowerPoint's "Add Section" does. */
+  async addSection() {
+    const i = this.slideIndices()[0] ?? this.slideIndex;
+    if (this.deck.slides[i].section) return this.renameSection(i);
+    const { id } = this.deck.slides[i];
+    const name = await this.sectionNamePrompt('Add section', 'Untitled Section', 'Add');
+    const slide = this.deck.slides.find((s) => s.id === id); // the deck may have changed meanwhile
+    if (!name || !slide) return;
+    this.change(() => { slide.section = name; }, { structure: true });
+  }
+
+  /** Rename the section slide `i` is in (naming the slides in no section makes them a section). */
+  async renameSection(i = this.slideIndex) {
+    const group = sectionAt(this.deck.slides, i);
+    if (!group) return;
+    const { id } = this.deck.slides[group.start];
+    const name = await this.sectionNamePrompt('Rename section', group.name || DEFAULT_SECTION, 'Rename');
+    const slide = this.deck.slides.find((s) => s.id === id);
+    if (!name || !slide || name === slide.section) return;
+    this.change(() => { slide.section = name; }, { structure: true });
+  }
+
+  /** Remove the section slide `i` is in, but not its slides: they join the section before. */
+  removeSection(i = this.slideIndex) {
+    const group = sectionAt(this.deck.slides, i);
+    if (!group?.name) return;
+    this.change(() => { delete this.deck.slides[group.start].section; }, { structure: true });
+  }
+
+  removeAllSections() {
+    this.change(() => this.deck.slides.forEach((s) => delete s.section), { structure: true });
+  }
+
+  /** Select the slides of the section slide `i` is in. */
+  selectSection(i) {
+    const group = sectionAt(this.deck.slides, i);
+    if (!group) return;
+    this.slideSelection = new Set(this.deck.slides.slice(group.start, group.end).map((s) => s.id));
+    this.goToSlide(group.start, { keepSlideSelection: true });
+  }
+
+  /** Move a whole section past the one before (-1) or after (1) it. */
+  moveSection(i, delta) {
+    this.selectSection(i);
+    this.moveSlides(delta);
   }
 
   changeSlide(fn) {
@@ -542,32 +646,54 @@ export class EditorScreen {
   }
 
   setTheme(id) {
-    this.change(() => { this.deck.themeId = id; }, { structure: true });
+    this.change(() => {
+      this.deck.themeId = id;
+      // The theme a PowerPoint file came with gives way to the one chosen (see pptx-export.js).
+      delete this.deck.importedTheme;
+    }, { structure: true });
   }
 
   setSize(size) {
-    if (!SIZES[size] || size === this.deck.size) return;
-    const sx = SIZES[size].w / this.size.w;
+    const to = namedSize(size) || customSize(size);
+    if (!to || size === this.deck.size) return;
+    const sx = to.w / this.size.w;
+    const sy = to.h / this.size.h;
     this.change(() => {
       this.deck.size = size;
       for (const s of this.deck.slides) {
         for (const el of s.elements) {
           if (el.type === 'line') {
             el.x1 *= sx; el.x2 *= sx;
-          } else if (el.type === 'image' || (el.type === 'shape' && el.lockRatio)) {
+            el.y1 *= sy; el.y2 *= sy;
+          } else if (el.type === 'image' || el.type === 'media' || (el.type === 'shape' && el.lockRatio)) {
             // Keep proportions: scale about the element's centre.
-            const k = Math.min(1, sx);
+            const k = Math.min(sx, sy);
             const cx = (el.x + el.w / 2) * sx;
-            const cy = el.y + el.h / 2;
+            const cy = (el.y + el.h / 2) * sy;
             el.w *= k; el.h *= k;
             el.x = cx - el.w / 2; el.y = cy - el.h / 2;
           } else {
             el.x *= sx; el.w *= sx;
+            el.y *= sy; el.h *= sy;
           }
         }
       }
     }, { structure: true });
     this.canvas.layout();
+  }
+
+  /** Ask for a slide size of one's own, in inches. */
+  async customSizePrompt() {
+    const { w, h } = this.size;
+    const r = await promptDialog({
+      title: 'Custom slide size',
+      fields: [{ name: 'w', label: 'Width (inches)', value: String(Math.round((w / 72) * 100) / 100) }, { name: 'h', label: 'Height (inches)', value: String(Math.round((h / 72) * 100) / 100) }],
+      confirmLabel: 'Apply',
+    });
+    if (!r) return;
+    const size = `${Math.round(parseFloat(r.w) * 72 * 10) / 10}x${Math.round(parseFloat(r.h) * 72 * 10) / 10}`;
+    if (customSize(size)) this.setSize(size);
+    else toast('Slides can be 1 to 56 inches wide and high.', { type: 'error' });
   }
 
   setBackground(bg, { all = false } = {}) {
@@ -614,23 +740,49 @@ export class EditorScreen {
   duplicateSelection() {
     const els = this.selectedElements();
     if (!els.length) return;
-    const copies = els.map((e) => {
+    const copies = regroup(els.map((e) => {
       const c = cloneElement(e);
       moveElement(c, 16, 16);
-      if (c.anim) c.anim.order = this.nextAnimOrder() + (e.anim.order || 0);
+      for (const kind of ANIM_KINDS) if (c[kind]) c[kind].order = this.nextAnimOrder() + (e[kind].order || 0);
       return c;
-    });
+    }));
     this.addElements(copies);
   }
 
+  /** Make the selected objects a group: they stay together, where the topmost one was in the stacking order. */
+  groupSelection() {
+    const ids = new Set(this.selection);
+    if (ids.size < 2) return;
+    const groupId = uid();
+    this.change(() => {
+      const list = this.slide.elements;
+      const top = Math.max(...list.map((e, i) => (ids.has(e.id) ? i : -1)));
+      const members = list.filter((e) => ids.has(e.id));
+      const rest = list.filter((e) => !ids.has(e.id));
+      rest.splice(rest.filter((e) => list.indexOf(e) < top).length, 0, ...members);
+      list.splice(0, list.length, ...rest);
+      for (const e of members) e.groupId = groupId;
+    });
+  }
+
+  ungroupSelection() {
+    if (!this.selectedElements().some((e) => e.groupId)) return;
+    this.change(() => { for (const e of this.selectedElements()) delete e.groupId; });
+  }
+
+  /** Select everything on the slide, or all the text of the box (or table cell) being edited. */
   selectAll() {
+    if (this.canvas.restoreSelection()) {
+      document.execCommand('selectAll');
+      return;
+    }
     this.setSelection(this.slide.elements.map((e) => e.id));
   }
 
   /** Pictures referenced by elements, so a copy carries them along. */
   mediaFor(els) {
     const media = {};
-    for (const el of els) if (el.media && this.deck.media[el.media]) media[el.media] = this.deck.media[el.media];
+    for (const el of els) for (const [o, key] of mediaSlots(el)) if (this.deck.media[o[key]]) media[o[key]] = this.deck.media[o[key]];
     return media;
   }
 
@@ -638,7 +790,7 @@ export class EditorScreen {
   importMedia(media, els) {
     const map = {};
     for (const [id, data] of Object.entries(media || {})) map[id] = addMedia(this.deck, data);
-    for (const el of els) if (el.media && map[el.media]) el.media = map[el.media];
+    for (const el of els) for (const [o, key] of mediaSlots(el)) if (map[o[key]]) o[key] = map[o[key]];
   }
 
   clipboardPayload() {
@@ -656,7 +808,7 @@ export class EditorScreen {
 
   pasteElements(payload) {
     const { w, h: H } = this.size;
-    const copies = payload.elements.map((e) => cloneElement(e));
+    const copies = regroup(payload.elements.map((e) => cloneElement(e)));
     // Pasting onto the same spot again steps each copy down and right.
     const sameSpot = copies.some((c) => this.slide.elements.some((e) => {
       const a = boxOf(e);
@@ -667,13 +819,62 @@ export class EditorScreen {
       if (sameSpot) moveElement(c, 16, 16);
       const b = boxOf(c);
       if (b.x > w - 10 || b.y > H - 10) moveElement(c, -b.x + 20, -b.y + 20);
-      delete c.anim;
+      for (const kind of ANIM_KINDS) delete c[kind];
     }
     this.change(() => {
       this.importMedia(payload.media, copies);
       this.slide.elements.push(...copies);
     });
     this.setSelection(copies.map((c) => c.id));
+  }
+
+  /** Whether text is selected in the box being edited (what Edit › Cut and Copy act on then). */
+  hasTextSelection() {
+    const r = this.canvas.editing && this.canvas.savedRange;
+    return !!r && !r.collapsed;
+  }
+
+  /**
+   * Edit › Cut, Copy, Paste and Delete (and the same in the context menu):
+   * on the selected text while a box is being edited, as in PowerPoint and
+   * Slides, otherwise on the selected objects.
+   */
+  editCommand(cmd) {
+    if (!this.canvas.editing) {
+      if (cmd === 'cut') this.copySelection({ cut: true });
+      else if (cmd === 'copy') this.copySelection();
+      else if (cmd === 'paste') this.pasteFromMenu();
+      else this.deleteSelection();
+      return;
+    }
+    if (cmd === 'paste') {
+      this.pasteIntoText();
+      return;
+    }
+    this.canvas.execText(() => {
+      if (cmd === 'delete') {
+        document.execCommand('delete');
+        return;
+      }
+      const text = String(document.getSelection() || '');
+      // Allowed from a click in Chromium and Firefox; elsewhere write the text ourselves.
+      if (!document.execCommand(cmd)) {
+        navigator.clipboard?.writeText?.(text).catch(() => {});
+        if (cmd === 'cut') document.execCommand('delete');
+      }
+    });
+  }
+
+  /** Paste plain text at the cursor of the box being edited (from a menu, where the browser can't paste itself). */
+  async pasteIntoText() {
+    let text;
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      toast(`Use ${shortcutLabel('Mod-V')} to paste from other apps.`);
+      return;
+    }
+    if (text) this.canvas.execText(() => exec('insertText', text.replace(/\r\n?/g, '\n')));
   }
 
   async pasteFromMenu() {
@@ -692,7 +893,9 @@ export class EditorScreen {
   pasteText(text) {
     const { w, h: H } = this.size;
     const lines = text.replace(/\r\n?/g, '\n').split('\n');
-    const el = { ...newTextBoxAt(w, H), text: sanitizeHtml(lines.map((l) => `<p>${escapeText(l) || '<br>'}</p>`).join('')) };
+    // A box across the middle of the slide.
+    const el = newTextBox(Math.round(w * 0.15), Math.round(H * 0.4), Math.round(w * 0.7), 60);
+    el.text = sanitizeHtml(lines.map((l) => `<p>${escapeHtml(l) || '<br>'}</p>`).join(''));
     this.addElements([el]);
     requestAnimationFrame(() => this.canvas.autoGrow(el));
   }
@@ -725,7 +928,9 @@ export class EditorScreen {
         const payload = JSON.parse(custom);
         // Clipboard data can come from any page: clean text and colours like an opened file.
         for (const el of payload.elements || []) sanitizeElement(el);
-        payload.media = Object.fromEntries(Object.entries(payload.media || {}).filter(([, v]) => /^data:image\//.test(v)));
+        payload.media = Object.fromEntries(Object.entries(payload.media || {}).filter(([, v]) => /^data:image\//.test(v) || isMediaData(v) || isXmlPart(v)));
+        // A video or sound whose file didn't come along can't play.
+        payload.elements = (payload.elements || []).filter((el) => el.type !== 'media' || isMediaData(payload.media[el.media]));
         this.pasteElements(payload);
         return;
       } catch { /* fall through to text */ }
@@ -751,11 +956,65 @@ export class EditorScreen {
   }
 
   setElementProp(prop, value) {
-    this.updateSelected((e) => { if (e.type !== 'line' && e.type !== 'image') e[prop] = value; });
+    this.updateSelected((e) => {
+      if (e.type === 'line' || e.type === 'image') return;
+      e[prop] = value;
+      if (prop === 'fill') {
+        // A colour picked for the fill replaces a gradient, pattern or picture.
+        delete e.gradient;
+        delete e.pattern;
+        delete e.fillImage;
+      }
+    });
+  }
+
+  /** Give the selected shapes a gradient fill (null: back to a solid fill of its first colour). */
+  setGradient(gradient) {
+    this.updateSelected((e) => {
+      if (e.type !== 'shape' && e.type !== 'text') return;
+      if (!gradient) {
+        delete e.gradient;
+        return;
+      }
+      e.gradient = JSON.parse(JSON.stringify(gradient));
+      e.fill = gradient.stops[0].color;
+      delete e.pattern;
+      delete e.fillImage;
+    });
+  }
+
+  /** Fill the selected shapes with a picture from the device (stretched over each one). */
+  async pickFillImage() {
+    const file = await pickFileInput('image/*');
+    if (!file) return;
+    try {
+      const img = await readImageFile(file);
+      const media = addMedia(this.deck, img.dataUrl);
+      this.updateSelected((e) => {
+        if (e.type !== 'shape' && e.type !== 'text') return;
+        e.fillImage = { media };
+        delete e.pattern;
+        if (!e.fill || e.fill === 'none') e.fill = '#ffffff';
+      });
+    } catch (err) {
+      toast(err.message || 'Couldn’t read that picture.', { type: 'error' });
+    }
+  }
+
+  removeFillImage() {
+    this.updateSelected((e) => { delete e.fillImage; });
   }
 
   setStroke(partial) {
     this.updateSelected((e) => { e.stroke = { color: 'theme:text', width: 2, dash: 'solid', ...(e.stroke || {}), ...partial }; });
+  }
+
+  /** Give the selected objects borders this wide; a borderless one also gets a colour, so the border shows. */
+  setBorderWeight(width) {
+    this.updateSelected((e) => {
+      const visible = e.stroke?.color && e.stroke.color !== 'none';
+      e.stroke = { color: 'theme:text', dash: 'solid', ...(e.stroke || {}), width, ...(visible || !width ? {} : { color: 'theme:text' }) };
+    });
   }
 
   setLineEnds(start, end) {
@@ -771,18 +1030,7 @@ export class EditorScreen {
       const rest = list.filter((e) => !ids.has(e.id));
       if (action === 'front') this.slide.elements = [...rest, ...sel];
       else if (action === 'back') this.slide.elements = [...sel, ...rest];
-      else {
-        const arr = [...list];
-        const step = action === 'forward' ? 1 : -1;
-        const indices = arr.map((e, i) => (ids.has(e.id) ? i : -1)).filter((i) => i >= 0);
-        if (step > 0) indices.reverse();
-        for (const i of indices) {
-          const j = i + step;
-          if (j < 0 || j >= arr.length || ids.has(arr[j].id)) continue;
-          [arr[i], arr[j]] = [arr[j], arr[i]];
-        }
-        this.slide.elements = arr;
-      }
+      else this.slide.elements = stepOrder(list, ids, action === 'forward' ? 1 : -1);
     });
   }
 
@@ -937,6 +1185,53 @@ export class EditorScreen {
     }, { coalesce: `text-${prop}` });
   }
 
+  /** Give the text of the selected boxes (or of the box being edited) a WordArt-like effect, or none. */
+  setTextEffect(name) {
+    const c = this.canvas;
+    const editing = c.editing?.id;
+    if (editing) c.endEdit();
+    const els = editing ? [c.find(editing)].filter(Boolean) : this.textElements();
+    if (!els.length) return;
+    const color = (key, fallback) => resolveColor(`theme:${key}`, this.theme, fallback);
+    this.change(() => {
+      for (const el of els) {
+        const css = TEXT_EFFECTS[name]?.({ accent: color('accent1', '#2563eb'), accent2: color('accent2', '#f59e0b'), text: resolveColor(textStyle(el, this.theme).color, this.theme, '#000000') });
+        if (el.text) el.text = effectAll(el.text, css);
+        if (el.cells) for (const row of el.cells) for (const cell of row) cell.text = effectAll(cell.text, css);
+      }
+    });
+  }
+
+  /** Bend the text of the box being edited or the selected boxes into a WordArt shape (see model/warps.js), or straighten it (null). */
+  setWarp(warp, { coalesce = null } = {}) {
+    const c = this.canvas;
+    const els = (c.editing ? [c.find(c.editing.id)].filter(Boolean) : this.textElements()).filter(canHoldText);
+    if (!els.length) return;
+    this.change(() => {
+      for (const el of els) {
+        el.style = { ...(el.style || {}) };
+        if (warp) el.style.warp = cleanWarp(warp) || undefined;
+        if (!el.style.warp) delete el.style.warp;
+      }
+    }, { coalesce });
+  }
+
+  /** Insert the slide number or today's date: at the caret while typing, else in a new box at the foot of the slide. */
+  insertField(type) {
+    const n = this.slideIndex + 1;
+    const html = `<span data-field="${type}">${fieldText(type, n)}</span>`;
+    if (this.canvas.editing) {
+      this.canvas.execText(() => exec('insertHTML', html));
+      return;
+    }
+    const { w, h: H } = this.size;
+    const num = type === 'slidenum';
+    const box = newTextBox(num ? w - 160 : 40, H - 50, 120, 30);
+    box.text = `<p>${html}</p>`;
+    box.style = { ...(box.style || {}), size: 12, align: num ? 'right' : 'left' };
+    this.addElements([box]);
+  }
+
   toggleTextProp(prop) {
     if (this.canvas.editing) {
       this.setTextProp(prop, null);
@@ -980,7 +1275,7 @@ export class EditorScreen {
   }
 
   indent(dir) {
-    if (this.canvas.editing) this.canvas.execText(() => exec(dir > 0 ? 'indent' : 'outdent'));
+    if (this.canvas.editing) this.canvas.execText(() => indentParagraph(dir) || exec(dir > 0 ? 'indent' : 'outdent'));
   }
 
   clearFormatting() {
@@ -1019,6 +1314,7 @@ export class EditorScreen {
     else if (e.shiftKey && k === 'j') run(() => this.setTextProp('align', 'justify'));
     else if (e.shiftKey && (k === '8' || k === '*')) run(() => this.toggleList('ul'));
     else if (e.shiftKey && (k === '7' || k === '&')) run(() => this.toggleList('ol'));
+    else if (!e.shiftKey && k === 'k') run(() => this.insertLink());
     else if (k === ']') run(() => this.indent(1));
     else if (k === '[') run(() => this.indent(-1));
     else if (k === '\\') run(() => this.clearFormatting());
@@ -1059,6 +1355,38 @@ export class EditorScreen {
       }
     }
     if (els.length) this.addElements(els);
+  }
+
+  // ---------------------------------------------------------------- video & sound
+
+  async insertMedia() {
+    const file = await pickFileInput('video/*,audio/*');
+    if (file) this.insertMediaFile(file);
+  }
+
+  /** Add a video or sound file to the slide: a video fills most of it, a sound is a speaker button. */
+  async insertMediaFile(file, at = null) {
+    if (file.size > LARGE_MEDIA_BYTES) {
+      toast(`“${file.name}” is ${Math.round(file.size / 1048576)} MB. It’s kept in this browser’s storage with the presentation, which makes saving and opening slower.`, { timeout: 9000 });
+    }
+    let info;
+    try {
+      info = await readMediaFile(file);
+    } catch (err) {
+      toast(`${file.name}: ${err.message || 'couldn’t read this file'}`, { type: 'error' });
+      return;
+    }
+    if (info.kind === 'video' && !info.width) toast('This browser can’t show this video, so it may not play here (it will in PowerPoint if PowerPoint can play it).', { timeout: 8000 });
+    const { w, h: H } = this.size;
+    const vw = info.width || 16;
+    const vh = info.height || 9;
+    const k = Math.min((w * 0.6) / vw, (H * 0.6) / vh);
+    const [bw, bh] = info.kind === 'video' ? [Math.round(vw * k), Math.round(vh * k)] : [64, 64];
+    const cx = at ? at.x : w / 2;
+    const cy = at ? at.y : H / 2;
+    const el = newMedia(info.kind, addMedia(this.deck, info.dataUrl), info.poster && addMedia(this.deck, info.poster), Math.round(cx - bw / 2), Math.round(cy - bh / 2), bw, bh);
+    if (info.duration) el.duration = info.duration;
+    this.addElements([el]);
   }
 
   async replaceImage() {
@@ -1110,36 +1438,133 @@ export class EditorScreen {
     this.addElements([newTable(rows, cols, Math.round((w - tw) / 2), Math.round((H - th) / 2), Math.round(tw), th)]);
   }
 
-  tableOp(op) {
+  /** A sample column chart in the middle of the slide, with its data open in the side panel. */
+  insertChart() {
+    const { w, h: H } = this.size;
+    const cw = Math.round(Math.min(w * 0.6, 560));
+    const ch = Math.round(Math.min(H * 0.6, 340));
+    this.addElements([newChart(Math.round((w - cw) / 2), Math.round((H - ch) / 2), cw, ch)]);
+    this.openPanel('format');
+  }
+
+  /** Insert › Diagram…: pick a layout, then a diagram of it with sample text in the middle of the slide, its text ready to edit. */
+  async insertDiagram() {
+    const layout = await pickDiagramLayout(this.deck);
+    if (!layout) return;
+    const { w, h: H } = this.size;
+    const dw = Math.round(Math.min(w * 0.7, 640));
+    const dh = Math.round(Math.min(H * 0.62, 340));
+    this.addElements([newDiagram(layout, Math.round((w - dw) / 2), Math.round((H - dh) / 2), dw, dh)]);
+    this.editDiagramText({ start: true });
+  }
+
+  /**
+   * Change the selected diagrams as one undo step. Once edited, a diagram
+   * from PowerPoint is drawn by its own layout instead of PowerPoint's drawing.
+   */
+  editDiagram(fn, { coalesce = null } = {}) {
+    this.updateSelected((e) => {
+      if (e.type !== 'diagram' || !e.diagram) return;
+      fn(e.diagram, e);
+      delete e.diagram.drawn;
+      e.diagram.edited = true;
+    }, { coalesce });
+  }
+
+  /** The selected diagram's text, ready to type in (Format options › Diagram). */
+  editDiagramText({ start = false } = {}) {
+    this.openPanel('format');
+    focusDiagramText(this.panel, { start });
+  }
+
+  /** "Convert to shapes": the selected diagrams become the plain shapes they're drawn with, grouped. */
+  convertDiagramToShapes() {
+    const diagrams = this.selectedElements().filter((e) => e.type === 'diagram');
+    if (!diagrams.length) return;
+    const made = [];
+    this.change(() => {
+      for (const d of diagrams) {
+        // A group of their own, or the one the diagram was in.
+        const shapes = diagramAsShapes(d, { groupId: d.groupId || uid(), newId: () => uid() });
+        const list = this.slide.elements;
+        list.splice(list.indexOf(d), 1, ...shapes);
+        made.push(...shapes);
+      }
+    });
+    this.setSelection(made.map((e) => e.id));
+  }
+
+  /**
+   * The cells of the selected table that cell formatting applies to: those
+   * from the cursor's cell to the end of the text selection while it's being
+   * edited, else the whole table. { el, range: { r0, c0, r1, c1 } }, or null.
+   */
+  tableCells() {
+    const el = this.selectedElements().find((e) => e.type === 'table');
+    if (!el) return null;
+    const tdOf = (n) => (n?.nodeType === 3 ? n.parentElement : n)?.closest?.('td');
+    const saved = this.canvas.editing?.id === el.id && this.canvas.savedRange;
+    const a = saved && tdOf(saved.startContainer);
+    const b = saved && tdOf(saved.endContainer);
+    if (!a || !b) return { el, range: { r0: 0, c0: 0, r1: el.cells.length - 1, c1: el.cells[0].length - 1 } };
+    return { el, range: blockRange(el, +a.dataset.r, +a.dataset.c, +b.dataset.r, +b.dataset.c) };
+  }
+
+  /** Borders (see BORDER_PRESETS) for the table cells being formatted, drawn with `stroke`. */
+  setCellBorders(preset, stroke) {
+    const at = this.tableCells();
+    if (at) this.change(() => setBorders(at.el, at.range, preset, stroke));
+  }
+
+  /** Margins ({ t?, r?, b?, l? }, points) for the table cells being formatted. */
+  setCellMargins(margin) {
+    const at = this.tableCells();
+    if (at) this.change(() => setMargins(at.el, at.range, margin));
+  }
+
+  /**
+   * Insert, delete, merge or unmerge rows and columns of the selected table
+   * at `cell` ({ r, c }: the one right-clicked), else the cell with the
+   * cursor; with neither, rows and columns go at the edges.
+   */
+  tableOp(op, cell = null) {
     const el = this.selectedElements().find((e) => e.type === 'table');
     if (!el) return;
     let r = el.cells.length - 1;
     let c = el.cells[0].length - 1;
-    if (this.canvas.editing) {
-      const sel = document.getSelection();
-      const node = sel?.anchorNode?.nodeType === 3 ? sel.anchorNode.parentElement : sel?.anchorNode;
+    if (cell && el.cells[cell.r]?.[cell.c]) {
+      ({ r, c } = cell);
+      this.canvas.endEdit();
+    } else if (this.canvas.editing) {
+      // Where the cursor was in the table (a menu may have taken the focus since).
+      const at = this.canvas.savedRange?.startContainer || document.getSelection()?.anchorNode;
+      const node = at?.nodeType === 3 ? at.parentElement : at;
       const td = node?.closest?.('td');
       if (td) { r = +td.dataset.r; c = +td.dataset.c; }
       this.canvas.endEdit();
     } else if (op === 'rowAbove' || op === 'colLeft') { r = 0; c = 0; }
     const rowH = el.h / el.cells.length;
     const cols = el.cells[0].length;
+    // Rows and columns are added next to the whole merged block the cursor is in.
+    const a = anchorOf(el, r, c);
     this.change(() => {
       if (op === 'rowAbove' || op === 'rowBelow') {
-        el.cells.splice(op === 'rowAbove' ? r : r + 1, 0, Array.from({ length: cols }, () => ({ text: '' })));
+        insertRow(el, op === 'rowAbove' ? a.r : a.r + (a.cell.rowSpan || 1));
         el.h += rowH;
       } else if (op === 'colLeft' || op === 'colRight') {
-        const at = op === 'colLeft' ? c : c + 1;
-        for (const row of el.cells) row.splice(at, 0, { text: '' });
-        el.colWidths = Array.from({ length: cols + 1 }, () => 1 / (cols + 1));
+        insertCol(el, op === 'colLeft' ? a.c : a.c + (a.cell.colSpan || 1));
+        if (!el.colWidths || el.colWidths.length !== cols + 1) el.colWidths = Array.from({ length: cols + 1 }, () => 1 / (cols + 1));
       } else if (op === 'deleteRow') {
         if (el.cells.length === 1) return;
-        el.cells.splice(r, 1);
+        deleteRow(el, r);
         el.h -= rowH;
       } else if (op === 'deleteCol') {
         if (cols === 1) return;
-        for (const row of el.cells) row.splice(c, 1);
-        el.colWidths = Array.from({ length: cols - 1 }, () => 1 / (cols - 1));
+        deleteCol(el, c);
+      } else if (op === 'mergeRight' || op === 'mergeDown') {
+        mergeCells(el, r, c, op === 'mergeRight' ? 'right' : 'down');
+      } else if (op === 'unmerge') {
+        unmergeCell(el, r, c);
       }
     });
   }
@@ -1147,10 +1572,11 @@ export class EditorScreen {
   // ---------------------------------------------------------------- animations
 
   nextAnimOrder() {
-    return Math.max(0, ...this.slide.elements.map((e) => e.anim?.order || 0)) + 1;
+    return Math.max(0, ...slideAnimations(this.slide).map((a) => a.anim.order || 0)) + 1;
   }
 
-  setAnimation(props, ids = null) {
+  /** Set the selected objects' (or `ids`') entrance, emphasis or exit animation (`kind`: see ANIM_KINDS). */
+  setAnimation(props, ids = null, kind = 'anim') {
     const set = new Set(ids || this.selection);
     const els = this.slide.elements.filter((e) => set.has(e.id));
     if (!els.length) return;
@@ -1158,27 +1584,28 @@ export class EditorScreen {
       let order = this.nextAnimOrder();
       for (const el of els) {
         if (props.effect === 'none') {
-          delete el.anim;
+          delete el[kind];
           continue;
         }
         // Duration or start alone doesn't animate something that isn't animated.
-        if (!el.anim && !props.effect) continue;
-        const fresh = !el.anim;
-        el.anim = { effect: 'fade', duration: 0.5, start: 'click', ...(el.anim || {}), ...props };
-        if (fresh) el.anim.order = order++;
+        if (!el[kind] && !props.effect) continue;
+        const fresh = !el[kind];
+        el[kind] = { effect: { emphasis: 'pulse', motion: 'right' }[kind] || 'fade', duration: kind === 'motion' ? 1.2 : 0.5, start: 'click', ...(el[kind] || {}), ...props };
+        if (fresh) el[kind].order = order++;
       }
     }, { render: true });
     this.panel.update(true);
   }
 
-  reorderAnimation(id, dir) {
-    const list = this.slide.elements.filter((e) => e.anim).sort((a, b) => a.anim.order - b.anim.order);
-    const i = list.findIndex((e) => e.id === id);
+  /** Move one of the slide's animations (the `kind` one of object `id`) earlier or later. */
+  reorderAnimation(id, dir, kind = 'anim') {
+    const list = slideAnimations(this.slide);
+    const i = list.findIndex((a) => a.el.id === id && a.kind === kind);
     const j = i + dir;
     if (i < 0 || j < 0 || j >= list.length) return;
     this.change(() => {
       [list[i], list[j]] = [list[j], list[i]];
-      list.forEach((e, k) => { e.anim.order = k + 1; });
+      list.forEach((a, k) => { a.anim.order = k + 1; });
     });
     this.panel.update(true);
   }
@@ -1202,6 +1629,55 @@ export class EditorScreen {
 
   closePanel() { this.panel.close(); }
 
+  /** Insert › Comment (Ctrl+Alt+M): the Comments tab, ready to type. */
+  insertComment() { startComment(this); }
+
+  /**
+   * Link the selected text, or the selected objects (a click on them in the
+   * slideshow follows it), to a web address or another slide.
+   */
+  async insertLink() {
+    const editing = this.canvas.editing;
+    const range = editing && this.canvas.savedRange;
+    const textLink = range && !range.collapsed;
+    const current = textLink ? range.startContainer.parentElement?.closest('a')?.getAttribute('href') : this.selectedElements()[0]?.link;
+    if (!textLink && !this.selection.length) {
+      toast('Select some text or an object to link.');
+      return;
+    }
+    const internal = /^#slide:/.test(current || '');
+    const r = await promptDialog({
+      title: current ? 'Edit link' : 'Insert link',
+      fields: [
+        { name: 'url', label: 'Web address', value: internal ? '' : current || '', placeholder: 'https://example.com', hint: 'Leave empty and choose nothing below to remove the link.' },
+        {
+          name: 'slide', label: 'Or go to', type: 'select', value: internal ? current : '',
+          options: [
+            { value: '', label: '—' },
+            ...['next', 'prev', 'first', 'last'].map((s) => ({ value: `#slide:${s}`, label: { next: 'Next slide', prev: 'Previous slide', first: 'First slide', last: 'Last slide' }[s] })),
+            ...this.deck.slides.map((s, i) => ({ value: `#slide:${s.id}`, label: `${i + 1}. ${slideTitle(s) || 'Slide'}` })),
+          ],
+        },
+      ],
+      confirmLabel: 'Apply',
+    });
+    if (!r) return;
+    let href = r.slide || r.url.trim();
+    // "example.com" means the website.
+    if (href && !href.startsWith('#') && !/^(https?:|mailto:)/i.test(href)) href = /@/.test(href) && !/\//.test(href) ? `mailto:${href}` : `https://${href}`;
+    if (textLink) {
+      this.canvas.execText(() => {
+        if (href) document.execCommand('createLink', false, href);
+        else document.execCommand('unlink');
+      });
+    } else {
+      this.updateSelected((e) => {
+        if (href) e.link = href;
+        else delete e.link;
+      });
+    }
+  }
+
   toggleNotes() {
     this.view.notes = !this.view.notes;
     this.notesPane.hidden = !this.view.notes;
@@ -1223,6 +1699,7 @@ export class EditorScreen {
   toggleDarkUi() {
     toggleTheme();
     this.darkBtn.innerHTML = icon(isDark() ? 'sun' : 'moon');
+    this.darkBtn.setAttribute('aria-pressed', String(isDark()));
   }
 
   toggleFullscreen() {
@@ -1230,20 +1707,29 @@ export class EditorScreen {
     else document.documentElement.requestFullscreen?.().catch(() => {});
   }
 
-  canvasMenu(at) {
+  /** The slide's context menu, at `at` (screen point); `cell` is the table cell right-clicked, if any. */
+  canvasMenu(at, cell = null) {
     const has = this.selection.length > 0;
+    const els = this.selectedElements();
+    const table = els.length === 1 && els[0].type === 'table';
     const items = has ? [
-      { label: 'Cut', icon: 'cut', shortcut: 'Mod-X', run: () => this.copySelection({ cut: true }) },
-      { label: 'Copy', icon: 'copy', shortcut: 'Mod-C', run: () => this.copySelection() },
-      { label: 'Paste', icon: 'paste', shortcut: 'Mod-V', run: () => this.pasteFromMenu() },
+      { label: 'Cut', icon: 'cut', shortcut: 'Mod-X', run: () => this.editCommand('cut') },
+      { label: 'Copy', icon: 'copy', shortcut: 'Mod-C', run: () => this.editCommand('copy') },
+      { label: 'Paste', icon: 'paste', shortcut: 'Mod-V', run: () => this.editCommand('paste') },
       { label: 'Duplicate', icon: 'duplicate', shortcut: 'Mod-D', run: () => this.duplicateSelection() },
-      { label: 'Delete', icon: 'trash', shortcut: 'Delete', run: () => this.deleteSelection() },
+      { label: 'Delete', icon: 'trash', shortcut: 'Delete', run: () => this.editCommand('delete') },
       'separator',
       { label: 'Bring to front', icon: 'toFront', shortcut: 'Mod-Shift-Up', run: () => this.order('front') },
       { label: 'Send to back', icon: 'toBack', shortcut: 'Mod-Shift-Down', run: () => this.order('back') },
+      this.selection.length > 1 ? { label: 'Group', shortcut: 'Mod-G', run: () => this.groupSelection() } : null,
+      this.selectedElements().some((e) => e.groupId) ? { label: 'Ungroup', shortcut: 'Mod-Shift-G', run: () => this.ungroupSelection() } : null,
+      this.selectedElements().some((e) => e.type === 'diagram') ? { label: 'Edit diagram text', icon: 'diagram', run: () => this.editDiagramText() } : null,
+      this.selectedElements().some((e) => e.type === 'diagram') ? { label: 'Convert to shapes', run: () => this.convertDiagramToShapes() } : null,
+      ...(table ? ['separator', ...this.toolbar.tableItems(cell), ...(cell ? this.toolbar.mergeItems(cell) : [])] : []),
       'separator',
       { label: 'Animate…', icon: 'animate', run: () => this.openPanel('animate') },
       { label: 'Format options…', icon: 'format', run: () => this.openPanel('format') },
+      { label: this.selectedElements()[0]?.link ? 'Edit link…' : 'Link…', icon: 'link', shortcut: 'Mod-K', run: () => this.insertLink() },
     ] : [
       { label: 'Paste', icon: 'paste', shortcut: 'Mod-V', run: () => this.pasteFromMenu() },
       { label: 'Select all', shortcut: 'Mod-A', run: () => this.selectAll() },
@@ -1272,6 +1758,8 @@ export class EditorScreen {
     if (mod && k === 'enter') return run(() => this.present({ fromStart: e.shiftKey }));
     if (mod && k === 's') return run(() => this.saveToFile({ as: e.shiftKey }));
     if (mod && k === 'p') return run(() => this.printDeck());
+    // By key position, as Alt changes the character typed on a Mac.
+    if (mod && e.altKey && e.code === 'KeyM') return run(() => this.insertComment());
     if (mod && k === 'm') return run(() => this.addSlide());
     if (mod && k === '/') return run(() => this.showShortcuts());
     if (mod && (k === '=' || k === '+')) return run(() => this.zoomBy(1.25));
@@ -1315,6 +1803,8 @@ export class EditorScreen {
     if (e.key === 'Delete' || e.key === 'Backspace') return run(() => this.deleteSelection());
     if (mod && k === 'a') return run(() => this.selectAll());
     if (mod && k === 'd') return run(() => this.duplicateSelection());
+    if (mod && k === 'g') return run(() => (e.shiftKey ? this.ungroupSelection() : this.groupSelection()));
+    if (mod && !e.shiftKey && k === 'k') return run(() => this.insertLink());
     if (e.key === 'Tab') {
       const list = this.slide.elements;
       const i = list.findIndex((x) => x.id === this.selection[this.selection.length - 1]) + (e.shiftKey ? -1 : 1);
@@ -1335,6 +1825,7 @@ export class EditorScreen {
     }
     const single = els.length === 1 ? els[0] : null;
     if (single && isTextual(single) && (e.key === 'Enter' || e.key === 'F2')) return run(() => this.canvas.startEdit(single.id, { selectAll: e.key === 'F2' }));
+    if (single?.type === 'diagram' && (e.key === 'Enter' || e.key === 'F2')) return run(() => this.editDiagramText());
     if (mod && !e.altKey) {
       if (!e.shiftKey && k === 'b') return run(() => this.toggleTextProp('bold'));
       if (!e.shiftKey && k === 'i') return run(() => this.toggleTextProp('italic'));
@@ -1577,74 +2068,9 @@ export class EditorScreen {
 
   // ---------------------------------------------------------------- dialogs
 
-  showShortcuts() {
-    const rows = [
-      ['Present from this slide / from the beginning', 'Mod-Enter', 'F5'],
-      ['New slide', 'Mod-M'],
-      ['Duplicate', 'Mod-D'],
-      ['Undo / Redo', 'Mod-Z', 'Mod-Y'],
-      ['Cut / Copy / Paste', 'Mod-X', 'Mod-C', 'Mod-V'],
-      ['Select all', 'Mod-A'],
-      ['Edit the selected text box', 'Enter'],
-      ['Stop editing text / deselect', 'Escape'],
-      ['Select the next object', 'Tab'],
-      ['Nudge (fine / large steps)', 'Arrow keys', 'Alt-Arrow', 'Shift-Arrow'],
-      ['Bring forward / to front', 'Mod-Up', 'Mod-Shift-Up'],
-      ['Send backward / to back', 'Mod-Down', 'Mod-Shift-Down'],
-      ['Bold / Italic / Underline', 'Mod-B', 'Mod-I', 'Mod-U'],
-      ['Bigger / smaller text', 'Mod-Shift-.', 'Mod-Shift-,'],
-      ['Align left / center / right', 'Mod-Shift-L', 'Mod-Shift-E', 'Mod-Shift-R'],
-      ['Bulleted / numbered list', 'Mod-Shift-8', 'Mod-Shift-7'],
-      ['Previous / next slide', 'Page Up', 'Page Down'],
-      ['Move slide up / down (in the slide list)', 'Mod-Up', 'Mod-Down'],
-      ['Zoom in / out / fit', 'Mod-=', 'Mod--', 'Mod-Alt-0'],
-      ['Keep proportions while resizing; draw straight lines', 'Shift-Drag'],
-      ['Move without snapping', 'Alt-Drag'],
-      ['Print / Open', 'Mod-P', 'Mod-O'],
-    ];
-    const table = h('table', { class: 'shortcut-table' }, h('tbody', {}, ...rows.map(([label, ...keys]) => h('tr', {}, h('td', {}, label), h('td', {}, ...keys.flatMap((kk, i) => [i ? ' ' : null, h('kbd', {}, /^[A-Z][a-z]/.test(kk) && !kk.includes('-') ? kk : shortcutLabel(kk))]))))));
-    const present = h('table', { class: 'shortcut-table' }, h('tbody', {}, ...[
-      ['Next / previous', '→ Space Enter', '← Backspace'],
-      ['First / last slide', 'Home', 'End'],
-      ['Go to slide number', 'Number then Enter'],
-      ['Black / white screen', 'B', 'W'],
-      ['Show speaker notes', 'S'],
-      ['End the slideshow', 'Esc'],
-    ].map(([label, ...keys]) => h('tr', {}, h('td', {}, label), h('td', {}, ...keys.flatMap((kk, i) => [i ? ' ' : null, h('kbd', {}, kk)]))))));
-    openDialog({ title: 'Keyboard shortcuts', className: 'wide', body: h('div', {}, table, h('h3', { class: 'dialog-subhead' }, 'During a slideshow'), present) });
-  }
+  showShortcuts() { showShortcuts(); }
 
   showInstall() { showInstallHelp(); }
 
-  async showAbout() {
-    const report = await diagnostics(this);
-    const pre = h('pre', { class: 'diagnostics' }, report);
-    openDialog({
-      title: 'About LibreSlides',
-      className: 'wide',
-      body: h('div', {},
-        h('p', {}, `LibreSlides ${VERSION} (build ${BUILD}) — a presentation editor that runs entirely in your browser and works offline. Presentations are kept on this device; nothing is uploaded.`),
-        h('details', {}, h('summary', {}, 'Details for a bug report'), pre)),
-      buttons: [
-        { label: 'Copy details', value: 'copy' },
-        { label: 'Close', value: null, primary: true },
-      ],
-      onSubmit: (v) => {
-        if (v === 'copy') {
-          navigator.clipboard?.writeText(report).then(() => toast('Copied'), () => {});
-          return false;
-        }
-        return true;
-      },
-    });
-  }
-}
-
-function escapeText(s) {
-  return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-}
-
-/** A text box in the middle of the slide, for pasted text. */
-function newTextBoxAt(w, H) {
-  return { id: uid(), type: 'text', x: Math.round(w * 0.15), y: Math.round(H * 0.4), w: Math.round(w * 0.7), h: 60, rot: 0, text: '', fill: 'none', stroke: null, style: { size: 18 } };
+  showAbout() { return showAbout(this); }
 }

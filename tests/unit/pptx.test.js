@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
 import { buildPptx, htmlToRuns, toHex, fixParagraphs } from '../../src/io/pptx-export.js';
 import { importPptx } from '../../src/io/pptx-import.js';
+import { bulletGlyph } from '../../src/io/pptx-text.js';
+import { renderElement } from '../../src/render/render.js';
+import { themeById } from '../../src/model/themes.js';
 import { TEMPLATES } from '../../src/model/templates.js';
 import { newDeck, newLine, newTable, newTextBox, newShape, newImage, htmlToText } from '../../src/model/deck.js';
 
@@ -65,12 +68,268 @@ describe('PowerPoint text', () => {
     expect(back.slides[0].elements[0].text).toBe('<p>one<br>two<br><br>four</p><p>next</p>');
   });
 
+  it('keeps raised and lowered text, capitals, letter spacing and list styles', async () => {
+    const box = newTextBox(10, 10, 400, 200);
+    box.text = '<p>H<sub>2</sub>O and x<sup>2</sup> <span style="text-transform: uppercase">caps</span> <span style="letter-spacing: 3px">wide</span></p>'
+      + "<ul style=\"list-style-type: '– '\"><li>dash</li></ul><ol style=\"list-style-type: lower-roman\" start=\"3\"><li>three</li></ol>";
+    const xml = await slideXml(deckWith(box));
+    expect(xml).toMatch(/baseline="-\d+"[^>]*>[\s\S]*?<a:t>2<\/a:t>/);
+    expect(xml).toMatch(/baseline="\d+"/);
+    expect(xml).toContain('cap="all"');
+    expect(xml).not.toContain('x-ls-caps');
+    expect(xml).toContain('spc="300"');
+    expect(xml).toContain('<a:buChar char="&#x2013;"/>');
+    expect(xml).toContain('<a:buAutoNum type="romanLcPeriod" startAt="3"/>');
+    const back = (await roundTrip(deckWith(box))).slides[0].elements[0].text;
+    expect(back).toContain('H<sub>2</sub>O');
+    expect(back).toContain('<sup>2</sup>');
+    expect(back).toContain('<span style="text-transform: uppercase">caps</span>');
+    expect(back).toContain('<span style="letter-spacing: 3px">wide</span>');
+    expect(back).toContain("<ul style=\"list-style-type: '– '\"><li>dash</li></ul>");
+    expect(back).toContain('<ol style="list-style-type: lower-roman" start="3"><li>three</li></ol>');
+  });
+
+  it('keeps slide number and date fields', async () => {
+    const box = newTextBox(10, 10, 400, 100);
+    box.text = '<p>Slide <span data-field="slidenum">9</span> of today, <span data-field="datetime4">May 1</span></p>';
+    const xml = await slideXml(deckWith(box));
+    expect(xml).toMatch(/<a:fld id="\{[0-9A-F-]+\}" type="slidenum"><a:rPr lang="en-US"[^>]*>[\s\S]*?<a:t>1<\/a:t><\/a:fld>/);
+    expect(xml).toContain('type="datetime4"');
+    expect(xml).not.toContain('x-ls');
+    const back = (await roundTrip(deckWith(box))).slides[0].elements[0];
+    expect(back.text).toMatch(/^<p>Slide <span data-field="slidenum">1<\/span> of today, <span data-field="datetime4">[^<]+20\d\d<\/span><\/p>$/);
+    // Shown with the slide's own number.
+    const deck = deckWith(back);
+    deck.slides.unshift({ ...deck.slides[0], id: 's0', elements: [] });
+    const { renderSlide } = await import('../../src/render/render.js');
+    expect(renderSlide(deck.slides[1], deck).querySelector('[data-field=slidenum]').textContent).toBe('2');
+  });
+
+  it('keeps text outlines, gradients, shadows and glows', async () => {
+    const box = newTextBox(10, 10, 400, 100);
+    box.text = '<p><span style="-webkit-text-stroke: 1.5px #ff0000">outline</span> '
+      + '<span style="color: #ff0000; background-image: linear-gradient(90deg, #ff0000 0%, rgba(0, 0, 255, 0.5) 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent">grad</span> '
+      + '<span style="text-shadow: rgba(0, 0, 0, 0.5) 3px 4px 2px, #ffff00 0px 0px 6px">glow</span> '
+      + '<span style="color: transparent; -webkit-text-stroke: 1px #000000">hollow</span></p>';
+    const xml = await slideXml(deckWith(box));
+    expect(xml).toMatch(/<a:rPr[^>]*><a:ln w="19050"><a:solidFill><a:srgbClr val="FF0000"\/><\/a:solidFill><\/a:ln>/);
+    expect(xml).toMatch(/<a:gradFill[^>]*><a:gsLst><a:gs pos="0"><a:srgbClr val="FF0000"><\/a:srgbClr><\/a:gs><a:gs pos="100000"><a:srgbClr val="0000FF"><a:alpha val="50000"\/>[\s\S]*?<a:lin ang="0"/);
+    expect(xml).toMatch(/<a:effectLst><a:glow rad="76200"><a:srgbClr val="FFFF00"\/><\/a:glow><a:outerShdw blurRad="25400" dist="63500" dir="3187806"/);
+    expect(xml).toMatch(/<a:noFill\/>[\s\S]*?<a:t>hollow/);
+    expect(xml).not.toContain('x-ls');
+    const back = (await roundTrip(deckWith(box))).slides[0].elements[0].text;
+    expect(back).toContain('-webkit-text-stroke: 1.5px #ff0000">outline');
+    expect(back).toContain('background-image: linear-gradient(90deg, #ff0000 0%, rgba(0, 0, 255, 0.5) 100%)');
+    expect(back).toMatch(/text-shadow: rgba\(0, 0, 0, 0.5\) 3px 4px 2px, #ffff00 0px 0px 6px">glow/);
+    expect(back).toMatch(/color: transparent[^"]*-webkit-text-stroke: 1px #000000">hollow/);
+  });
+
+  it('keeps text box margins, no wrapping, vertical text and columns', async () => {
+    const box = newTextBox(10, 10, 400, 200);
+    box.text = '<p>Side</p>';
+    Object.assign(box.style, { inset: { l: 0, t: 10, r: 20, b: 5 }, wrap: false, vertical: 'vert270', columns: 2, columnGap: 18 });
+    const xml = await slideXml(deckWith(box));
+    expect(xml).toMatch(/<a:bodyPr numCol="2" spcCol="228600"[^>]*wrap="none"[^>]*lIns="0" tIns="127000" rIns="254000" bIns="63500"[^>]*vert="vert270"/);
+    const back = (await roundTrip(deckWith(box))).slides[0].elements[0].style;
+    expect(back).toMatchObject({ inset: { l: 0, t: 10, r: 20, b: 5 }, wrap: false, vertical: 'vert270', columns: 2, columnGap: 18 });
+  });
+
+  it('reads WordArt text warps, leaving plain ones out', async () => {
+    const box = newTextBox(10, 10, 400, 200);
+    box.text = '<p>Arched</p>';
+    const back = await roundTrip(deckWith(box, { ...box, id: 'b2' }, { ...box, id: 'b3' }), async (zip) => {
+      const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+      let n = 0;
+      // Three text boxes: an arch with its adjust value, PowerPoint's "no transform" and a plain warp at its default.
+      const warps = [
+        '<a:prstTxWarp prst="textArchUp"><a:avLst><a:gd name="adj" fmla="val 12000000"/></a:avLst></a:prstTxWarp>',
+        '<a:prstTxWarp prst="textNoShape"><a:avLst/></a:prstTxWarp>',
+        '<a:prstTxWarp prst="textPlain"><a:avLst><a:gd name="adj" fmla="val 50000"/></a:avLst></a:prstTxWarp>',
+      ];
+      zip.file('ppt/slides/slide1.xml', xml.replace(/<a:bodyPr([^>]*?)\/>|<a:bodyPr([^>]*)>/g, (tag, a1, a2) => {
+        const w = warps[n++] || '';
+        return a1 != null ? `<a:bodyPr${a1} fromWordArt="1">${w}</a:bodyPr>` : `<a:bodyPr${a2} fromWordArt="1">${w}`;
+      }));
+    });
+    const [arch, none, plain] = back.slides[0].elements;
+    expect(arch.style.warp).toEqual({ preset: 'textArchUp', adjust: { adj: 12000000 }, stretch: true });
+    expect(none.style.warp).toBeUndefined();
+    expect(plain.style.warp).toBeUndefined();
+  });
+
+  it('writes text warps first in the text box settings, and reads them back', async () => {
+    const box = newTextBox(10, 10, 400, 200);
+    box.text = '<p>Wavy</p>';
+    box.style.warp = { preset: 'textWave1', adjust: { adj1: 15000, adj2: -2000 }, stretch: true };
+    const shape = newShape('ellipse', 100, 100, 300, 200);
+    shape.text = '<p>Round</p>';
+    shape.style = { ...shape.style, warp: { preset: 'textCircle' } };
+    const xml = await slideXml(deckWith(box, shape));
+    expect(xml).toMatch(/<a:bodyPr [^>]*fromWordArt="1"[^>]*><a:prstTxWarp prst="textWave1"><a:avLst><a:gd name="adj1" fmla="val 15000"\/><a:gd name="adj2" fmla="val -2000"\/><\/a:avLst><\/a:prstTxWarp>/);
+    expect(xml).toMatch(/<a:bodyPr (?![^>]*fromWordArt)[^>]*><a:prstTxWarp prst="textCircle"><a:avLst\/><\/a:prstTxWarp>/);
+    const [a, b] = (await roundTrip(deckWith(box, shape))).slides[0].elements;
+    expect(a.style.warp).toEqual(box.style.warp);
+    expect(b.style.warp).toEqual({ preset: 'textCircle' });
+  });
+
   it('keeps plain text plain next to bold text', async () => {
     const box = newTextBox(10, 10);
     box.text = '<p><b>12k</b></p><p>Weekly active users</p>';
     const el = (await roundTrip(deckWith(box))).slides[0].elements[0];
     expect(el.style.bold).toBe(true);
     expect(el.text).toContain('<span style="font-weight: 400">Weekly active users</span>');
+  });
+
+  it('writes formatting a run turns off as off, so it doesn\'t take the box\'s', async () => {
+    const box = newTextBox(10, 10);
+    box.style = { ...box.style, bold: true, italic: true, underline: true };
+    box.text = '<p>all <span style="font-weight: 400; font-style: normal; text-decoration: none">plain</span></p>';
+    const runs = (await slideXml(deckWith(box))).match(/<a:r><a:rPr[^>]*>/g);
+    expect(runs[0]).toMatch(/ b="1"/);
+    expect(runs[1]).toMatch(/ b="0"/);
+    expect(runs[1]).toMatch(/ i="0"/);
+    expect(runs[1]).toMatch(/ u="none"/);
+    expect(runs[1]).not.toMatch(/ b="1"| i="1"| u="sng"/);
+    const el = (await roundTrip(deckWith(box))).slides[0].elements[0];
+    expect(el.style.bold).toBe(true);
+    expect(el.text).toContain('plain');
+    expect(el.text).toMatch(/font-weight: 400[^"]*font-style: normal[^"]*text-decoration: none">plain/);
+  });
+});
+
+describe('PowerPoint paragraphs, bullets and lists', () => {
+  /** Read a text box whose paragraphs are `paras` (DrawingML), with `bodyPr` and `lstStyle` of its own. */
+  async function readBody(paras, { bodyPr = '<a:bodyPr/>', lstStyle = '<a:lstStyle/>' } = {}) {
+    const box = newTextBox(10, 10, 400, 300);
+    box.text = '<p>x</p>';
+    const back = await roundTrip(deckWith(box), async (zip) => {
+      const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+      zip.file('ppt/slides/slide1.xml', xml.replace(/<p:txBody>[\s\S]*?<\/p:txBody>/, `<p:txBody>${bodyPr}${lstStyle}${paras}</p:txBody>`));
+    });
+    return back.slides[0].elements[0];
+  }
+  const run = (text, rPr = '<a:rPr lang="en-US" sz="2000"/>') => `<a:r>${rPr}<a:t>${text}</a:t></a:r>`;
+  const para = (pPr, text, rPr) => `<a:p>${pPr}${text == null ? '' : run(text, rPr)}</a:p>`;
+
+  it('shows symbol fonts\' bullets as the characters they look like, and writes them back in Wingdings', async () => {
+    expect(bulletGlyph('l', 'Wingdings')).toBe('●');
+    expect(bulletGlyph('\uf0a7', 'Wingdings')).toBe('▪');
+    expect(bulletGlyph('Ø', 'Wingdings')).toBe('➢');
+    expect(bulletGlyph('ü', 'Wingdings')).toBe('✓');
+    expect(bulletGlyph('\uf0b7', 'Symbol')).toBe('•');
+    expect(bulletGlyph('\uf075', 'Wingdings 3')).toBe('▶');
+    expect(bulletGlyph('✭', 'Wingdings')).toBe('✭'); // Unicode already
+    expect(bulletGlyph('–', 'Arial')).toBe('–');
+    expect(bulletGlyph('\uf0e9', 'Some Font')).toBe('•'); // a private character nothing can show
+    const el = await readBody(para('<a:pPr marL="342900" indent="-342900"><a:buFont typeface="Wingdings" pitchFamily="2" charset="2"/><a:buChar char="v"/></a:pPr>', 'Diamond')
+      + para('<a:pPr marL="342900" indent="-342900"><a:buFont typeface="Wingdings"/><a:buChar char="&#xF0D8;"/></a:pPr>', 'Arrow'));
+    expect(el.text).toContain("<ul style=\"list-style-type: '❖ '; padding-inline-start: 27px\">");
+    expect(el.text).toContain("<ul style=\"list-style-type: '➢ '; padding-inline-start: 27px\">");
+    const xml = await slideXml(deckWith(el));
+    expect(xml).toMatch(/<a:buFont typeface="Wingdings" pitchFamily="2" charset="2"\/><a:buChar char="v"\/>/);
+    expect(xml).toMatch(/<a:buFont typeface="Wingdings" pitchFamily="2" charset="2"\/><a:buChar char="Ø"\/>/);
+  });
+
+  it('gives bullets their own colour and size, else their paragraph\'s first run\'s, and writes them back', async () => {
+    const red = '<a:rPr lang="en-US" sz="2000"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></a:rPr>';
+    // The list style gives bullets a colour; the second paragraph's follow its text instead, the third's its red text.
+    const lstStyle = '<a:lstStyle><a:lvl1pPr marL="317500" indent="-317500"><a:buClr><a:srgbClr val="7030A0"/></a:buClr><a:buChar char="•"/></a:lvl1pPr></a:lstStyle>';
+    const el = await readBody(
+      para('<a:pPr><a:buSzPct val="75000"/></a:pPr>', 'Purple')
+      + para('<a:pPr><a:buClrTx/></a:pPr>', 'Black')
+      + para('<a:pPr><a:buClrTx/></a:pPr>', 'Red', red),
+      { lstStyle },
+    );
+    expect(el.style.color).toBe('#374151'); // the text colour of the theme the test deck was written with
+    expect(el.text).toBe('<ul><li style="--bu-color: #7030a0; --bu-size: 75%">Purple</li><li>Black</li><li style="color: #ff0000">Red</li></ul>');
+    const xml = await slideXml(deckWith(el));
+    expect(xml).toMatch(/<a:buClr><a:srgbClr val="7030A0"\/><\/a:buClr><a:buSzPct val="75000"\/><a:buChar/);
+    expect(xml.match(/<a:buClr>/g)).toHaveLength(1); // the others follow their text
+    const back = (await roundTrip(deckWith(el))).slides[0].elements[0];
+    expect(back.text).toBe(el.text);
+  });
+
+  it('starts a list at the level of its first paragraph, without empty items above it', async () => {
+    const el = await readBody([1, 1, 2].map((lvl) => para(`<a:pPr marL="${742950 + (lvl - 1) * 400050}" lvl="${lvl}" indent="-285750"><a:buChar char="•"/></a:pPr>`, `Level ${lvl}`)).join(''));
+    expect(el.text).toBe('<ul style="padding-inline-start: 58.5px"><li>Level 1</li><li>Level 1<ul style="list-style-type: disc; padding-inline-start: 31.5px"><li>Level 2</li></ul></li></ul>');
+    expect(el.text).not.toContain('<br>');
+    // Written back as far in as it's shown, and read back the same.
+    const xml = await slideXml(deckWith(el));
+    expect(xml).toMatch(/<a:pPr algn="l" marL="742950" indent="-317500">/);
+    expect((await roundTrip(deckWith(el))).slides[0].elements[0].text).toBe(el.text);
+  });
+
+  it('numbers lists as PowerPoint does: on past deeper paragraphs and empty ones, again after one at the same level', async () => {
+    const num = (lvl, type = 'arabicPeriod') => `<a:pPr marL="${342900 * (lvl + 1)}" lvl="${lvl}" indent="-342900"><a:buAutoNum type="${type}"/></a:pPr>`;
+    const el = await readBody([
+      para(num(0), 'One'), para(num(0), 'Two'),
+      para(num(1, 'alphaLcPeriod'), 'a'), para(num(1, 'alphaLcPeriod'), 'b'),
+      para('<a:pPr marL="685800" lvl="1" indent="0"><a:buNone/></a:pPr>', 'Plain'),
+      para(num(1, 'alphaLcPeriod'), 'a again'),
+      para(num(0), 'Three'), para(num(0)), para(num(0), 'Four'),
+    ].join(''));
+    expect(el.text).toBe('<ol style="padding-inline-start: 27px"><li>One</li><li>Two'
+      + '<ol style="list-style-type: lower-alpha; padding-inline-start: 27px"><li>a</li><li>b</li></ol><p style="margin-inline-start: 27px">Plain</p>'
+      + '<ol style="list-style-type: lower-alpha; padding-inline-start: 27px"><li>a again</li></ol></li><li>Three</li></ol>'
+      + '<p style="margin-inline-start: 27px; text-indent: -27px"><br></p><ol style="padding-inline-start: 27px" start="4"><li>Four</li></ol>');
+    // The plain paragraph is written at the level below, where it's shown.
+    const xml = await slideXml(deckWith(el));
+    expect(xml).toMatch(/<a:pPr algn="l" lvl="1" marL="685800" indent="0">(?:(?!<\/a:pPr>)[\s\S])*<a:buNone\/><\/a:pPr><a:r><a:rPr[^>]*>[\s\S]*?<a:t>Plain/);
+    expect(xml).toContain('<a:buAutoNum type="arabicPeriod" startAt="4"/>');
+    const back = (await roundTrip(deckWith(el))).slides[0].elements[0];
+    expect(htmlToText(back.text)).toBe(htmlToText(el.text));
+    expect(back.text).toContain('<p style="margin-inline-start: 27px">Plain</p>');
+    expect(back.text).toContain('start="4"');
+  });
+
+  it('keeps paragraphs\' margins, indents, direction, line spacing and the space between them', async () => {
+    const el = await readBody(
+      para('<a:pPr marL="457200" indent="228600"><a:lnSpc><a:spcPts val="3000"/></a:lnSpc></a:pPr>', 'Set in')
+      + para('<a:pPr algn="r" rtl="1"><a:spcBef><a:spcPts val="1200"/></a:spcBef></a:pPr>', 'مرحبا', '<a:rPr lang="ar-SA" sz="2000"><a:cs typeface="Arial"/></a:rPr>')
+      + para('<a:pPr><a:lnSpc><a:spcPct val="150000"/></a:lnSpc><a:spcBef><a:spcPts val="600"/></a:spcBef></a:pPr>', 'Airy')
+      + para('<a:pPr><a:spcBef><a:spcPts val="600"/></a:spcBef></a:pPr>', 'Last'),
+    );
+    expect(el.style).toMatchObject({ lineHeight: 1.2, spacing: 0.3 });
+    expect(el.text).toBe('<p style="text-align: left; line-height: 30px; margin-inline-start: 36px; text-indent: 18px">Set in</p>'
+      + '<p dir="rtl" style="text-align: right; margin-top: 12px"><span style="font-family: \'Inter\', \'Arial\', sans-serif">مرحبا</span></p>'
+      + '<p style="text-align: left; line-height: 1.8">Airy</p><p style="text-align: left">Last</p>');
+    const xml = await slideXml(deckWith(el));
+    expect(xml).toMatch(/<a:pPr[^>]* marL="457200" indent="228600"><a:lnSpc><a:spcPts val="3000"\/><\/a:lnSpc>/);
+    expect(xml).toMatch(/<a:pPr algn="r"[^>]* rtl="1">[\s\S]*?<a:spcBef><a:spcPts val="1200"\/><\/a:spcBef><a:spcAft><a:spcPts val="0"\/><\/a:spcAft>/);
+    expect(xml).toMatch(/<a:lnSpc><a:spcPct val="150000"\/><\/a:lnSpc><a:spcBef><a:spcPts val="600"\/>/);
+    const back = (await roundTrip(deckWith(el))).slides[0].elements[0];
+    expect(back.text).toBe(el.text);
+    expect(back.style).toMatchObject({ lineHeight: 1.2, spacing: 0.3 });
+  });
+
+  it('makes empty paragraphs as tall as their end mark\'s text, and keeps them so', async () => {
+    const el = await readBody(`${para('', 'Above')}<a:p><a:endParaRPr lang="en-US" sz="800"/></a:p>${para('', 'Below')}`);
+    expect(el.text).toBe('<p>Above</p><p style="font-size: 8px"><br></p><p>Below</p>');
+    expect(await slideXml(deckWith(el))).toMatch(/<a:p><a:pPr[^>]*>[\s\S]*?<\/a:pPr><a:endParaRPr sz="800" lang="en-US"/);
+    expect((await roundTrip(deckWith(el))).slides[0].elements[0].text).toBe(el.text);
+  });
+
+  it('shrinks line spacing and the space between paragraphs as PowerPoint shrank them', async () => {
+    const paras = para('<a:pPr><a:spcBef><a:spcPts val="1000"/></a:spcBef></a:pPr>', 'One') + para('<a:pPr><a:spcBef><a:spcPts val="1000"/></a:spcBef></a:pPr>', 'Two');
+    const plain = await readBody(paras);
+    const shrunk = await readBody(paras, { bodyPr: '<a:bodyPr><a:normAutofit fontScale="50000" lnSpcReduction="20000"/></a:bodyPr>' });
+    expect(plain.style).toMatchObject({ size: 20, lineHeight: 1.2, spacing: 0.5 });
+    expect(shrunk.style).toMatchObject({ size: 10, lineHeight: 0.96, spacing: 0.8 });
+  });
+
+  it('sets East Asian and complex-script text in their own fonts, and keeps them', async () => {
+    const rPr = '<a:rPr lang="ja-JP" sz="2000"><a:latin typeface="Calibri"/><a:ea typeface="MS Gothic"/><a:cs typeface="Arial"/></a:rPr>';
+    const el = await readBody(para('', 'Latin', rPr) + para('', '日本語のテキスト', rPr));
+    expect(el.style.font).toBe('Calibri');
+    expect(el.text).toBe('<p>Latin</p><p><span style="font-family: \'Calibri\', \'MS Gothic\', sans-serif">日本語のテキスト</span></p>');
+    const xml = await slideXml(deckWith(el));
+    expect(xml).toMatch(/<a:latin typeface="Calibri"[^>]*\/><a:ea typeface="MS Gothic"[^>]*\/>[\s\S]*?<a:t>日本語/);
+    expect((await roundTrip(deckWith(el))).slides[0].elements[0].text).toBe(el.text);
+  });
+
+  it('writes paragraphs inside list items and lists inside lists at the level they\'re shown', () => {
+    const runs = htmlToRuns('<ul><li>a<p>note</p></li><ul><li>b</li></ul></ul>', {}, null, { size: 20 });
+    expect(runs.map((r) => [r.text, r.options.indentLevel || 0, !!r.options.bullet])).toEqual([['a', 0, true], ['note', 1, false], ['b', 1, true]]);
   });
 });
 
@@ -109,7 +368,7 @@ describe('PowerPoint pictures and shapes', () => {
   it('shows the graphics of the master and layout, unless the slide hides them', async () => {
     const box = newTextBox(10, 10);
     box.text = '<p>Hello</p>';
-    // A footer bar on the master, filled with the text colour lightened 75%.
+    // A footer bar on the master, filled with the text colour (the theme's, #374151) lightened 75%.
     const bar = '<p:sp><p:nvSpPr><p:cNvPr id="99" name="Bar"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="6350000"/><a:ext cx="12192000" cy="508000"/></a:xfrm>'
       + '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:schemeClr val="tx1"><a:tint val="75000"/></a:schemeClr></a:solidFill></p:spPr></p:sp>';
     const addBar = async (zip) => {
@@ -118,7 +377,7 @@ describe('PowerPoint pictures and shapes', () => {
     };
     const shown = (await roundTrip(deckWith(box), addBar)).slides[0].elements;
     const footer = shown.find((e) => e.type === 'shape');
-    expect(footer).toMatchObject({ fill: '#898989', x: 0, y: 500, w: 960, h: 40 });
+    expect(footer).toMatchObject({ fill: '#909397', x: 0, y: 500, w: 960, h: 40 });
     expect(shown.indexOf(footer)).toBeLessThan(shown.findIndex((e) => e.text === '<p>Hello</p>'));
 
     const hidden = (await roundTrip(deckWith(box), async (zip) => {
@@ -126,6 +385,389 @@ describe('PowerPoint pictures and shapes', () => {
       zip.file('ppt/slides/slide1.xml', (await zip.file('ppt/slides/slide1.xml').async('string')).replace(/<p:sld(\s)/, '<p:sld showMasterSp="0"$1'));
     })).slides[0].elements;
     expect(hidden.some((e) => e.type === 'shape')).toBe(false);
+  });
+});
+
+describe('PowerPoint gradients and shadows', () => {
+  it('keeps linear and radial gradient fills as real gradients', async () => {
+    const a = newShape('rect', 10, 10, 200, 100);
+    a.gradient = { type: 'linear', angle: 90, stops: [{ pos: 0, color: '#ff0000' }, { pos: 0.5, color: '#00ff00', opacity: 0.5 }, { pos: 1, color: '#0000ff' }] };
+    a.fill = '#ff0000';
+    const b = newShape('ellipse', 300, 10, 100, 100);
+    b.gradient = { type: 'radial', cx: 0.25, cy: 0.5, stops: [{ pos: 0, color: '#ffffff' }, { pos: 1, color: '#000000' }] };
+    b.fill = '#ffffff';
+    b.shadow = true;
+    const xml = await slideXml(deckWith(a, b));
+    expect(xml.match(/<a:gradFill/g)).toHaveLength(2);
+    expect(xml).toContain('<a:lin ang="0" scaled="0"/>');
+    expect(xml).toContain('<a:alpha val="50000"/>');
+    expect(xml).toContain('<a:path path="circle"><a:fillToRect l="25000" t="50000" r="75000" b="50000"/></a:path>');
+    const [ba, bb] = (await roundTrip(deckWith(a, b))).slides[0].elements;
+    expect(ba.gradient).toEqual(a.gradient);
+    expect(bb.gradient).toEqual(b.gradient);
+    expect(bb.shadow).toBe(true);
+    expect(ba.shadow).toBeUndefined();
+  });
+
+  it('writes gradient backgrounds as gradients, not pictures', async () => {
+    const deck = deckWith(newTextBox(10, 10));
+    deck.slides[0].background = { type: 'gradient', from: '#112233', to: '#445566', angle: 135 };
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deck)));
+    expect(await zip.file('ppt/slides/slide1.xml').async('string')).toMatch(/<p:bg><p:bgPr><a:gradFill rotWithShape="1">[\s\S]*<a:lin ang="2700000"/);
+    expect(Object.values(zip.files).some((f) => f.name.startsWith('ppt/media/') && !f.dir)).toBe(false);
+    const back = await importPptx(await zip.generateAsync({ type: 'arraybuffer' }));
+    expect(back.slides[0].background).toEqual({ type: 'gradient', from: '#112233', to: '#445566', angle: 135 });
+  });
+
+  it('takes a shape\'s gradient from the theme\'s fill style', async () => {
+    const shape = newShape('rect', 0, 0, 200, 100);
+    shape.fill = '#3366cc';
+    const back = await roundTrip(deckWith(shape), async (zip) => {
+      const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+      // No fill of its own; the theme's second fill style in accent 1, as PowerPoint's default shapes have.
+      const styled = xml.replace(/(<a:prstGeom[\s\S]*?<\/a:prstGeom>)<a:solidFill>[\s\S]*?<\/a:solidFill>/, '$1')
+        .replace('</p:spPr>', '</p:spPr><p:style><a:lnRef idx="0"><a:schemeClr val="accent1"/></a:lnRef><a:fillRef idx="2"><a:schemeClr val="accent1"/></a:fillRef><a:effectRef idx="0"><a:schemeClr val="accent1"/></a:effectRef><a:fontRef idx="minor"><a:schemeClr val="lt1"/></a:fontRef></p:style>');
+      zip.file('ppt/slides/slide1.xml', styled);
+    });
+    const el = back.slides[0].elements[0];
+    expect(el.gradient?.stops).toHaveLength(3);
+    expect(el.fill).toBe(el.gradient.stops[0].color);
+  });
+});
+
+describe('PowerPoint pictures in shapes and SmartArt', () => {
+  it('keeps a picture filling a shape, crop and all', async () => {
+    const shape = newShape('ellipse', 10, 20, 200, 100);
+    shape.fill = '#ffffff';
+    shape.fillImage = { media: 'm1', crop: { l: 0.1, t: 0, r: 0.2, b: 0 } };
+    const deck = deckWith(shape);
+    deck.media.m1 = PNG;
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deck)));
+    const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+    expect(xml).toContain('<a:blipFill rotWithShape="1"><a:blip r:embed="rIdLsFill1"></a:blip><a:srcRect l="10000" t="0" r="20000" b="0"/>');
+    expect(await zip.file('ppt/slides/_rels/slide1.xml.rels').async('string')).toContain('Target="../media/ls-fill-1-1.png"');
+    expect(zip.file('ppt/media/ls-fill-1-1.png')).toBeTruthy();
+    const back = await importPptx(await zip.generateAsync({ type: 'arraybuffer' }));
+    const el = back.slides[0].elements[0];
+    expect(el.shape).toBe('ellipse');
+    expect(back.media[el.fillImage.media]).toBe(PNG);
+    expect(el.fillImage.crop).toEqual({ l: 0.1, t: 0, r: 0.2, b: 0 });
+  });
+
+  it('keeps a picture cropped to a shape, and its colour adjustments', async () => {
+    const oval = newImage('m1', 10, 10, 200, 100);
+    oval.clip = { shape: 'ellipse' };
+    oval.adjust = { grayscale: true, brightness: 0.2, contrast: -0.3 };
+    const cloud = newImage('m1', 300, 10, 200, 100);
+    cloud.clip = { shape: 'custom', paths: [{ cmds: [['M', 0, 0], ['L', 1, 1], ['Z']] }], preset: { name: 'cloud' } };
+    const deck = deckWith(oval, cloud);
+    deck.media.m1 = PNG;
+    const xml = await slideXml(deck);
+    expect(xml).toContain('<a:grayscl/><a:lum bright="20000" contrast="-30000"/>');
+    expect(xml).toContain('<a:prstGeom prst="ellipse"><a:avLst></a:avLst></a:prstGeom>');
+    expect(xml).toContain('<a:prstGeom prst="cloud">');
+    const [a, b] = (await roundTrip(deck)).slides[0].elements;
+    expect(a.clip).toEqual({ shape: 'ellipse' });
+    expect(a.adjust).toEqual({ grayscale: true, brightness: 0.2, contrast: -0.3 });
+    expect(b.clip).toMatchObject({ shape: 'custom', preset: { name: 'cloud' } });
+    expect(b.clip.paths.length).toBeGreaterThan(1);
+    // Drawn clipped and filtered.
+    const node = renderElement(a, { theme: themeById(deck.themeId), deck });
+    expect(node.querySelector('.el-img').style.clipPath).toMatch(/^path\(/);
+    expect(node.querySelector('.el-img').style.filter).toBe('grayscale(1) brightness(1.2) contrast(0.7)');
+  });
+
+  /** A slide with a SmartArt diagram in a frame at (1 in, 1 in); `drawing` is the drawn copy's shapes (or none). */
+  const withSmartArt = (drawing) => roundTrip(deckWith(), async (zip) => {
+    const ns = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"';
+    const frame = `<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="9" name="Diagram"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x="914400" y="914400"/><a:ext cx="3657600" cy="1828800"/></p:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram"><dgm:relIds xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" r:dm="rIdDm" r:lo="rIdLo" r:qs="rIdQs" r:cs="rIdCs"/></a:graphicData></a:graphic></p:graphicFrame>`;
+    const slide = await zip.file('ppt/slides/slide1.xml').async('string');
+    zip.file('ppt/slides/slide1.xml', slide.replace('</p:spTree>', `${frame}</p:spTree>`));
+    const rels = await zip.file('ppt/slides/_rels/slide1.xml.rels').async('string');
+    zip.file('ppt/slides/_rels/slide1.xml.rels', rels.replace('</Relationships>', '<Relationship Id="rIdDm" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramData" Target="../diagrams/data1.xml"/>'
+      + '<Relationship Id="rIdDr" Type="http://schemas.microsoft.com/office/2007/relationships/diagramDrawing" Target="../diagrams/drawing1.xml"/></Relationships>'));
+    zip.file('ppt/diagrams/data1.xml', `<dgm:dataModel xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" ${ns}><dgm:ptLst><dgm:pt modelId="0" type="doc"><dgm:t><a:p><a:r><a:t>Doc</a:t></a:r></a:p></dgm:t></dgm:pt>`
+      + '<dgm:pt modelId="1"><dgm:t><a:bodyPr/><a:p><a:r><a:t>First</a:t></a:r></a:p></dgm:t></dgm:pt><dgm:pt modelId="2"><dgm:t><a:p><a:r><a:t>Second</a:t></a:r></a:p></dgm:t></dgm:pt></dgm:ptLst>'
+      + '<dgm:extLst><a:ext uri="http://schemas.microsoft.com/office/drawing/2008/diagram"><dsp:dataModelExt xmlns:dsp="http://schemas.microsoft.com/office/drawing/2008/diagram" relId="rIdDr"/></a:ext></dgm:extLst></dgm:dataModel>');
+    zip.file('ppt/diagrams/drawing1.xml', `<dsp:drawing xmlns:dsp="http://schemas.microsoft.com/office/drawing/2008/diagram" ${ns}><dsp:spTree><dsp:nvGrpSpPr><dsp:cNvPr id="0" name=""/><dsp:cNvGrpSpPr/></dsp:nvGrpSpPr><dsp:grpSpPr/>${drawing}</dsp:spTree></dsp:drawing>`);
+  });
+
+  it('brings in SmartArt as a diagram drawn with PowerPoint\'s shapes, in its frame', async () => {
+    const back = await withSmartArt('<dsp:sp modelId="{1}"><dsp:nvSpPr><dsp:cNvPr id="0" name=""/><dsp:cNvSpPr/></dsp:nvSpPr><dsp:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/></a:xfrm><a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="4472C4"/></a:solidFill></dsp:spPr>'
+      + '<dsp:txBody><a:bodyPr/><a:p><a:r><a:rPr sz="1800"/><a:t>First</a:t></a:r></a:p></dsp:txBody><dsp:txXfrm><a:off x="914400" y="0"/><a:ext cx="1828800" cy="914400"/></dsp:txXfrm></dsp:sp>');
+    const [diagram] = back.slides[0].elements;
+    expect(diagram).toMatchObject({ type: 'diagram', x: 72, y: 72, w: 288, h: 144 });
+    // The drawn shapes are in the diagram's box.
+    const [circle, label] = diagram.diagram.drawn.elements;
+    expect(circle).toMatchObject({ type: 'shape', shape: 'ellipse', fill: '#4472c4', text: '', x: 0, y: 0, w: 72, h: 72 });
+    expect(label).toMatchObject({ type: 'text', fill: 'none', x: 72, y: 0, w: 144, h: 72 });
+    expect(htmlToText(label.text)).toBe('First');
+  });
+
+  it('lays out SmartArt\'s text itself when there\'s no drawn copy', async () => {
+    const [diagram] = (await withSmartArt('')).slides[0].elements;
+    expect(diagram).toMatchObject({ type: 'diagram', x: 72, y: 72, w: 288, h: 144, diagram: { layout: 'list' } });
+    expect(diagram.diagram.nodes.map((n) => [n.text, n.level])).toEqual([['First', 0], ['Second', 0]]);
+    expect(diagram.diagram.drawn).toBeUndefined();
+  });
+});
+
+describe('PowerPoint tables', () => {
+  it('puts cell text at the top when PowerPoint doesn’t say where, and keeps LibreSlides’ middle', async () => {
+    const table = newTable(2, 2, 100, 300, 400, 80);
+    expect((await roundTrip(deckWith(table))).slides[0].elements[0].cells[0][0].valign).toBe('middle');
+    const back = await roundTrip(deckWith(table), async (zip) => {
+      const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+      zip.file('ppt/slides/slide1.xml', xml.replace(/ anchor="ctr"/g, ''));
+    });
+    expect(back.slides[0].elements[0].cells.flat().map((c) => c.valign)).toEqual(['top', 'top', 'top', 'top']);
+  });
+
+  it('gives a row as tall as its text (h="0") its share of the frame, and tables the deck\'s font', async () => {
+    const table = newTable(3, 2, 100, 300, 400, 120);
+    const back = await roundTrip(deckWith(table), async (zip) => {
+      const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+      zip.file('ppt/slides/slide1.xml', xml.replace(/<a:tr h="\d+"/, '<a:tr h="0"').replace(/<a:(latin|ea|cs) typeface="[^"]*"[^>]*\/>/g, ''));
+      const theme = await zip.file('ppt/theme/theme1.xml').async('string');
+      zip.file('ppt/theme/theme1.xml', theme.replace(/(<a:minorFont><a:latin typeface=")[^"]*/, '$1Georgia'));
+    });
+    const t = back.slides[0].elements[0];
+    expect(t.rowHeights).toHaveLength(3);
+    expect(t.rowHeights.every((v) => v > 0.2)).toBe(true);
+    expect(t.style.font).toBe('Georgia');
+  });
+});
+
+describe('PowerPoint files with odd content', () => {
+  it('leaves out shapes hidden in PowerPoint\'s selection pane', async () => {
+    const shown = Object.assign(newTextBox(10, 10), { text: '<p>shown</p>' });
+    const hidden = Object.assign(newTextBox(10, 100), { text: '<p>hidden</p>' });
+    const back = await roundTrip(deckWith(shown, hidden), async (zip) => {
+      const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+      zip.file('ppt/slides/slide1.xml', xml.split('<p:sp>').map((sp) => (sp.includes('>hidden<') ? sp.replace(/<p:cNvPr id="(\d+)"/, '<p:cNvPr id="$1" hidden="1"') : sp)).join('<p:sp>'));
+    });
+    const texts = back.slides[0].elements.map((e) => e.text || '');
+    expect(texts.some((t) => t.includes('shown'))).toBe(true);
+    expect(texts.some((t) => t.includes('hidden'))).toBe(false);
+  });
+
+  it('opens a presentation without slides with a blank one', async () => {
+    const back = await roundTrip(deckWith(newTextBox(10, 10)), async (zip) => {
+      const xml = await zip.file('ppt/presentation.xml').async('string');
+      zip.file('ppt/presentation.xml', xml.replace(/<p:sldIdLst>[\s\S]*?<\/p:sldIdLst>/, '<p:sldIdLst/>'));
+    });
+    expect(back.slides).toHaveLength(1);
+    expect(back.slides[0].elements).toEqual([]);
+  });
+});
+
+describe('PowerPoint packages', () => {
+  // Only the first bytes of a JPEG are looked at.
+  const JPEG = `data:image/jpeg;base64,${btoa(String.fromCharCode(0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4))}`;
+
+  it('stores each picture once, under its real format, with content types only for parts there are', async () => {
+    const deck = newDeck({ slides: [] });
+    deck.media = { logo: PNG, photo: JPEG };
+    for (const id of ['a', 'b', 'c']) {
+      deck.slides.push({ id, layout: 'blank', background: { type: 'image', media: 'photo' }, elements: [Object.assign(newImage('logo', 50, 50), { x: 10, y: 10 })], notes: '', transition: { type: 'none', duration: 0.6 }, hidden: false });
+    }
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deck)));
+    const media = Object.keys(zip.files).filter((n) => /^ppt\/media\/./.test(n));
+    expect(media.filter((n) => n.endsWith('.png'))).toHaveLength(1);
+    expect(media.filter((n) => /\.jpe?g$/.test(n))).toHaveLength(1);
+    expect(media).toHaveLength(2);
+    for (const n of Object.keys(zip.files).filter((f) => f.endsWith('.rels'))) {
+      const rels = await zip.file(n).async('string');
+      for (const [, target] of rels.matchAll(/Target="\.\.\/media\/([^"]+)"/g)) expect(zip.file(`ppt/media/${target}`)).toBeTruthy();
+    }
+    const types = await zip.file('[Content_Types].xml').async('string');
+    for (const [, part] of types.matchAll(/PartName="\/([^"]+)"/g)) expect(zip.file(part)).toBeTruthy();
+    expect(types).toMatch(/Extension="jpg"/i);
+  });
+});
+
+describe('PowerPoint links', () => {
+  it('keeps links to web pages and other slides, in text and on objects', async () => {
+    const deck = deckWith();
+    deck.slides.push({ id: 's2', layout: 'blank', background: null, elements: [], notes: '', transition: { type: 'none', duration: 0.6 }, hidden: false });
+    const box = newTextBox(10, 10, 400, 60);
+    box.text = '<p><a href="https://example.com/a?b=1&amp;c=2">site</a> and <a href="#slide:s2">slide two</a></p>';
+    const shape = newShape('rect', 10, 100);
+    shape.link = '#slide:next';
+    const pic = newImage('m1', 300, 100, 50, 50);
+    pic.link = 'https://example.org';
+    deck.slides[0].elements.push(box, shape, pic);
+    deck.media.m1 = PNG;
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deck)));
+    const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+    expect(xml.match(/<a:hlinkClick /g)).toHaveLength(4);
+    expect(xml.match(/ppaction:\/\/hlinksldjump/g)).toHaveLength(2);
+    const rels = await zip.file('ppt/slides/_rels/slide1.xml.rels').async('string');
+    expect(rels).toContain('Target="https://example.com/a?b=1&amp;c=2"');
+    expect(rels).toContain('Target="slide2.xml"');
+    const back = await importPptx(await zip.generateAsync({ type: 'arraybuffer' }));
+    const [b, sh, p] = back.slides[0].elements;
+    const second = back.slides[1].id;
+    expect(b.text).toContain('href="https://example.com/a?b=1&amp;c=2"');
+    expect(b.text).toContain(`href="#slide:${second}"`);
+    expect(sh.link).toBe(`#slide:${second}`);
+    expect(p.link).toBe('https://example.org');
+  });
+
+  it('gives text boxes\' own links a relationship, and keeps them off the box\'s text', async () => {
+    const deck = deckWith();
+    deck.slides.push({ id: 's2', layout: 'blank', background: null, elements: [], notes: '', transition: { type: 'none', duration: 0.6 }, hidden: false });
+    const web = Object.assign(newTextBox(10, 10, 400, 60), { text: '<p>plain <a href="https://example.com">site</a></p>', link: 'https://example.org/?a=1&b=2' });
+    const jump = Object.assign(newShape('rect', 10, 100), { text: '<p>go</p>', link: '#slide:s2' });
+    deck.slides[0].elements.push(web, jump);
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deck)));
+    const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+    const rels = await zip.file('ppt/slides/_rels/slide1.xml.rels').async('string');
+    expect(xml).not.toContain('rIdundefined');
+    for (const [, id] of xml.matchAll(/r:id="([^"]+)"/g)) expect(rels).toContain(`Id="${id}"`);
+    // Only the text that is a link of its own is one.
+    expect(xml.match(/<a:rPr\b[^>]*>(?:(?!<\/a:rPr>)[\s\S])*<a:hlinkClick/g)).toHaveLength(1);
+    expect(rels).toContain('Target="https://example.org/?a=1&amp;b=2"');
+    const back = await importPptx(await zip.generateAsync({ type: 'arraybuffer' }));
+    const [w, j] = back.slides[0].elements;
+    expect(w.link).toBe('https://example.org/?a=1&b=2');
+    expect(w.text).toContain('href="https://example.com"');
+    expect(w.text).not.toContain('example.org');
+    expect(j.link).toBe(`#slide:${back.slides[1].id}`);
+  });
+
+  it('reads PowerPoint\'s next and previous slide actions', async () => {
+    const shape = newShape('rect', 10, 100);
+    shape.link = 'https://example.org';
+    const back = await roundTrip(deckWith(shape), async (zip) => {
+      const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+      zip.file('ppt/slides/slide1.xml', xml.replace(/<a:hlinkClick [^>]*\/>/, '<a:hlinkClick r:id="" action="ppaction://hlinkshowjump?jump=previousslide"/>'));
+    });
+    expect(back.slides[0].elements[0].link).toBe('#slide:prev');
+  });
+});
+
+describe('PowerPoint sections', () => {
+  const blank = (id) => ({ id, layout: 'blank', background: null, elements: [], notes: '', transition: { type: 'none', duration: 0.6 }, hidden: false });
+  const deckOf = (n) => {
+    const deck = deckWith();
+    for (let i = 2; i <= n; i++) deck.slides.push(blank(`s${i}`));
+    return deck;
+  };
+
+  it('writes the sections into presentation.xml and reads them back', async () => {
+    const deck = deckOf(5);
+    deck.slides[1].section = 'Intro & "why"';
+    deck.slides[3].section = 'Details';
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deck)));
+    const pres = await zip.file('ppt/presentation.xml').async('string');
+    // The extension list is p:presentation's last child, holding every slide by its id.
+    expect(pres).toMatch(/<p:extLst><p:ext uri="\{521415D9-36F7-43E2-AB2F-B90AF26B5E84\}"><p14:sectionLst xmlns:p14="http:\/\/schemas.microsoft.com\/office\/powerpoint\/2010\/main">.*<\/p:extLst><\/p:presentation>$/);
+    const doc = new DOMParser().parseFromString(pres, 'application/xml');
+    const ids = [...doc.getElementsByTagNameNS('*', 'sldIdLst')[0].children].map((e) => e.getAttribute('id'));
+    const sections = [...doc.getElementsByTagNameNS('*', 'section')].map((sec) => ({
+      name: sec.getAttribute('name'), id: sec.getAttribute('id'), slides: [...sec.getElementsByTagNameNS('*', 'sldId')].map((e) => e.getAttribute('id')),
+    }));
+    expect(sections.map((x) => x.name)).toEqual(['Default Section', 'Intro & "why"', 'Details']);
+    expect(sections.map((x) => x.slides)).toEqual([ids.slice(0, 1), ids.slice(1, 3), ids.slice(3)]);
+    for (const x of sections) expect(x.id).toMatch(/^\{[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\}$/);
+
+    const back = await importPptx(await zip.generateAsync({ type: 'arraybuffer' }));
+    expect(back.slides.map((s) => s.section)).toEqual([undefined, 'Intro & "why"', undefined, 'Details', undefined]);
+  });
+
+  it('writes no sections for a deck without any', async () => {
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deckOf(2))));
+    expect(await zip.file('ppt/presentation.xml').async('string')).not.toContain('sectionLst');
+  });
+
+  it('reads sections from PowerPoint, leaving out empty ones', async () => {
+    const back = await roundTrip(deckOf(4), async (zip) => {
+      const pres = await zip.file('ppt/presentation.xml').async('string');
+      const ids = [...pres.matchAll(/<p:sldId id="(\d+)"/g)].map((m) => m[1]);
+      const sec = (name, list) => `<p14:section name="${name}" id="{00000000-0000-0000-0000-00000000000${name.length}}"><p14:sldIdLst>${list.map((id) => `<p14:sldId id="${id}"/>`).join('')}</p14:sldIdLst></p14:section>`;
+      const ext = `<p:extLst><p:ext uri="{521415D9-36F7-43E2-AB2F-B90AF26B5E84}"><p14:sectionLst xmlns:p14="http://schemas.microsoft.com/office/powerpoint/2010/main">${sec('Intro', ids.slice(0, 2))}${sec('Empty', [])}${sec('End', ids.slice(2))}</p14:sectionLst></p:ext></p:extLst>`;
+      zip.file('ppt/presentation.xml', pres.replace('</p:presentation>', `${ext}</p:presentation>`));
+    });
+    expect(back.slides.map((s) => s.section)).toEqual(['Intro', undefined, 'End', undefined]);
+  });
+
+  it('adds the sections to an existing extension list', async () => {
+    const { addPresentationExt } = await import('../../src/io/pptx-sections.js');
+    expect(addPresentationExt('<p:presentation><p:sldSz/><p:extLst><p:ext uri="a"/></p:extLst></p:presentation>', '<p:ext uri="b"/>'))
+      .toBe('<p:presentation><p:sldSz/><p:extLst><p:ext uri="a"/><p:ext uri="b"/></p:extLst></p:presentation>');
+  });
+});
+
+describe('PowerPoint placeholders', () => {
+  it('writes titles, subtitles and body text as placeholders, empty ones too', async () => {
+    const deck = newDeck(); // a title slide with an empty title and subtitle
+    const body = newTextBox(50, 300, 400, 100);
+    body.ph = 'body';
+    body.text = '<ul><li>Point</li></ul>';
+    deck.slides[0].elements.push(body);
+    const xml = await slideXml(deck);
+    expect(xml).toContain('<p:nvPr><p:ph type="title"/></p:nvPr>');
+    expect(xml).toContain('<p:nvPr><p:ph type="subTitle" idx="1"/></p:nvPr>');
+    expect(xml).toContain('<p:nvPr><p:ph type="body" idx="2"/></p:nvPr>');
+    expect(xml.match(/txBox="1"/g) || []).toHaveLength(0);
+    const back = (await roundTrip(deck)).slides[0];
+    expect(back.elements.map((e) => [e.ph, htmlToText(e.text)])).toEqual(expect.arrayContaining([['title', ''], ['subtitle', ''], ['body', 'Point']]));
+    expect(back.layout).toBe('titleContent');
+  });
+});
+
+describe('PowerPoint slide sizes', () => {
+  it('keeps a slide size of its own, and scales standard shapes to LibreSlides\' sizes', async () => {
+    const deck = deckWith(newShape('rect', 500, 300, 50, 50));
+    deck.size = '600x400';
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deck)));
+    expect(await zip.file('ppt/presentation.xml').async('string')).toContain(`<p:sldSz cx="${600 * 12700}" cy="${400 * 12700}"`);
+    const back = await importPptx(await zip.generateAsync({ type: 'arraybuffer' }));
+    expect(back.size).toBe('600x400');
+    expect([back.slides[0].elements[0].x, back.slides[0].elements[0].y].map(Math.round)).toEqual([500, 300]);
+    // PowerPoint's old 10 × 5.625 in widescreen is 16:9: scaled up to LibreSlides' 960 × 540.
+    const wide = await roundTrip(deck, async (z) => {
+      z.file('ppt/presentation.xml', (await z.file('ppt/presentation.xml').async('string')).replace(/<p:sldSz[^>]*\/>/, `<p:sldSz cx="${720 * 12700}" cy="${405 * 12700}"/>`));
+    });
+    expect(wide.size).toBe('16:9');
+    expect(Math.round(wide.slides[0].elements[0].x)).toBe(Math.round(500 * (540 / 405)));
+  });
+});
+
+describe('PowerPoint groups', () => {
+  it('writes groups as groups and reads them back', async () => {
+    const [a, b, c] = [newShape('rect', 100, 100, 100, 50), newTextBox(300, 200, 100, 50), newShape('ellipse', 600, 100)];
+    b.text = '<p>Label</p>';
+    a.groupId = 'g';
+    b.groupId = 'g';
+    const xml = await slideXml(deckWith(a, b, c));
+    const group = xml.match(/<p:grpSp>[\s\S]*?<\/p:grpSp>/)[0];
+    expect(group.match(/<p:sp>/g)).toHaveLength(2);
+    // The group's frame is its members' box, in EMU.
+    expect(group).toContain(`<a:off x="${100 * 12700}" y="${100 * 12700}"/><a:ext cx="${300 * 12700}" cy="${150 * 12700}"/>`);
+    expect(xml.indexOf('<p:grpSp>')).toBeLessThan(xml.lastIndexOf('<p:sp>'));
+    const els = (await roundTrip(deckWith(a, b, c))).slides[0].elements;
+    expect(els.map((e) => e.type)).toEqual(['shape', 'text', 'shape']);
+    expect(els[0].groupId).toBeTruthy();
+    expect(els[1].groupId).toBe(els[0].groupId);
+    expect(els[2].groupId).toBeUndefined();
+    expect([els[1].x, els[1].y].map(Math.round)).toEqual([300, 200]);
+  });
+
+  it('turns the members of a turned group about its centre', async () => {
+    const [a, b] = [newShape('rect', 0, 100, 100, 100), newShape('rect', 200, 100, 100, 100)];
+    a.groupId = 'g';
+    b.groupId = 'g';
+    const back = await roundTrip(deckWith(a, b), async (zip) => {
+      const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+      // Turn the group (0–300 × 100–200, centre 150, 150) a quarter turn.
+      zip.file('ppt/slides/slide1.xml', xml.replace(/(<p:grpSp>[\s\S]*?<p:grpSpPr><a:xfrm)>/, '$1 rot="5400000">'));
+    });
+    const [ta, tb] = back.slides[0].elements;
+    // The left square ends up above the centre, the right one below, both turned.
+    expect([ta.x, ta.y, ta.rot].map(Math.round)).toEqual([100, 0, 90]);
+    expect([tb.x, tb.y, tb.rot].map(Math.round)).toEqual([100, 200, 90]);
   });
 });
 
@@ -145,14 +787,15 @@ describe('PowerPoint freeform shapes', () => {
   it('reads lines, curves, arcs and named points', async () => {
     const el = await withGeometry('<a:custGeom><a:avLst/><a:gdLst/><a:pathLst>'
       + '<a:path w="200" h="100"><a:moveTo><a:pt x="0" y="100"/></a:moveTo><a:arcTo wR="100" hR="100" stAng="10800000" swAng="10800000"/><a:close/></a:path>'
-      + '<a:path w="200" h="100" fill="none"><a:moveTo><a:pt x="l" y="b"/></a:moveTo><a:cubicBezTo><a:pt x="50" y="0"/><a:pt x="150" y="0"/><a:pt x="r" y="vc"/></a:cubicBezTo><a:quadBezTo><a:pt x="hc" y="t"/><a:pt x="0" y="0"/></a:quadBezTo></a:path>'
+      // Named points are in the shape's own units (a path without a size of its own).
+      + '<a:path fill="none"><a:moveTo><a:pt x="l" y="b"/></a:moveTo><a:cubicBezTo><a:pt x="wd4" y="t"/><a:pt x="hc" y="t"/><a:pt x="r" y="vc"/></a:cubicBezTo><a:quadBezTo><a:pt x="hc" y="t"/><a:pt x="0" y="0"/></a:quadBezTo></a:path>'
       + '</a:pathLst></a:custGeom>');
     expect(el.shape).toBe('custom');
     const [half, open] = el.paths;
     // A half circle over the top, from the bottom left to the bottom right corner, in two quarter curves.
     expect(near(half.cmds)).toEqual([['M', 0, 1], ['C', 0, 0.448, 0.224, 0, 0.5, 0], ['C', 0.776, 0, 1, 0.448, 1, 1], ['Z']]);
     expect(half.fill).toBeUndefined();
-    expect(open).toEqual({ cmds: [['M', 0, 1], ['C', 0.25, 0, 0.75, 0, 1, 0.5], ['Q', 0.5, 0, 0, 0]], fill: false });
+    expect(open).toEqual({ cmds: [['M', 0, 1], ['C', 0.25, 0, 0.5, 0, 1, 0.5], ['Q', 0.5, 0, 0, 0]], fill: false });
   });
 
   it('falls back to a rectangle for formulas it can\'t work out', async () => {
@@ -161,9 +804,47 @@ describe('PowerPoint freeform shapes', () => {
     expect(el.paths).toBeUndefined();
   });
 
-  it('draws flowchart shapes as the closest shape it has', async () => {
-    expect((await withGeometry('<a:prstGeom prst="flowChartDecision"><a:avLst/></a:prstGeom>')).shape).toBe('diamond');
-    expect((await withGeometry('<a:prstGeom prst="flowChartConnector"><a:avLst/></a:prstGeom>')).shape).toBe('ellipse');
+  it('draws any PowerPoint preset, with its adjust values', async () => {
+    const cloud = await withGeometry('<a:prstGeom prst="cloud"><a:avLst/></a:prstGeom>');
+    expect(cloud).toMatchObject({ shape: 'custom', preset: { name: 'cloud' } });
+    expect(cloud.paths.length).toBeGreaterThan(1);
+    // A rounded rectangle with its own corner size is drawn with it, and remembers it.
+    const round = await withGeometry('<a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val 50000"/></a:avLst></a:prstGeom>');
+    expect(round).toMatchObject({ shape: 'custom', preset: { name: 'roundRect', adj: { adj: 50000 } } });
+    expect(round.paths[0].cmds[0]).toEqual(['M', 0, 0.5]);
+    // Without its own adjust values it's LibreSlides' own shape.
+    expect((await withGeometry('<a:prstGeom prst="roundRect"><a:avLst/></a:prstGeom>')).shape).toBe('roundRect');
+  });
+
+  it('writes presets back as presets, with their adjust values', async () => {
+    const back = await withGeometry('<a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val 50000"/></a:avLst></a:prstGeom>');
+    const deck = deckWith(back);
+    const cloud = { ...(await withGeometry('<a:prstGeom prst="cloud"><a:avLst/></a:prstGeom>')), id: 'c' };
+    deck.slides[0].elements.push(cloud);
+    const xml = await slideXml(deck);
+    expect(xml).toContain('<a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val 50000"/></a:avLst></a:prstGeom>');
+    expect(xml).toMatch(/<a:prstGeom prst="cloud"><a:avLst>\s*<\/a:avLst>|<a:prstGeom prst="cloud"><a:avLst\/>/);
+    expect(xml).not.toContain('<a:custGeom>');
+  });
+
+  it('keeps an elbow connector\'s route and arrowhead', async () => {
+    const line = newLine(0, 0, 100, 50, { arrowEnd: true });
+    const back = await roundTrip(deckWith(line), async (zip) => {
+      const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+      zip.file('ppt/slides/slide1.xml', xml.replace('prst="line"', 'prst="bentConnector3"'));
+    });
+    const el = back.slides[0].elements[0];
+    expect(el).toMatchObject({ type: 'shape', shape: 'custom', fill: 'none', arrowEnd: true, preset: { name: 'bentConnector3' } });
+    // Across, down, across.
+    expect(el.paths[0].cmds.map((c) => c[0])).toEqual(['M', 'L', 'L', 'L']);
+    expect(el.paths[0].fill).toBe(false);
+    // Drawn with its arrowhead at the end of the route.
+    const node = renderElement(el, { theme: themeById(back.themeId), deck: back });
+    const head = node.querySelector('polygon').getAttribute('points').split(' ')[0].split(',').map(Number);
+    expect(head.map(Math.round)).toEqual([Math.round(el.w), Math.round(el.h)]);
+    const again = await slideXml(deckWith(el));
+    expect(again).toContain('prst="bentConnector3"');
+    expect(again).toMatch(/<a:tailEnd type="triangle"\/>/);
   });
 
   it('writes freeforms back as PowerPoint custom shapes, text and all', async () => {
@@ -232,6 +913,18 @@ describe('PowerPoint round trip', () => {
     const t = back.slides[3].elements.find((e) => e.type === 'table');
     expect(t.cells.length).toBe(2);
     expect(htmlToText(t.cells[0][0].text)).toBe('Head');
+  });
+
+  it('keeps the style of line ends', async () => {
+    const line = newLine(10, 20, 300, 120);
+    Object.assign(line, { arrowStart: 'diamond', arrowEnd: 'stealth' });
+    const xml = await slideXml(deckWith(line));
+    expect(xml).toContain('<a:headEnd type="diamond"/>');
+    expect(xml).toContain('<a:tailEnd type="stealth"/>');
+    const back = (await roundTrip(deckWith(line))).slides[0].elements[0];
+    expect([back.arrowStart, back.arrowEnd]).toEqual(['diamond', 'stealth']);
+    const node = renderElement(back, { theme: themeById(back.themeId), deck: deckWith(back) });
+    expect(node.querySelectorAll('polygon')).toHaveLength(2);
   });
 
   it('reads rotated lines', async () => {

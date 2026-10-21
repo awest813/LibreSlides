@@ -10,9 +10,25 @@ export const BUILD = typeof __BUILD_COMMIT__ !== 'undefined' ? `${__BUILD_COMMIT
 const recent = [];
 const MAX = 20;
 
+/**
+ * An error as text: its stack where it has one, else its name and message
+ * (a DOMException such as QuotaExceededError has no stack), else what was
+ * thrown or rejected with, as JSON when it's a plain object.
+ */
+function describe(err) {
+  if (err?.stack) return String(err.stack);
+  if (err?.message) return err.name ? `${err.name}: ${err.message}` : String(err.message);
+  if (err && typeof err === 'object') {
+    try {
+      return JSON.stringify(err).slice(0, 300);
+    } catch { /* circular */ }
+  }
+  return String(err);
+}
+
 /** Remember an error for the report (the browser console still gets it). */
 export function noteError(err, where = '') {
-  const message = err?.stack || err?.message || String(err);
+  const message = describe(err);
   recent.push(`${new Date().toISOString()} ${where ? `[${where}] ` : ''}${message.split('\n').slice(0, 4).join(' ⏎ ')}`);
   if (recent.length > MAX) recent.shift();
 }

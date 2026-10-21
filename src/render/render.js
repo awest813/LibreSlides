@@ -1,27 +1,27 @@
-import { themeById, resolveColor, backgroundCss } from '../model/themes.js';
-import { slideSize, isTitleLayout, PLACEHOLDER_HINTS, canHoldText } from '../model/deck.js';
+import { deckTheme, resolveColor, backgroundCss, tileAlign } from '../model/themes.js';
+import { patternPath, PATTERN_SIZE } from '../model/patterns.js';
+import { slideSize, isTitleLayout, PLACEHOLDER_HINTS, canHoldText, FIELD, fieldText } from '../model/deck.js';
 import { shapePath, customPath, textInset } from '../model/shapes.js';
+import { cellBorder, cellMargin } from '../model/tables.js';
 import { renderChart } from './chart.js';
 import { renderMedia } from './media.js';
+import { diagramChildren } from '../model/diagram-layout.js';
 import { fontStack } from '../model/fonts.js';
+import { registerDeckFonts } from './deck-fonts.js';
+import { renderWarp } from './warp.js';
+import { isPlainWarp } from '../model/warps.js';
+import { svgEl } from './svg.js';
 
 /**
  * Renders slides to DOM at 1px = 1pt. The same renderer draws the editor
  * canvas, thumbnails, the slideshow and print, so they always match.
  */
 
-const SVG = 'http://www.w3.org/2000/svg';
-const svgEl = (tag, attrs = {}) => {
-  const el = document.createElementNS(SVG, tag);
-  for (const [k, v] of Object.entries(attrs)) if (v != null) el.setAttribute(k, v);
-  return el;
-};
-
 // ------------------------------------------------------------------ media
 
 const blobUrls = new Map(); // media id → { data, url }
 
-/** An object URL for a deck picture (cheaper to reuse across thumbnails than its data URL). */
+/** An object URL for a deck picture, video or sound (cheaper to reuse across thumbnails than its data URL). */
 export function mediaUrl(deck, id) {
   const data = deck?.media?.[id];
   if (!data) return '';
@@ -49,6 +49,16 @@ export function mediaUrl(deck, id) {
   return url;
 }
 
+/**
+ * Let go of the object URLs made for decks' pictures, videos and sounds
+ * (each holds its file in memory), once nothing shown uses them: when the
+ * app moves between the start screen and a presentation.
+ */
+export function releaseMediaUrls() {
+  for (const { data, url } of blobUrls.values()) if (url !== data) URL.revokeObjectURL(url);
+  blobUrls.clear();
+}
+
 // ------------------------------------------------------------------ text
 
 /** The effective text style of an element: its own settings over the theme's defaults. */
@@ -59,7 +69,7 @@ export function textStyle(el, theme) {
   return {
     font: s.font || (isTitle ? theme.fonts.title : theme.fonts.body),
     size: s.size || 18,
-    color: s.color || (isTitle ? 'theme:title' : el.ph === 'subtitle' ? 'theme:text' : 'theme:text'),
+    color: s.color || (isTitle ? 'theme:title' : 'theme:text'),
     bold: s.bold ?? (isTitle ? !!theme.titleBold : false),
     italic: !!s.italic,
     underline: !!s.underline,
@@ -88,23 +98,55 @@ export function applyTextStyle(box, el, theme) {
   return t;
 }
 
+/**
+ * Text box options from PowerPoint: margins (`inset` { l, t, r, b } in
+ * points), no wrapping, vertical text ('vert' turned a quarter clockwise,
+ * 'vert270' anticlockwise, 'eaVert' East Asian, upright) and columns.
+ */
+function textLayout(box, body, s) {
+  if (s.inset) box.style.padding = `${s.inset.t}px ${s.inset.r}px ${s.inset.b}px ${s.inset.l}px`;
+  if (s.wrap === false) box.style.whiteSpace = 'pre';
+  if (s.vertical) {
+    box.style.writingMode = 'vertical-rl';
+    box.style.textOrientation = s.vertical === 'eaVert' ? 'upright' : 'sideways';
+    if (s.vertical === 'vert270') box.style.transform = 'rotate(180deg)';
+  }
+  if (s.columns > 1) {
+    Object.assign(body.style, { columnCount: String(s.columns), columnGap: `${s.columnGap ?? 7.2}px`, columnFill: 'auto', height: '100%' });
+  }
+}
+
 function textBox(el, ctx) {
   const box = document.createElement('div');
   box.className = 'el-textbox';
+  let [bw, bh] = [el.w, el.h];
   if (el.type === 'shape') {
-    const ins = textInset(el.shape);
-    box.style.left = `${ins.x * el.w}px`;
-    box.style.right = `${ins.x * el.w}px`;
-    box.style.top = `${ins.y * el.h}px`;
+    // Preset shapes from PowerPoint say where their text goes; LibreSlides' own shapes keep it inside the outline.
+    const ins = el.textRect || (({ x, y, b }) => ({ l: x, r: x, t: y, b }))(textInset(el.shape));
+    box.style.left = `${ins.l * el.w}px`;
+    box.style.right = `${ins.r * el.w}px`;
+    box.style.top = `${ins.t * el.h}px`;
     box.style.bottom = `${ins.b * el.h}px`;
+    [bw, bh] = [el.w * (1 - ins.l - ins.r), el.h * (1 - ins.t - ins.b)];
   }
-  applyTextStyle(box, el, ctx.theme);
+  const t = applyTextStyle(box, el, ctx.theme);
   const body = document.createElement('div');
   body.className = 'el-text-body';
   if (el.bullets) body.classList.add('has-bullets');
   body.innerHTML = el.text || '';
+  const s = el.style || {};
+  const warped = !isPlainWarp(s.warp);
+  // Warped text is drawn on its own (see warp.js), so it's laid out flat and across.
+  textLayout(box, body, warped ? { ...s, vertical: undefined, columns: undefined } : s);
   if (ctx.editing && el.ph && !el.text) body.dataset.placeholder = PLACEHOLDER_HINTS[el.ph] || '';
   box.append(body);
+  // Its fields hold their text before it's drawn (see fillFields).
+  if (warped && ctx.slideNo) fillFieldsWith(body, ctx.slideNo);
+  const warp = warped && renderWarp(el, body, { t, theme: ctx.theme, bw, bh });
+  if (warp) {
+    box.classList.add('is-warped');
+    box.append(warp);
+  }
   return box;
 }
 
@@ -126,11 +168,145 @@ function strokeAttrs(stroke, theme) {
   };
 }
 
-function arrowHead(x1, y1, x2, y2, width, color) {
+/**
+ * A line end at (x2, y2), pointing away from (x1, y1). `type` is true or
+ * 'triangle', 'arrow' (open), 'stealth', 'diamond' or 'oval', as in PowerPoint.
+ */
+export function arrowHead(x1, y1, x2, y2, width, color, type = true) {
   const size = Math.max(7, width * 3.2);
   const a = Math.atan2(y2 - y1, x2 - x1);
-  const p = (ang) => `${x2 - size * Math.cos(a + ang)},${y2 - size * Math.sin(a + ang)}`;
-  return svgEl('polygon', { points: `${x2},${y2} ${p(0.45)} ${p(-0.45)}`, fill: color });
+  // A point `back` along the line from the tip and `side` across it.
+  const at = (back, side) => `${x2 - back * Math.cos(a) - side * Math.sin(a)},${y2 - back * Math.sin(a) + side * Math.cos(a)}`;
+  const w = size * 0.48;
+  switch (type) {
+    case 'arrow': return svgEl('polyline', { points: `${at(size, w)} ${x2},${y2} ${at(size, -w)}`, fill: 'none', stroke: color, 'stroke-width': width, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' });
+    case 'stealth': return svgEl('polygon', { points: `${x2},${y2} ${at(size, w)} ${at(size * 0.6, 0)} ${at(size, -w)}`, fill: color });
+    case 'diamond': return svgEl('polygon', { points: `${x2},${y2} ${at(size / 2, w)} ${at(size, 0)} ${at(size / 2, -w)}`, fill: color });
+    case 'oval': return svgEl('ellipse', { cx: x2, cy: y2, rx: size / 2.4, ry: size / 2.4, fill: color });
+    default: return svgEl('polygon', { points: `${x2},${y2} ${at(size, w)} ${at(size, -w)}`, fill: color });
+  }
+}
+
+let gradientCount = 0;
+
+/**
+ * Add a shape's gradient (see model/deck.js) to its SVG and return the paint
+ * that uses it. Angles are CSS ones: 90 runs left to right, 180 top to bottom.
+ */
+export function gradientPaint(svg, g, w, h, theme) {
+  const id = `ls-grad-${++gradientCount}`;
+  let paint;
+  if (g.type === 'radial') {
+    const cx = (g.cx ?? 0.5) * w;
+    const cy = (g.cy ?? 0.5) * h;
+    // Out to the farthest corner, as PowerPoint's "from centre" gradients go.
+    const r = Math.max(...[[0, 0], [w, 0], [0, h], [w, h]].map(([x, y]) => Math.hypot(x - cx, y - cy)));
+    paint = svgEl('radialGradient', { id, gradientUnits: 'userSpaceOnUse', cx, cy, r });
+  } else {
+    const a = (((g.angle ?? 180) - 90) * Math.PI) / 180;
+    const r = Math.abs((w / 2) * Math.cos(a)) + Math.abs((h / 2) * Math.sin(a));
+    paint = svgEl('linearGradient', {
+      id, gradientUnits: 'userSpaceOnUse',
+      x1: w / 2 - Math.cos(a) * r, y1: h / 2 - Math.sin(a) * r, x2: w / 2 + Math.cos(a) * r, y2: h / 2 + Math.sin(a) * r,
+    });
+  }
+  for (const s of g.stops || []) {
+    paint.append(svgEl('stop', { offset: Math.max(0, Math.min(1, s.pos)), 'stop-color': resolveColor(s.color, theme, '#000'), 'stop-opacity': s.opacity ?? 1 }));
+  }
+  const defs = svgEl('defs');
+  defs.append(paint);
+  svg.append(defs);
+  return `url(#${id})`;
+}
+
+/** The outline a picture is cropped to (see deck.js), as SVG path data for a w × h box. */
+function clipPath(clip, w, h) {
+  if (clip.shape === 'custom' && Array.isArray(clip.paths)) return clip.paths.map((p) => customPath(p.cmds, w, h)).join('');
+  return clip.shape && clip.shape !== 'rect' ? shapePath(clip.shape, w, h) : null;
+}
+
+/** A picture's colour adjustments as CSS filters: greyscale, brightness and contrast (-1 to 1, 0 unchanged). */
+export function pictureFilters(adjust) {
+  if (!adjust) return [];
+  const out = [];
+  if (adjust.grayscale) out.push('grayscale(1)');
+  if (adjust.brightness) out.push(`brightness(${Math.max(0, 1 + adjust.brightness)})`);
+  if (adjust.contrast) out.push(`contrast(${Math.max(0, 1 + adjust.contrast)})`);
+  return out;
+}
+
+/**
+ * A picture over a shape, as an SVG paint: stretched (keeping only the part
+ * its crop leaves), or tiled (see themes.js backgroundCss), mirrored every
+ * other tile when the tiling flips.
+ */
+function picturePaint(svg, el, url) {
+  const id = `ls-pic-${++gradientCount}`;
+  const fi = el.fillImage;
+  const look = fi.opacity != null && fi.opacity < 1 ? { opacity: fi.opacity } : {};
+  const tile = fi.tile;
+  let pattern;
+  if (tile?.w > 0 && tile?.h > 0) {
+    const a = tileAlign(tile.align);
+    const [nx, ny] = [/x/.test(tile.flip || '') ? 2 : 1, /y/.test(tile.flip || '') ? 2 : 1];
+    pattern = svgEl('pattern', {
+      id, patternUnits: 'userSpaceOnUse', width: tile.w * nx, height: tile.h * ny,
+      x: a.x * (el.w - tile.w) + (tile.x || 0), y: a.y * (el.h - tile.h) + (tile.y || 0),
+    });
+    for (let i = 0; i < nx; i++) {
+      for (let j = 0; j < ny; j++) {
+        const img = svgEl('image', { href: url, width: tile.w, height: tile.h, preserveAspectRatio: 'none', ...look });
+        if (i || j) img.setAttribute('transform', `translate(${i * 2 * tile.w} ${j * 2 * tile.h}) scale(${i ? -1 : 1} ${j ? -1 : 1})`);
+        pattern.append(img);
+      }
+    }
+  } else {
+    const { l = 0, t = 0, r = 0, b = 0 } = fi.crop || {};
+    const iw = el.w / Math.max(0.01, 1 - l - r);
+    const ih = el.h / Math.max(0.01, 1 - t - b);
+    pattern = svgEl('pattern', { id, patternUnits: 'userSpaceOnUse', width: el.w, height: el.h });
+    pattern.append(svgEl('image', { href: url, x: -l * iw, y: -t * ih, width: iw, height: ih, preserveAspectRatio: 'none', ...look }));
+  }
+  const defs = svgEl('defs');
+  defs.append(pattern);
+  svg.append(defs);
+  return `url(#${id})`;
+}
+
+/** A pattern fill (see model/patterns.js) as an SVG paint. */
+function patternPaint(svg, p, theme) {
+  const id = `ls-patt-${++gradientCount}`;
+  const pattern = svgEl('pattern', { id, patternUnits: 'userSpaceOnUse', width: PATTERN_SIZE, height: PATTERN_SIZE });
+  pattern.append(
+    svgEl('rect', { width: PATTERN_SIZE, height: PATTERN_SIZE, fill: resolveColor(p.bg, theme, '#ffffff') }),
+    svgEl('path', { d: patternPath(p.preset), fill: resolveColor(p.fg, theme, '#000000'), 'shape-rendering': 'crispEdges' }),
+  );
+  const defs = svgEl('defs');
+  defs.append(pattern);
+  svg.append(defs);
+  return `url(#${id})`;
+}
+
+const SHADES = { darken: 'rgba(0,0,0,0.25)', darkenLess: 'rgba(0,0,0,0.12)', lighten: 'rgba(255,255,255,0.4)', lightenLess: 'rgba(255,255,255,0.2)' };
+
+/**
+ * Where a freeform's line starts and ends, each as [from x, from y, tip x, tip y]
+ * along its direction there, for arrowheads (connectors' routes).
+ */
+function pathEnds(paths, w, h) {
+  const cmds = paths.flatMap((p) => p.cmds).filter((c) => c[0] !== 'Z');
+  if (cmds.length < 2) return null;
+  const pt = (c, i) => [c[i] * w, c[i + 1] * h];
+  const last = cmds[cmds.length - 1];
+  const before = cmds[cmds.length - 2];
+  // A command's own point is its last two numbers.
+  const end = (c) => pt(c, c.length - 2);
+  const tip = end(last);
+  // Towards the tip from the last control point, or from the point before.
+  const from = last[0] === 'C' ? pt(last, 3) : last[0] === 'Q' ? pt(last, 1) : end(before);
+  const first = end(cmds[0]);
+  const next = cmds[1][0] === 'C' || cmds[1][0] === 'Q' ? pt(cmds[1], 1) : end(cmds[1]);
+  return { end: [...from, ...tip], start: [...next, ...first] };
 }
 
 /** The DOM for one element. */
@@ -140,20 +316,24 @@ export function renderElement(el, ctx) {
   div.className = `el el-${el.type}`;
   div.dataset.id = el.id;
   if (el.anim && el.anim.effect !== 'none') div.dataset.anim = el.anim.effect;
+  // A click on it in the slideshow follows its link (see present.js).
+  if (el.link) div.dataset.link = el.link;
   if (el.opacity != null && el.opacity < 1) div.style.opacity = String(el.opacity);
 
   if (el.type === 'line') {
     const minX = Math.min(el.x1, el.x2);
     const minY = Math.min(el.y1, el.y2);
-    Object.assign(div.style, { left: `${minX}px`, top: `${minY}px`, width: `${Math.abs(el.x2 - el.x1)}px`, height: `${Math.abs(el.y2 - el.y1)}px` });
-    const svg = svgEl('svg', { class: 'el-svg', overflow: 'visible', width: '100%', height: '100%' });
+    const [lw, lh] = [Math.abs(el.x2 - el.x1), Math.abs(el.y2 - el.y1)];
+    Object.assign(div.style, { left: `${minX}px`, top: `${minY}px`, width: `${lw}px`, height: `${lh}px` });
+    // At least 1px each way: browsers don't draw an SVG of no width or height (a level or upright line).
+    const svg = svgEl('svg', { class: 'el-svg', overflow: 'visible', width: Math.max(1, lw), height: Math.max(1, lh) });
     const [x1, y1, x2, y2] = [el.x1 - minX, el.y1 - minY, el.x2 - minX, el.y2 - minY];
     const sa = strokeAttrs({ ...el.stroke, color: el.stroke?.color === 'none' ? 'theme:text' : el.stroke?.color }, theme);
     // A wide invisible stroke makes thin lines easy to click.
     svg.append(svgEl('line', { x1, y1, x2, y2, class: 'hit', stroke: 'transparent', 'stroke-width': Math.max(12, (el.stroke?.width || 2) + 10) }));
     svg.append(svgEl('line', { x1, y1, x2, y2, ...sa, 'stroke-linecap': 'round' }));
-    if (el.arrowEnd) svg.append(arrowHead(x1, y1, x2, y2, el.stroke?.width || 2, sa.stroke));
-    if (el.arrowStart) svg.append(arrowHead(x2, y2, x1, y1, el.stroke?.width || 2, sa.stroke));
+    if (el.arrowEnd) svg.append(arrowHead(x1, y1, x2, y2, el.stroke?.width || 2, sa.stroke, el.arrowEnd));
+    if (el.arrowStart) svg.append(arrowHead(x2, y2, x1, y1, el.stroke?.width || 2, sa.stroke, el.arrowStart));
     div.append(svg);
     return div;
   }
@@ -164,13 +344,26 @@ export function renderElement(el, ctx) {
 
   if (el.type === 'shape' || (el.type === 'text' && ((el.fill && el.fill !== 'none') || (el.stroke && el.stroke.color !== 'none' && el.stroke.width)))) {
     const svg = svgEl('svg', { class: 'el-svg', overflow: 'visible', width: el.w, height: el.h, viewBox: `0 0 ${el.w} ${el.h}`, preserveAspectRatio: 'none' });
-    const fill = resolveColor(el.fill, theme, 'transparent');
+    const picture = el.fillImage && ctx.deck?.media?.[el.fillImage.media];
+    const fill = picture ? picturePaint(svg, el, mediaUrl(ctx.deck, el.fillImage.media))
+      : el.gradient && el.fill !== 'none' ? gradientPaint(svg, el.gradient, el.w, el.h, theme)
+        : el.pattern && el.fill !== 'none' ? patternPaint(svg, el.pattern, theme)
+          : resolveColor(el.fill, theme, 'transparent');
     const stroke = strokeAttrs(el.stroke, theme);
     if (el.type === 'shape' && el.shape === 'custom' && Array.isArray(el.paths)) {
       for (const p of el.paths) {
-        svg.append(svgEl('path', { d: customPath(p.cmds, el.w, el.h), fill: p.fill === false ? 'none' : fill, ...(p.stroke === false ? { stroke: 'none' } : stroke) }));
+        const d = customPath(p.cmds, el.w, el.h);
+        svg.append(svgEl('path', { d, fill: p.fill === false ? 'none' : fill, ...(p.stroke === false ? { stroke: 'none' } : stroke) }));
+        // Faces drawn lighter or darker (a can's top, a cube's side).
+        if (SHADES[p.shade] && p.fill !== false && el.fill !== 'none') svg.append(svgEl('path', { d, fill: SHADES[p.shade], stroke: 'none' }));
+      }
+      if ((el.arrowStart || el.arrowEnd) && stroke.stroke !== 'none') {
+        const ends = pathEnds(el.paths, el.w, el.h);
+        if (ends && el.arrowEnd) svg.append(arrowHead(...ends.end, el.stroke?.width || 2, stroke.stroke, el.arrowEnd));
+        if (ends && el.arrowStart) svg.append(arrowHead(...ends.start, el.stroke?.width || 2, stroke.stroke, el.arrowStart));
       }
     } else svg.append(svgEl('path', { d: shapePath(el.type === 'shape' ? el.shape : 'rect', el.w, el.h), fill, ...stroke }));
+    if (el.softEdge > 0) softEdges(svg, el.softEdge);
     if (shadow) svg.style.filter = shadow;
     if (el.flipH || el.flipV) svg.style.transform = `scale(${el.flipH ? -1 : 1}, ${el.flipV ? -1 : 1})`;
     div.append(svg);
@@ -196,19 +389,68 @@ export function renderElement(el, ctx) {
       frame.append(img);
     }
     if (el.radius) frame.style.borderRadius = `${el.radius}px`;
-    if (el.stroke && el.stroke.color !== 'none' && el.stroke.width) {
+    // A picture cropped to a shape (a circle…): clipped to its outline, which also carries the border.
+    const clip = el.clip && clipPath(el.clip, el.w, el.h);
+    const border = el.stroke && el.stroke.color !== 'none' && el.stroke.width;
+    if (clip) frame.style.clipPath = `path('${clip}')`;
+    else if (border) {
       frame.style.outline = `${el.stroke.width}px ${el.stroke.dash && el.stroke.dash !== 'solid' ? 'dashed' : 'solid'} ${resolveColor(el.stroke.color, theme)}`;
       frame.style.outlineOffset = `-${el.stroke.width / 2}px`;
     }
-    if (shadow) frame.style.filter = shadow;
+    const filters = [...pictureFilters(el.adjust), shadow].filter(Boolean);
+    if (filters.length) frame.style.filter = filters.join(' ');
+    if (el.softEdge > 0) {
+      // Soft edges: the picture fades out towards its sides.
+      const r = Math.min(el.softEdge, el.w / 2, el.h / 2);
+      const fade = (dir) => `linear-gradient(${dir}, transparent, #000 ${r}px, #000 calc(100% - ${r}px), transparent)`;
+      frame.style.maskImage = frame.style.webkitMaskImage = `${fade('to right')}, ${fade('to bottom')}`;
+      frame.style.maskComposite = 'intersect';
+      frame.style.webkitMaskComposite = 'source-in';
+    }
     if (el.flipH || el.flipV) frame.style.transform = `scale(${el.flipH ? -1 : 1}, ${el.flipV ? -1 : 1})`;
     div.append(frame);
+    if (clip && border) {
+      const svg = svgEl('svg', { class: 'el-svg', overflow: 'visible', width: el.w, height: el.h });
+      // Flipped with the picture, as its outline is.
+      svg.style.transform = frame.style.transform;
+      svg.append(svgEl('path', { d: clip, fill: 'none', ...strokeAttrs(el.stroke, theme) }));
+      div.append(svg);
+    }
   }
 
   if (el.type === 'table') div.append(renderTable(el, ctx));
-  if (el.type === 'chart') div.append(renderChart(el, ctx));
+  if (el.type === 'chart') div.append(renderChart(el, ctx, el.fillImage && ctx.deck?.media?.[el.fillImage.media] ? mediaUrl(ctx.deck, el.fillImage.media) : null));
   if (el.type === 'media') div.append(renderMedia(el, ctx));
+  if (el.type === 'diagram') div.append(renderDiagram(el, ctx));
   return div;
+}
+
+/** A diagram: the shapes it's drawn with (see model/diagram-layout.js), inside its box. */
+function renderDiagram(el, ctx) {
+  const box = document.createElement('div');
+  box.className = 'el-diagram-shapes';
+  for (const child of diagramChildren(el)) box.append(renderElement(child, ctx));
+  return box;
+}
+
+let softEdgeIds = 0;
+/**
+ * Soft edges on a shape's SVG: what's drawn is shrunk by half the radius and
+ * feathered over the rest, as PowerPoint's soft edge effect does.
+ */
+function softEdges(svg, radius) {
+  const id = `ls-soft-${++softEdgeIds}`;
+  const filter = svgEl('filter', { id, x: '-10%', y: '-10%', width: '120%', height: '120%' });
+  filter.append(
+    svgEl('feMorphology', { in: 'SourceAlpha', operator: 'erode', radius: radius / 2, result: 'inner' }),
+    svgEl('feGaussianBlur', { in: 'inner', stdDeviation: radius / 3, result: 'soft' }),
+    svgEl('feComposite', { in: 'SourceGraphic', in2: 'soft', operator: 'in' }),
+  );
+  const g = svgEl('g', { filter: `url(#${id})` });
+  g.append(...svg.childNodes);
+  const defs = svgEl('defs');
+  defs.append(filter);
+  svg.append(defs, g);
 }
 
 function renderTable(el, ctx) {
@@ -216,7 +458,10 @@ function renderTable(el, ctx) {
   const table = document.createElement('table');
   table.className = 'el-table-grid';
   applyTextStyle(table, { ...el, type: 'text' }, theme);
-  const border = el.stroke && el.stroke.color !== 'none' ? `${el.stroke.width || 1}px solid ${resolveColor(el.stroke.color, theme)}` : 'none';
+  // Each side of a cell: its own border, else the table's (where two cells disagree, the table's border-collapse picks one).
+  const border = (s) => (s && s.color !== 'none' && s.width !== 0
+    ? `${+s.width || 1}px ${s.dash === 'dot' ? 'dotted' : s.dash && s.dash !== 'solid' ? 'dashed' : 'solid'} ${resolveColor(s.color, theme)}`
+    : 'none');
   const colgroup = document.createElement('colgroup');
   for (const w of el.colWidths || []) {
     const col = document.createElement('col');
@@ -227,9 +472,21 @@ function renderTable(el, ctx) {
   const headerFill = resolveColor(el.fill || 'theme:accent1', theme);
   el.cells.forEach((row, r) => {
     const tr = document.createElement('tr');
+    if (el.rowHeights?.[r]) tr.style.height = `${el.rowHeights[r] * 100}%`;
     row.forEach((cell, c) => {
+      if (cell.merged) return; // covered by a merged cell
       const td = document.createElement('td');
-      td.style.border = border;
+      if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan;
+      if (cell.colSpan > 1) td.colSpan = cell.colSpan;
+      if (cell.valign) td.style.verticalAlign = cell.valign === 'bottom' ? 'bottom' : cell.valign === 'top' ? 'top' : 'middle';
+      td.style.borderTop = border(cellBorder(el, cell, 't'));
+      td.style.borderRight = border(cellBorder(el, cell, 'r'));
+      td.style.borderBottom = border(cellBorder(el, cell, 'b'));
+      td.style.borderLeft = border(cellBorder(el, cell, 'l'));
+      if (cell.margin) {
+        const m = cellMargin(cell);
+        td.style.padding = `${m.t}px ${m.r}px ${m.b}px ${m.l}px`;
+      }
       td.dataset.r = r;
       td.dataset.c = c;
       if (cell.fill) td.style.background = resolveColor(cell.fill, theme);
@@ -241,6 +498,13 @@ function renderTable(el, ctx) {
       const body = document.createElement('div');
       body.className = 'cell-body';
       body.innerHTML = cell.text || '';
+      if (cell.vertical) {
+        // Vertical text, as in text boxes (see textLayout).
+        body.style.writingMode = 'vertical-rl';
+        body.style.textOrientation = cell.vertical === 'eaVert' ? 'upright' : 'sideways';
+        if (cell.vertical === 'vert270') body.style.transform = 'rotate(180deg)';
+        body.style.margin = '0 auto';
+      }
       td.append(body);
       tr.append(td);
     });
@@ -263,28 +527,59 @@ function decorElements(slide, theme, W, H) {
 /** Theme decorations as plain elements (for export). */
 export const themeDecor = (slide, deck) => {
   const { w, h } = slideSize(deck);
-  return decorElements(slide, themeById(deck.themeId), w, h);
+  return decorElements(slide, deckTheme(deck), w, h);
 };
 
 /**
  * Render a whole slide. Options:
  *   editing – show placeholder hints on empty placeholders
+ *   live    – videos and sounds can play (the slideshow), instead of showing their poster
  */
-export function renderSlide(slide, deck, { editing = false } = {}) {
-  const theme = themeById(deck.themeId);
+export function renderSlide(slide, deck, { editing = false, live = false } = {}) {
+  registerDeckFonts(deck);
+  const theme = deckTheme(deck);
   const { w, h } = slideSize(deck);
   const root = document.createElement('div');
   root.className = `slide${editing ? ' is-editing' : ''}`;
   root.style.width = `${w}px`;
   root.style.height = `${h}px`;
-  root.style.background = backgroundCss(slide.background, theme, (id) => mediaUrl(deck, id));
-  const ctx = { theme, deck, editing };
+  const bg = slide.background || theme.background;
+  const mirrored = bg?.type === 'image' && bg.media && bg.tile?.w > 0 && bg.tile?.h > 0 && /[xy]/.test(bg.tile.flip || '');
+  root.style.background = mirrored ? resolveColor(bg.color || '#000', theme) : backgroundCss(slide.background, theme, (id) => mediaUrl(deck, id));
+  const ctx = { theme, deck, editing, live, slideNo: slideNumber(slide, deck) };
+  if (mirrored) root.append(mirroredTiles(bg, mediaUrl(deck, bg.media), w, h));
   const decor = document.createElement('div');
   decor.className = 'slide-decor';
   for (const d of decorElements(slide, theme, w, h)) decor.append(renderElement(d, ctx));
   root.append(decor);
   for (const el of slide.elements) root.append(renderElement(el, ctx));
+  fillFields(root, slide, deck);
   return root;
+}
+
+/**
+ * A tiled background picture whose tiles mirror (see themes.js backgroundCss),
+ * drawn as an SVG layer behind everything: CSS can tile a picture but not flip
+ * every other tile.
+ */
+function mirroredTiles(bg, url, w, h) {
+  const svg = svgEl('svg', { class: 'slide-bg-tiles', width: w, height: h, viewBox: `0 0 ${w} ${h}`, 'aria-hidden': 'true' });
+  svg.append(svgEl('rect', { width: w, height: h, fill: picturePaint(svg, { w, h, fillImage: { tile: bg.tile } }, url) }));
+  return svg;
+}
+
+/** A slide's number in its deck (1 for one that isn't in it). */
+export const slideNumber = (slide, deck) => (deck.slides || []).findIndex((s) => s.id === slide.id) + 1 || 1;
+
+/** Put the slide's number and today's date into its fields (see model/deck.js). */
+export function fillFields(root, slide, deck) {
+  fillFieldsWith(root, slideNumber(slide, deck));
+}
+
+function fillFieldsWith(root, n) {
+  for (const f of root.querySelectorAll('[data-field]')) {
+    if (FIELD.test(f.dataset.field)) f.textContent = fieldText(f.dataset.field, n);
+  }
 }
 
 /** A slide scaled into a box `width` px wide (thumbnails, previews). */
@@ -295,6 +590,9 @@ export function renderThumb(slide, deck, width) {
   frame.className = 'slide-thumb';
   frame.style.width = `${width}px`;
   frame.style.height = `${Math.round(h * scale)}px`;
+  // The browser lays out and paints a thumbnail only once it's on screen: a long
+  // filmstrip holds a whole slide's worth of DOM per slide.
+  frame.style.contentVisibility = 'auto';
   const s = renderSlide(slide, deck);
   s.style.transform = `scale(${scale})`;
   s.style.transformOrigin = '0 0';

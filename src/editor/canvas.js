@@ -1,9 +1,10 @@
 import { h } from '../ui/dom.js';
-import { renderSlide, renderElement } from '../render/render.js';
-import { slideSize, boxOf, moveElement, canHoldText, newTextBox, newShape, newLine } from '../model/deck.js';
-import { themeById } from '../model/themes.js';
+import { renderSlide, renderElement, fillFields, slideNumber } from '../render/render.js';
+import { slideSize, boxOf, moveElement, canHoldText, newTextBox, newShape, newLine, groupOf } from '../model/deck.js';
+import { deckTheme } from '../model/themes.js';
 import { sanitizeHtml } from '../io/sanitize.js';
-import { tidyHtml, normalizeFontTags, exec } from './richtext.js';
+import { tidyHtml, normalizeFontTags, exec, indentParagraph } from './richtext.js';
+import { drawCommentMarkers } from './comments.js';
 
 /**
  * The editing surface: the current slide at the zoom level, with a selection
@@ -15,7 +16,7 @@ const HANDLES = [
   ['se', 1, 1], ['s', 0, 1], ['sw', -1, 1], ['w', -1, 0],
 ];
 const SNAP_PX = 6;
-const PAD = 40; // space around the slide at "fit" zoom
+const PAD = 40; // space around the slide at "fit" zoom, when the canvas's CSS padding can't be read
 
 const rad = (deg) => (deg * Math.PI) / 180;
 const rotateVec = (x, y, deg) => {
@@ -89,6 +90,8 @@ export class SlideCanvas {
 
     this.stage.addEventListener('pointerdown', (e) => this.onPointerDown(e));
     this.stage.addEventListener('dblclick', (e) => this.onDblClick(e));
+    // Links in text are followed in the slideshow, not while editing.
+    this.stage.addEventListener('click', (e) => { if (e.target.closest?.('a[href]')) e.preventDefault(); });
     this.stage.addEventListener('contextmenu', (e) => this.onContextMenu(e));
     this.wrap.addEventListener('pointerdown', (e) => {
       // The grey area around the slide: deselect, or draw there with a tool.
@@ -133,8 +136,11 @@ export class SlideCanvas {
 
   fitScale() {
     const { w, h: H } = this.size;
-    const availW = Math.max(100, this.wrap.clientWidth - PAD * 2);
-    const availH = Math.max(80, this.wrap.clientHeight - PAD * 2);
+    // The space inside the canvas's padding (less on phones).
+    const cs = getComputedStyle(this.wrap);
+    const pad = (v) => (Number.isFinite(parseFloat(v)) ? parseFloat(v) : PAD);
+    const availW = Math.max(100, this.wrap.clientWidth - pad(cs.paddingLeft) - pad(cs.paddingRight));
+    const availH = Math.max(80, this.wrap.clientHeight - pad(cs.paddingTop) - pad(cs.paddingBottom));
     return Math.min(availW / w, availH / H);
   }
 
@@ -204,7 +210,8 @@ export class SlideCanvas {
   refreshNode(el) {
     const node = this.nodeOf(el.id);
     if (!node) return;
-    const fresh = renderElement(el, { theme: themeById(this.deck.themeId), deck: this.deck, editing: true });
+    const fresh = renderElement(el, { theme: deckTheme(this.deck), deck: this.deck, editing: true, slideNo: slideNumber(this.slide, this.deck) });
+    fillFields(fresh, this.slide, this.deck);
     if (this.editing?.id === el.id) this.patchLive(node, fresh);
     else node.replaceWith(fresh);
   }
@@ -256,6 +263,7 @@ export class SlideCanvas {
         ov.append(h('div', { class: r === this.marquee ? 'marquee' : 'draft-box', style: { left: `${r.x * s}px`, top: `${r.y * s}px`, width: `${r.w * s}px`, height: `${r.h * s}px` } }));
       }
     }
+    drawCommentMarkers(this, ov);
   }
 
   // ---------------------------------------------------------------- pointer input
@@ -316,16 +324,23 @@ export class SlideCanvas {
     const el = this.find(id);
     const additive = e.shiftKey || e.ctrlKey || e.metaKey;
     const wasSelected = this.app.selection.includes(id);
+    // A click selects the whole group an object is in; a second click, just that object.
+    const group = groupOf(this.slide, el).map((m) => m.id);
+    const groupSelected = group.length > 1 && this.app.selection.length === group.length && group.every((m) => this.app.selection.includes(m));
     if (additive) {
       e.preventDefault();
-      this.app.setSelection(wasSelected ? this.app.selection.filter((x) => x !== id) : [...this.app.selection, id]);
+      this.app.setSelection(wasSelected ? this.app.selection.filter((x) => !group.includes(x)) : [...new Set([...this.app.selection, ...group])]);
       return;
     }
-    if (!wasSelected) this.app.setSelection([id]);
+    if (!wasSelected) this.app.setSelection(group);
     if (e.button !== 0) return;
     e.preventDefault();
     if (el.locked) return;
     this.startMove(e, () => {
+      if (groupSelected) {
+        this.app.setSelection([id]);
+        return;
+      }
       // A click (no drag) on a text box that was already selected starts typing in it.
       if (wasSelected && this.app.selection.length === 1 && (canHoldText(el) || el.type === 'table')) this.startEdit(id, { point: e });
     });
@@ -338,6 +353,8 @@ export class SlideCanvas {
     if (canHoldText(el) || el.type === 'table') {
       if (this.editing?.id !== el.id) this.startEdit(el.id, { point: e });
     } else if (el.type === 'image') this.app.replaceImage?.();
+    else if (el.type === 'chart') this.app.openPanel('format');
+    else if (el.type === 'diagram') this.app.editDiagramText();
   }
 
   onContextMenu(e) {
@@ -346,7 +363,8 @@ export class SlideCanvas {
     const node = e.target.closest?.('.slide > .el');
     if (node && !this.app.selection.includes(node.dataset.id)) this.app.setSelection([node.dataset.id]);
     if (!node) this.app.setSelection([]);
-    this.app.canvasMenu({ x: e.clientX, y: e.clientY });
+    const td = e.target.closest?.('td[data-r]');
+    this.app.canvasMenu({ x: e.clientX, y: e.clientY }, td ? { r: +td.dataset.r, c: +td.dataset.c } : null);
   }
 
   snapCandidates(exclude) {
@@ -481,8 +499,8 @@ export class SlideCanvas {
     const [, sx, sy] = HANDLES.find(([n]) => n === handle);
     const p0 = this.toSlide(e);
     const corner = sx !== 0 && sy !== 0;
-    // Pictures keep their proportions from the corners unless Shift is held; other shapes only with Shift.
-    const lockDefault = el.type === 'image' || !!el.lockRatio;
+    // Pictures and videos keep their proportions from the corners unless Shift is held; other shapes only with Shift.
+    const lockDefault = el.type === 'image' || el.type === 'media' || !!el.lockRatio;
     this.track(e, {
       move: (ev) => {
         const p = this.toSlide(ev);
@@ -546,10 +564,11 @@ export class SlideCanvas {
         const p = this.toSlide(ev);
         this.marquee = { x: Math.min(p0.x, p.x), y: Math.min(p0.y, p.y), w: Math.abs(p.x - p0.x), h: Math.abs(p.y - p0.y) };
         const m = this.marquee;
+        // Objects inside the box, with the rest of their groups.
         const hit = this.slide.elements.filter((el) => {
           const b = aabb(el);
           return b.x >= m.x && b.y >= m.y && b.x + b.w <= m.x + m.w && b.y + b.h <= m.y + m.h;
-        }).map((el) => el.id);
+        }).flatMap((el) => groupOf(this.slide, el)).map((el) => el.id);
         this.app.setSelection([...new Set([...base, ...hit])], { quiet: true });
         this.drawOverlay();
       },
@@ -713,7 +732,10 @@ export class SlideCanvas {
           bodies[i].focus();
           caretToEnd(bodies[i], true);
         }
-      } else if (inList) exec(e.shiftKey ? 'outdent' : 'indent');
+      } else if (inList) {
+        if (indentParagraph(e.shiftKey ? -1 : 1)) body.dispatchEvent(new Event('input'));
+        else exec(e.shiftKey ? 'outdent' : 'indent');
+      }
       else if (!e.shiftKey) exec('insertText', '\t');
     }
     // Formatting shortcuts while typing; app-wide ones (F5, Ctrl+S, Ctrl+O…) carry on to the editor.
