@@ -78,6 +78,7 @@ export function sanitizeElement(el) {
       const out = { cmds: cmds.map((c) => [...c]) };
       if (p.fill === false) out.fill = false;
       if (p.stroke === false) out.stroke = false;
+      if (['darken', 'darkenLess', 'lighten', 'lightenLess'].includes(p.shade)) out.shade = p.shade;
       return out;
     }).filter((p) => p.cmds.length);
     if (!el.paths.length) {
@@ -99,6 +100,17 @@ export function sanitizeElement(el) {
       if (el.gradient.type === 'radial') Object.assign(el.gradient, { cx: Number.isFinite(g.cx) ? fraction(g.cx) : 0.5, cy: Number.isFinite(g.cy) ? fraction(g.cy) : 0.5 });
       else el.gradient.angle = Number.isFinite(g.angle) ? g.angle : 180;
     }
+  }
+  if (el.textRect != null) {
+    if (isObject(el.textRect)) el.textRect = Object.fromEntries(['l', 't', 'r', 'b'].map((k) => [k, Number.isFinite(el.textRect[k]) ? Math.max(-1, Math.min(1, el.textRect[k])) : 0]));
+    else delete el.textRect;
+  }
+  if (el.preset != null) {
+    // A PowerPoint preset name and its adjust values, written back into .pptx files.
+    if (isObject(el.preset) && typeof el.preset.name === 'string' && /^[a-zA-Z0-9]{1,40}$/.test(el.preset.name)) {
+      const adj = isObject(el.preset.adj) ? Object.fromEntries(Object.entries(el.preset.adj).filter(([k, v]) => /^adj\d{0,2}$/.test(k) && Number.isFinite(v))) : {};
+      el.preset = Object.keys(adj).length ? { name: el.preset.name, adj } : { name: el.preset.name };
+    } else delete el.preset;
   }
   if (el.crop != null) {
     if (isObject(el.crop)) for (const side of ['l', 't', 'r', 'b']) el.crop[side] = fraction(el.crop[side]);

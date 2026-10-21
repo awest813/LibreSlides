@@ -321,19 +321,22 @@ async function addElement(pptx, s, el, deck, theme, marks) {
     fill: fillOpts(el.fill, theme, opacity),
     line: lineOpts(el.stroke, theme),
   };
+  // What pptxgenjs can't write is fixed in its XML afterwards (see postProcess), found by the shape's name.
+  const mark = () => (opts.objectName ||= `LibreSlides shape ${++marks.count}`);
   const picture = el.fillImage && (await exportableImage(deck.media?.[el.fillImage.media], el.w, el.h));
   if (picture) {
-    // pptxgenjs only writes solid fills: name the shape, and its fill becomes the picture afterwards.
-    opts.objectName = `LibreSlides picture fill ${marks.pictures.size + 1}`;
     if (opts.fill.type === 'none') opts.fill = { color: 'FFFFFF' };
-    marks.pictures.set(opts.objectName, { data: picture, crop: el.fillImage.crop, opacity });
-  } else if (el.gradient && opts.fill.type !== 'none') {
-    // Likewise for gradients.
-    opts.objectName = `LibreSlides gradient ${marks.gradients.size + 1}`;
-    marks.gradients.set(opts.objectName, gradFillXml(el.gradient, theme, opacity));
-  }
+    marks.pictures.set(mark(), { data: picture, crop: el.fillImage.crop, opacity });
+  } else if (el.gradient && opts.fill.type !== 'none') marks.gradients.set(mark(), gradFillXml(el.gradient, theme, opacity));
   let extras = [];
-  if (shape === 'custom') {
+  if (shape === 'custom' && el.preset?.name) {
+    // A PowerPoint preset goes back as that preset (pptxgenjs writes any preset name), with its adjust values.
+    shape = el.preset.name;
+    opts.shape = shape;
+    if (el.preset.adj && Object.keys(el.preset.adj).length) marks.presets.set(mark(), el.preset.adj);
+    if (el.arrowStart) opts.line.beginArrowType = 'triangle';
+    if (el.arrowEnd) opts.line.endArrowType = 'triangle';
+  } else if (shape === 'custom') {
     // A freeform: one PowerPoint shape per kind of path (filled or not, outlined or not);
     // the first carries the text.
     const kinds = new Map();
@@ -461,6 +464,15 @@ function replaceShapeFill(xml, name, fillXml) {
 export function applyGradients(xml, marks) {
   if (!marks) return xml;
   for (const [name, grad] of marks.gradients) xml = replaceShapeFill(xml, name, grad);
+  // Preset shapes' adjust values.
+  for (const [name, adj] of marks.presets || []) {
+    const at = xml.indexOf(`name="${name}"`);
+    const end = xml.indexOf('</p:sp>', at);
+    if (at < 0 || end < 0) continue;
+    const gds = Object.entries(adj).filter(([k, v]) => /^adj\d*$/.test(k) && Number.isFinite(v)).map(([k, v]) => `<a:gd name="${k}" fmla="val ${Math.round(v)}"/>`).join('');
+    const block = xml.slice(at, end).replace(/<a:avLst\s*\/>|<a:avLst>[\s\S]*?<\/a:avLst>/, `<a:avLst>${gds}</a:avLst>`);
+    xml = xml.slice(0, at) + block + xml.slice(end);
+  }
   if (marks.background) xml = xml.replace(/<p:bg>[\s\S]*?<\/p:bg>/, `<p:bg><p:bgPr>${marks.background}<a:effectLst/></p:bgPr></p:bg>`);
   return xml;
 }
@@ -528,7 +540,7 @@ export async function buildPptx(deck) {
   const allMarks = [];
   for (const slide of deck.slides) {
     const s = pptx.addSlide();
-    const marks = { gradients: new Map(), pictures: new Map(), background: null };
+    const marks = { count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), background: null };
     allMarks.push(marks);
     const bg = slide.background || theme.background;
     if (bg.type === 'image' && deck.media?.[bg.media]) {

@@ -92,10 +92,11 @@ function textBox(el, ctx) {
   const box = document.createElement('div');
   box.className = 'el-textbox';
   if (el.type === 'shape') {
-    const ins = textInset(el.shape);
-    box.style.left = `${ins.x * el.w}px`;
-    box.style.right = `${ins.x * el.w}px`;
-    box.style.top = `${ins.y * el.h}px`;
+    // Preset shapes from PowerPoint say where their text goes; LibreSlides' own shapes keep it inside the outline.
+    const ins = el.textRect || (({ x, y, b }) => ({ l: x, r: x, t: y, b }))(textInset(el.shape));
+    box.style.left = `${ins.l * el.w}px`;
+    box.style.right = `${ins.r * el.w}px`;
+    box.style.top = `${ins.t * el.h}px`;
     box.style.bottom = `${ins.b * el.h}px`;
   }
   applyTextStyle(box, el, ctx.theme);
@@ -179,6 +180,28 @@ function picturePaint(svg, el, url) {
   return `url(#${id})`;
 }
 
+const SHADES = { darken: 'rgba(0,0,0,0.25)', darkenLess: 'rgba(0,0,0,0.12)', lighten: 'rgba(255,255,255,0.4)', lightenLess: 'rgba(255,255,255,0.2)' };
+
+/**
+ * Where a freeform's line starts and ends, each as [from x, from y, tip x, tip y]
+ * along its direction there, for arrowheads (connectors' routes).
+ */
+function pathEnds(paths, w, h) {
+  const cmds = paths.flatMap((p) => p.cmds).filter((c) => c[0] !== 'Z');
+  if (cmds.length < 2) return null;
+  const pt = (c, i) => [c[i] * w, c[i + 1] * h];
+  const last = cmds[cmds.length - 1];
+  const before = cmds[cmds.length - 2];
+  // A command's own point is its last two numbers.
+  const end = (c) => pt(c, c.length - 2);
+  const tip = end(last);
+  // Towards the tip from the last control point, or from the point before.
+  const from = last[0] === 'C' ? pt(last, 3) : last[0] === 'Q' ? pt(last, 1) : end(before);
+  const first = end(cmds[0]);
+  const next = cmds[1][0] === 'C' || cmds[1][0] === 'Q' ? pt(cmds[1], 1) : end(cmds[1]);
+  return { end: [...from, ...tip], start: [...next, ...first] };
+}
+
 /** The DOM for one element. */
 export function renderElement(el, ctx) {
   const { theme } = ctx;
@@ -217,7 +240,15 @@ export function renderElement(el, ctx) {
     const stroke = strokeAttrs(el.stroke, theme);
     if (el.type === 'shape' && el.shape === 'custom' && Array.isArray(el.paths)) {
       for (const p of el.paths) {
-        svg.append(svgEl('path', { d: customPath(p.cmds, el.w, el.h), fill: p.fill === false ? 'none' : fill, ...(p.stroke === false ? { stroke: 'none' } : stroke) }));
+        const d = customPath(p.cmds, el.w, el.h);
+        svg.append(svgEl('path', { d, fill: p.fill === false ? 'none' : fill, ...(p.stroke === false ? { stroke: 'none' } : stroke) }));
+        // Faces drawn lighter or darker (a can's top, a cube's side).
+        if (SHADES[p.shade] && p.fill !== false && el.fill !== 'none') svg.append(svgEl('path', { d, fill: SHADES[p.shade], stroke: 'none' }));
+      }
+      if ((el.arrowStart || el.arrowEnd) && stroke.stroke !== 'none') {
+        const ends = pathEnds(el.paths, el.w, el.h);
+        if (ends && el.arrowEnd) svg.append(arrowHead(...ends.end, el.stroke?.width || 2, stroke.stroke));
+        if (ends && el.arrowStart) svg.append(arrowHead(...ends.start, el.stroke?.width || 2, stroke.stroke));
       }
     } else svg.append(svgEl('path', { d: shapePath(el.type === 'shape' ? el.shape : 'rect', el.w, el.h), fill, ...stroke }));
     if (shadow) svg.style.filter = shadow;

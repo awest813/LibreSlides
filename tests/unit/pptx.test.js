@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
 import { buildPptx, htmlToRuns, toHex, fixParagraphs } from '../../src/io/pptx-export.js';
 import { importPptx } from '../../src/io/pptx-import.js';
+import { renderElement } from '../../src/render/render.js';
+import { themeById } from '../../src/model/themes.js';
 import { TEMPLATES } from '../../src/model/templates.js';
 import { newDeck, newLine, newTable, newTextBox, newShape, newImage, htmlToText } from '../../src/model/deck.js';
 
@@ -242,14 +244,15 @@ describe('PowerPoint freeform shapes', () => {
   it('reads lines, curves, arcs and named points', async () => {
     const el = await withGeometry('<a:custGeom><a:avLst/><a:gdLst/><a:pathLst>'
       + '<a:path w="200" h="100"><a:moveTo><a:pt x="0" y="100"/></a:moveTo><a:arcTo wR="100" hR="100" stAng="10800000" swAng="10800000"/><a:close/></a:path>'
-      + '<a:path w="200" h="100" fill="none"><a:moveTo><a:pt x="l" y="b"/></a:moveTo><a:cubicBezTo><a:pt x="50" y="0"/><a:pt x="150" y="0"/><a:pt x="r" y="vc"/></a:cubicBezTo><a:quadBezTo><a:pt x="hc" y="t"/><a:pt x="0" y="0"/></a:quadBezTo></a:path>'
+      // Named points are in the shape's own units (a path without a size of its own).
+      + '<a:path fill="none"><a:moveTo><a:pt x="l" y="b"/></a:moveTo><a:cubicBezTo><a:pt x="wd4" y="t"/><a:pt x="hc" y="t"/><a:pt x="r" y="vc"/></a:cubicBezTo><a:quadBezTo><a:pt x="hc" y="t"/><a:pt x="0" y="0"/></a:quadBezTo></a:path>'
       + '</a:pathLst></a:custGeom>');
     expect(el.shape).toBe('custom');
     const [half, open] = el.paths;
     // A half circle over the top, from the bottom left to the bottom right corner, in two quarter curves.
     expect(near(half.cmds)).toEqual([['M', 0, 1], ['C', 0, 0.448, 0.224, 0, 0.5, 0], ['C', 0.776, 0, 1, 0.448, 1, 1], ['Z']]);
     expect(half.fill).toBeUndefined();
-    expect(open).toEqual({ cmds: [['M', 0, 1], ['C', 0.25, 0, 0.75, 0, 1, 0.5], ['Q', 0.5, 0, 0, 0]], fill: false });
+    expect(open).toEqual({ cmds: [['M', 0, 1], ['C', 0.25, 0, 0.5, 0, 1, 0.5], ['Q', 0.5, 0, 0, 0]], fill: false });
   });
 
   it('falls back to a rectangle for formulas it can\'t work out', async () => {
@@ -258,9 +261,47 @@ describe('PowerPoint freeform shapes', () => {
     expect(el.paths).toBeUndefined();
   });
 
-  it('draws flowchart shapes as the closest shape it has', async () => {
-    expect((await withGeometry('<a:prstGeom prst="flowChartDecision"><a:avLst/></a:prstGeom>')).shape).toBe('diamond');
-    expect((await withGeometry('<a:prstGeom prst="flowChartConnector"><a:avLst/></a:prstGeom>')).shape).toBe('ellipse');
+  it('draws any PowerPoint preset, with its adjust values', async () => {
+    const cloud = await withGeometry('<a:prstGeom prst="cloud"><a:avLst/></a:prstGeom>');
+    expect(cloud).toMatchObject({ shape: 'custom', preset: { name: 'cloud' } });
+    expect(cloud.paths.length).toBeGreaterThan(1);
+    // A rounded rectangle with its own corner size is drawn with it, and remembers it.
+    const round = await withGeometry('<a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val 50000"/></a:avLst></a:prstGeom>');
+    expect(round).toMatchObject({ shape: 'custom', preset: { name: 'roundRect', adj: { adj: 50000 } } });
+    expect(round.paths[0].cmds[0]).toEqual(['M', 0, 0.5]);
+    // Without its own adjust values it's LibreSlides' own shape.
+    expect((await withGeometry('<a:prstGeom prst="roundRect"><a:avLst/></a:prstGeom>')).shape).toBe('roundRect');
+  });
+
+  it('writes presets back as presets, with their adjust values', async () => {
+    const back = await withGeometry('<a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val 50000"/></a:avLst></a:prstGeom>');
+    const deck = deckWith(back);
+    const cloud = { ...(await withGeometry('<a:prstGeom prst="cloud"><a:avLst/></a:prstGeom>')), id: 'c' };
+    deck.slides[0].elements.push(cloud);
+    const xml = await slideXml(deck);
+    expect(xml).toContain('<a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val 50000"/></a:avLst></a:prstGeom>');
+    expect(xml).toMatch(/<a:prstGeom prst="cloud"><a:avLst>\s*<\/a:avLst>|<a:prstGeom prst="cloud"><a:avLst\/>/);
+    expect(xml).not.toContain('<a:custGeom>');
+  });
+
+  it('keeps an elbow connector\'s route and arrowhead', async () => {
+    const line = newLine(0, 0, 100, 50, { arrowEnd: true });
+    const back = await roundTrip(deckWith(line), async (zip) => {
+      const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+      zip.file('ppt/slides/slide1.xml', xml.replace('prst="line"', 'prst="bentConnector3"'));
+    });
+    const el = back.slides[0].elements[0];
+    expect(el).toMatchObject({ type: 'shape', shape: 'custom', fill: 'none', arrowEnd: true, preset: { name: 'bentConnector3' } });
+    // Across, down, across.
+    expect(el.paths[0].cmds.map((c) => c[0])).toEqual(['M', 'L', 'L', 'L']);
+    expect(el.paths[0].fill).toBe(false);
+    // Drawn with its arrowhead at the end of the route.
+    const node = renderElement(el, { theme: themeById(back.themeId), deck: back });
+    const head = node.querySelector('polygon').getAttribute('points').split(' ')[0].split(',').map(Number);
+    expect(head.map(Math.round)).toEqual([Math.round(el.w), Math.round(el.h)]);
+    const again = await slideXml(deckWith(el));
+    expect(again).toContain('prst="bentConnector3"');
+    expect(again).toMatch(/<a:tailEnd type="triangle"\/>/);
   });
 
   it('writes freeforms back as PowerPoint custom shapes, text and all', async () => {

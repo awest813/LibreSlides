@@ -2,6 +2,8 @@ import JSZip from 'jszip';
 import { uid, newDeck, SIZES } from '../model/deck.js';
 import { SHAPES } from '../model/shapes.js';
 import { normalizeTable } from '../model/tables.js';
+import { evaluateGeometry, definitionFromXml } from '../model/geometry.js';
+import PRESETS from '../model/preset-shapes.js';
 import { isDarkColor } from '../model/themes.js';
 import { readChart } from './pptx-chart.js';
 import { readMedia } from './pptx-media.js';
@@ -381,99 +383,39 @@ function tableLook(tblPr, ctx, rows, cols) {
   };
 }
 
-/** Closest LibreSlides shape for PowerPoint presets it doesn't draw itself. */
-const PRESET_ALIAS = {
-  flowChartProcess: 'rect', flowChartAlternateProcess: 'roundRect', flowChartTerminator: 'roundRect', snipRoundRect: 'roundRect', round2SameRect: 'roundRect',
-  flowChartDecision: 'diamond', flowChartConnector: 'ellipse', flowChartInputOutput: 'parallelogram', flowChartPreparation: 'hexagon',
-  notchedRightArrow: 'rightArrow', stripedRightArrow: 'rightArrow', star6: 'star5', star7: 'star5', star8: 'star5',
-};
-
 /**
- * A custom geometry (a:custGeom) as freeform paths (see model/shapes.js), or
- * null when it uses formulas this reader doesn't evaluate. `w` and `h` are
- * the shape's size in EMU, the units of paths that don't give their own.
+ * A shape's outline when LibreSlides doesn't draw it itself: a custom
+ * geometry, a preset it has no drawing of, or a preset with adjust values of
+ * its own (corner radius, arrow head size…). Worked out for the shape's size
+ * as freeform paths (see model/geometry.js): { paths, textRect, preset? },
+ * preset being { name, adj } so the shape can be written back as that preset.
+ * Null when the shape is drawn as LibreSlides' own shape.
  */
-function customGeometry(custGeom, w, h) {
-  const guides = {};
-  for (const gd of desc(kid(custGeom, 'gdLst'), 'gd')) {
-    const m = /^val\s+(-?[\d.]+)$/.exec(attr(gd, 'fmla') || '');
-    if (m) guides[attr(gd, 'name')] = +m[1];
-  }
-  const paths = [];
-  let count = 0;
-  for (const p of kids(kid(custGeom, 'pathLst'), 'path')) {
-    const pw = +attr(p, 'w') || w;
-    const ph = +attr(p, 'h') || h;
-    if (!pw || !ph) return null;
-    const known = { l: 0, t: 0, r: pw, b: ph, w: pw, h: ph, hc: pw / 2, vc: ph / 2, wd2: pw / 2, hd2: ph / 2 };
-    const num = (v) => (v == null ? NaN : /^-?[\d.]+$/.test(v) ? +v : known[v] ?? guides[v] ?? NaN);
-    const pts = (el) => kids(el, 'pt').flatMap((pt) => [num(attr(pt, 'x')), num(attr(pt, 'y'))]);
-    const cmds = [];
-    let cur = [0, 0];
-    let start = [0, 0];
-    for (const c of p.children) {
-      const name = c.localName;
-      if (name === 'moveTo' || name === 'lnTo') {
-        cur = pts(c);
-        if (name === 'moveTo') start = cur;
-        cmds.push([name === 'moveTo' ? 'M' : 'L', ...cur]);
-      } else if (name === 'cubicBezTo' || name === 'quadBezTo') {
-        const n = pts(c);
-        cmds.push([name === 'cubicBezTo' ? 'C' : 'Q', ...n]);
-        cur = n.slice(-2);
-      } else if (name === 'arcTo') {
-        const arc = arcToCurves(cur, num(attr(c, 'wR')), num(attr(c, 'hR')), num(attr(c, 'stAng')) / 60000, num(attr(c, 'swAng')) / 60000);
-        cmds.push(...arc.cmds);
-        cur = arc.end;
-      } else if (name === 'close') {
-        cmds.push(['Z']);
-        cur = start;
+function outlineOf(spPr, box) {
+  if (!box?.w || !box?.h) return null;
+  const [w, h] = [box.w * EMU_PER_PT, box.h * EMU_PER_PT];
+  try {
+    const cust = kid(spPr, 'custGeom');
+    let out;
+    if (cust) out = evaluateGeometry(definitionFromXml(cust), w, h);
+    else {
+      const geom = kid(spPr, 'prstGeom');
+      const name = attr(geom, 'prst');
+      if (!name || !PRESETS[name]) return null;
+      const adj = {};
+      for (const gd of kids(kid(geom, 'avLst'), 'gd')) {
+        const m = /^val\s+(-?[\d.]+)$/.exec(attr(gd, 'fmla') || '');
+        if (m) adj[attr(gd, 'name')] = +m[1];
       }
+      const adjusted = Object.keys(adj).length > 0;
+      if (SHAPE_IDS.has(name) && !adjusted) return null;
+      out = { ...evaluateGeometry(PRESETS[name], w, h, adj), preset: adjusted ? { name, adj } : { name } };
     }
-    const flat = cmds.flat().filter((v) => typeof v === 'number');
-    if (!cmds.length || flat.some((v) => !Number.isFinite(v))) return null;
-    count += cmds.length;
-    const path = { cmds: cmds.map(([op, ...n]) => [op, ...n.map((v, i) => Math.round((v / (i % 2 ? ph : pw)) * 10000) / 10000 || 0)]) };
-    if (attr(p, 'fill') === 'none') path.fill = false;
-    if (attr(p, 'stroke') === '0' || attr(p, 'stroke') === 'false') path.stroke = false;
-    paths.push(path);
+    const count = out.paths.reduce((n, p) => n + p.cmds.length, 0);
+    return out.paths.length && count <= 20000 ? out : null;
+  } catch {
+    return null; // formulas it can't work out: drawn as a rectangle
   }
-  return paths.length && count <= 20000 ? paths : null;
-}
-
-/**
- * An a:arcTo from point `from` as cubic Béziers. The angles (degrees) are where
- * the arc starts and how far it turns, measured as seen on the ellipse, which
- * is what PowerPoint means by them.
- */
-function arcToCurves(from, wR, hR, stAng, swAng) {
-  if (![wR, hR, stAng, swAng].every(Number.isFinite) || !wR || !hR || !swAng) return { cmds: [], end: from };
-  const rad = (d) => (d * Math.PI) / 180;
-  // The ellipse's own (parametric) angle for an angle seen from its centre.
-  const param = (a) => Math.atan2(wR * Math.sin(rad(a)), hR * Math.cos(rad(a)));
-  const t0 = param(stAng);
-  let sweep = param(stAng + swAng) - t0;
-  const full = Math.abs(swAng) >= 360;
-  if (full) sweep = Math.sign(swAng) * 2 * Math.PI;
-  else {
-    while (swAng > 0 && sweep <= 0) sweep += 2 * Math.PI;
-    while (swAng < 0 && sweep >= 0) sweep -= 2 * Math.PI;
-  }
-  const cx = from[0] - wR * Math.cos(t0);
-  const cy = from[1] - hR * Math.sin(t0);
-  const at = (t) => [cx + wR * Math.cos(t), cy + hR * Math.sin(t)];
-  const steps = Math.max(1, Math.ceil(Math.abs(sweep) / (Math.PI / 2)));
-  const d = sweep / steps;
-  const k = (4 / 3) * Math.tan(d / 4);
-  const cmds = [];
-  let t = t0;
-  for (let i = 0; i < steps; i++) {
-    const [x1, y1] = at(t);
-    const [x2, y2] = at(t + d);
-    cmds.push(['C', x1 - k * wR * Math.sin(t), y1 + k * hR * Math.cos(t), x2 + k * wR * Math.sin(t + d), y2 - k * hR * Math.cos(t + d), x2, y2]);
-    t += d;
-  }
-  return { cmds, end: at(t0 + sweep) };
 }
 
 // ------------------------------------------------------------------ slides
@@ -611,7 +553,8 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         const refs = styleRefs(node, ctx);
         const prst = attr(kid(spPr, 'prstGeom'), 'prst') || 'rect';
         const own = xfrmOf(spPr);
-        const paths = kid(spPr, 'custGeom') && own ? customGeometry(kid(spPr, 'custGeom'), own.w * EMU_PER_PT, own.h * EMU_PER_PT) : null;
+        const outline = outlineOf(spPr, own);
+        const paths = outline?.paths || null;
         const ownFill = fillOf(spPr, ctx.scheme) ?? (refs.hasFill ? refs.fillStyle : undefined);
         let fill = ownFill?.color;
         if (fill === undefined) fill = refs.hasFill ? refs.fill : 'none';
@@ -676,9 +619,15 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         }
         if (shadowOf(spPr, refs)) el.shadow = true;
         if (paths) {
-          el.shape = 'custom';
-          el.paths = paths;
-        } else if (!plainBox) el.shape = SHAPE_IDS.has(prst) ? prst : PRESET_ALIAS[prst] || 'rect';
+          Object.assign(el, { shape: 'custom', paths });
+          if (outline.textRect) el.textRect = outline.textRect;
+          if (outline.preset) el.preset = outline.preset;
+          // Open outlines (freeform curves, connector-like presets) can end in arrowheads.
+          for (const [end, key] of [['headEnd', 'arrowStart'], ['tailEnd', 'arrowEnd']]) {
+            const type = attr(kid(kid(spPr, 'ln'), end), 'type');
+            if (type && type !== 'none') el[key] = true;
+          }
+        } else if (!plainBox) el.shape = SHAPE_IDS.has(prst) ? prst : 'rect';
         if (role && hasText) el.ph = role;
         if (!hasText && (plainBox || (paths && fill === 'none' && !stroke))) continue; // nothing to show
         // SmartArt can put a shape's text somewhere else (beside an icon, under a picture): a text box of its own there.
@@ -720,8 +669,18 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         if (shadowOf(kid(node, 'spPr'), styleRefs(node, ctx))) el.shadow = true;
         slide.elements.push(el);
       } else if (name === 'cxnSp') {
-        const line = lineElement(node, place(xfrmOf(kid(node, 'spPr'))));
-        if (line) slide.elements.push(line);
+        const spPr = kid(node, 'spPr');
+        const b = place(xfrmOf(spPr));
+        const line = lineElement(node, b);
+        // Elbow and curved connectors keep their route; straight ones are lines.
+        const outline = /^(line|straightConnector1)$/.test(attr(kid(spPr, 'prstGeom'), 'prst') || 'line') ? null : outlineOf(spPr, xfrmOf(spPr));
+        if (outline && line) {
+          slide.elements.push({
+            id: uid(), type: 'shape', shape: 'custom', paths: outline.paths.map((p) => ({ ...p, fill: false })), preset: outline.preset,
+            x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot, flipH: b.flipH || undefined, flipV: b.flipV || undefined,
+            fill: 'none', stroke: line.stroke, arrowStart: line.arrowStart || undefined, arrowEnd: line.arrowEnd || undefined, text: '', style: {},
+          });
+        } else if (line) slide.elements.push(line);
       } else if (name === 'graphicFrame') {
         const uri = attr(desc(node, 'graphicData')[0], 'uri') || '';
         if (/\/chart$/.test(uri)) {
