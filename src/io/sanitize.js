@@ -489,8 +489,11 @@ export function sanitizeDeck(deck) {
       // SVG can carry script; it only ever renders through <img>, which doesn't run it, but keep it tidy.
       try {
         const [head, body] = data.split(',');
-        const svg = head.endsWith(';base64') ? atob(body) : decodeURIComponent(body);
-        deck.media[id] = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } }))}`;
+        // Base64 holds the SVG's bytes, which are UTF-8.
+        const svg = head.endsWith(';base64') ? new TextDecoder().decode(Uint8Array.from(atob(body), (c) => c.charCodeAt(0))) : decodeURIComponent(body);
+        // (DOMPurify writes HTML: a no-break space comes out as &nbsp;, which SVG, being XML, doesn't know.)
+        const clean = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } }).replace(/&nbsp;/g, '&#160;');
+        deck.media[id] = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(clean)}`;
       } catch {
         delete deck.media[id];
       }

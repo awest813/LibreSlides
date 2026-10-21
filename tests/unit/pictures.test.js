@@ -290,6 +290,16 @@ describe('pictures in PowerPoint files', () => {
     expect(tiffDeck.media[tiffDeck.slides[0].elements[0].media]).toMatch(/^data:image\/png;base64,/);
   });
 
+  it('keeps a converted picture\'s text, accents, symbols and no-break spaces, as well-formed SVG', () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><text>\u25cf caf\u00e9\u00a0x</text></svg>';
+    const deck = { title: '', slides: [], media: { p: `data:image/svg+xml;base64,${btoa(String.fromCharCode(...new TextEncoder().encode(svg)))}` } };
+    sanitizeDeck(deck);
+    const back = svgOf(deck.media.p);
+    const doc = new DOMParser().parseFromString(back, 'image/svg+xml');
+    expect(doc.querySelector('parsererror')).toBeNull();
+    expect(doc.querySelector('text').textContent).toBe('\u25cf caf\u00e9\u00a0x');
+  });
+
   it('shows a placeholder for a picture that can\'t be read, and says so', async () => {
     const deck = await deckWithPicture(new Uint8Array([1, 0, 0, 0, 9, 9, 9]), 'image1.wmf');
     expect(deck.media[deck.slides[0].elements[0].media]).toBe(PICTURE_PLACEHOLDER);
