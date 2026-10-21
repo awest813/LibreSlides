@@ -8,6 +8,7 @@ import { toast, h, shortcutLabel } from './ui/dom.js';
 import { toggleTheme, syncThemeColor } from './ui/theme.js';
 import { initInstall } from './ui/install.js';
 import { watchErrors, noteError } from './diagnostics.js';
+import { releaseMediaUrls } from './render/render.js';
 
 watchErrors();
 const root = document.getElementById('app');
@@ -212,6 +213,8 @@ async function routeNow() {
   }
   startScreen?.destroy();
   startScreen = null;
+  // The pictures of what was shown (a presentation, the list's covers) are no longer needed.
+  releaseMediaUrls();
   if (id) await showEditor(id);
   else showStart();
 }

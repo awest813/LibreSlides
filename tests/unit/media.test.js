@@ -6,7 +6,7 @@ import { playbackOf } from '../../src/io/pptx-media.js';
 import { sanitizeDeck } from '../../src/io/sanitize.js';
 import { isMediaData, mediaTypeOf } from '../../src/io/media-files.js';
 import { renderMedia } from '../../src/render/media.js';
-import { renderSlide } from '../../src/render/render.js';
+import { renderSlide, mediaUrl, releaseMediaUrls } from '../../src/render/render.js';
 import { Player, startSlideshow, firstPos, nextPos } from '../../src/present/present.js';
 import { newDeck, newMedia, newShape, addMedia, usedMedia, pruneMedia } from '../../src/model/deck.js';
 import { themeById } from '../../src/model/themes.js';
@@ -207,5 +207,28 @@ describe('drawing video and sound', () => {
     expect(host.querySelector('video, audio')).toBeNull();
     expect(nextPos(deck, player.pos)).toBeNull();
     player.destroy();
+  });
+});
+
+describe('object URLs for media', () => {
+  it('reuses one per file, and lets them all go when asked', () => {
+    releaseMediaUrls(); // those of earlier tests
+    let n = 0;
+    const revoked = [];
+    const created = vi.spyOn(URL, 'createObjectURL').mockImplementation(() => `blob:test/${++n}`);
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation((u) => revoked.push(u));
+    try {
+      const deck = { media: { a: 'data:image/png;base64,AA==', b: 'data:image/png;base64,AB==' } };
+      const a = mediaUrl(deck, 'a');
+      expect(mediaUrl(deck, 'a')).toBe(a);
+      const b = mediaUrl(deck, 'b');
+      releaseMediaUrls();
+      expect(revoked.sort()).toEqual([a, b].sort());
+      expect(mediaUrl(deck, 'a')).not.toBe(a); // made afresh
+    } finally {
+      releaseMediaUrls();
+      created.mockRestore();
+      revoke.mockRestore();
+    }
   });
 });

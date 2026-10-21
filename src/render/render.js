@@ -54,6 +54,16 @@ export function mediaUrl(deck, id) {
   return url;
 }
 
+/**
+ * Let go of the object URLs made for decks' pictures, videos and sounds
+ * (each holds its file in memory), once nothing shown uses them: when the
+ * app moves between the start screen and a presentation.
+ */
+export function releaseMediaUrls() {
+  for (const { data, url } of blobUrls.values()) if (url !== data) URL.revokeObjectURL(url);
+  blobUrls.clear();
+}
+
 // ------------------------------------------------------------------ text
 
 /** The effective text style of an element: its own settings over the theme's defaults. */
