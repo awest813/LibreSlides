@@ -459,6 +459,8 @@ export function htmlToRuns(html, base = {}, links = null, box = {}) {
       if (Math.abs(pct - 1) > 0.01) extras.buSzPct = Math.round(Math.max(0.25, Math.min(4, pct)) * 100000);
       if (para.symbol) Object.assign(extras, { buFont: para.symbol.font, buChar: para.symbol.char });
     }
+    // An empty paragraph is as tall as its text size (its end mark's, in PowerPoint).
+    if (!runs.length && Math.abs(sizeOf(el) - boxSize) > 0.4) extras.endSize = sizeOf(el);
     if (!runs.length) runs.push({ text: '', options: toRunOptions(base) });
     runs.forEach((r, k) => {
       const options = { ...r.options, ...pOpts };
@@ -743,8 +745,11 @@ const TRANSITION_XML = {
   flip: '<p:fade thruBlk="1"/>',
 };
 
-/** A paragraph's a:pPr with its extras (see paraTab) written in, in the order PowerPoint requires. */
-function paraWithExtras(pPr) {
+/**
+ * A paragraph's a:pPr with its extras (see paraTab) written in, in the order
+ * PowerPoint requires; `found` gets the extras.
+ */
+function paraWithExtras(pPr, found = {}) {
   const marker = /<a:tabLst><a:tab pos="\d+" algn="x-ls-([0-9a-f]+)"\/><\/a:tabLst>/.exec(pPr);
   if (!marker) return pPr;
   pPr = pPr.replace(marker[0], '');
@@ -754,6 +759,7 @@ function paraWithExtras(pPr) {
   } catch {
     return pPr;
   }
+  found.extras = x;
   const m = /^<a:pPr\b([^>]*?)\/?>([\s\S]*?)(?:<\/a:pPr>)?$/.exec(pPr);
   if (!m) return pPr;
   let [, attrs, inner] = m;
@@ -799,11 +805,16 @@ export function fixParagraphs(slideXml) {
   slideXml = fixRuns(slideXml);
   return slideXml.replace(/<a:p>([\s\S]*?)<\/a:p>/g, (para, inner) => {
     let first = true;
-    const body = inner.replace(/<a:pPr\b[^>]*\/>|<a:pPr\b[^>]*>[\s\S]*?<\/a:pPr>/g, (pPr, at) => {
+    const found = {};
+    let body = inner.replace(/<a:pPr\b[^>]*\/>|<a:pPr\b[^>]*>[\s\S]*?<\/a:pPr>/g, (pPr, at) => {
       const keep = first && at === 0;
       first = false;
-      return keep ? paraWithExtras(pPr) : '';
+      return keep ? paraWithExtras(pPr, found) : '';
     });
+    const endSize = found.extras?.endSize;
+    if (Number.isFinite(endSize)) {
+      body = body.replace(/<a:endParaRPr\b[^>]*>/, (tag) => tag.replace(/ sz="\d+"/, '').replace('<a:endParaRPr', `<a:endParaRPr sz="${Math.round(Math.max(1, Math.min(4000, endSize)) * 100)}"`));
+    }
     return `<a:p>${body}</a:p>`;
   });
 }

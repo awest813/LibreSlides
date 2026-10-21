@@ -302,6 +302,13 @@ describe('PowerPoint paragraphs, bullets and lists', () => {
     expect(back.style).toMatchObject({ lineHeight: 1.2, spacing: 0.3 });
   });
 
+  it('makes empty paragraphs as tall as their end mark\'s text, and keeps them so', async () => {
+    const el = await readBody(`${para('', 'Above')}<a:p><a:endParaRPr lang="en-US" sz="800"/></a:p>${para('', 'Below')}`);
+    expect(el.text).toBe('<p>Above</p><p style="font-size: 8px"><br></p><p>Below</p>');
+    expect(await slideXml(deckWith(el))).toMatch(/<a:p><a:pPr[^>]*>[\s\S]*?<\/a:pPr><a:endParaRPr sz="800" lang="en-US"/);
+    expect((await roundTrip(deckWith(el))).slides[0].elements[0].text).toBe(el.text);
+  });
+
   it('shrinks line spacing and the space between paragraphs as PowerPoint shrank them', async () => {
     const paras = para('<a:pPr><a:spcBef><a:spcPts val="1000"/></a:spcBef></a:pPr>', 'One') + para('<a:pPr><a:spcBef><a:spcPts val="1000"/></a:spcBef></a:pPr>', 'Two');
     const plain = await readBody(paras);

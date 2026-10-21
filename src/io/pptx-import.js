@@ -247,7 +247,9 @@ function textBody(txBody, ctx, { chain = [], defaults = {}, base: fixedBase = nu
       } else if (r.localName === 'br') runs.push({ br: true });
     }
     const first = runs.find((r) => !r.br);
-    return { lvl, props, runs, first, size: first?.props.size || props.run.size || defaults.size || 18 };
+    // An empty paragraph is as tall as its end mark's text (often a small spacer).
+    const end = first ? null : runProps(kid(p, 'endParaRPr'), ctx).size;
+    return { lvl, props, runs, first, size: first?.props.size || end || props.run.size || defaults.size || 18, end };
   });
   // Alignment shared by every paragraph belongs to the box, not to each paragraph.
   const aligns = paras.map((p) => p.props.align || null);
@@ -281,7 +283,7 @@ function textBody(txBody, ctx, { chain = [], defaults = {}, base: fixedBase = nu
   const px = (v) => `${round1(v)}px`;
   const attrs = (dir, css) => `${dir}${css.length ? ` style="${css.join('; ')}"` : ''}`;
   paras.forEach((para, i) => {
-    const { lvl, props, runs, first } = para;
+    const { lvl, props, runs, first, end } = para;
     const bullet = first && (props.bullet === 'ul' || props.bullet === 'ol') ? props.bullet : null;
     const marL = props.marL || 0;
     const indent = props.indent || 0;
@@ -302,7 +304,10 @@ function textBody(txBody, ctx, { chain = [], defaults = {}, base: fixedBase = nu
       closeTo(lvl);
       const top = stack[stack.length - 1];
       const from = top ? top.start : 0;
-      css.push(...gapCss(top ? top.size : baseSize));
+      const inSize = top ? top.size : baseSize;
+      const ownSize = end && Math.abs(end - inSize) > 0.4 ? end : null;
+      css.push(...gapCss(ownSize || inSize));
+      if (ownSize) css.push(`font-size: ${px(ownSize)}`);
       if (Math.abs(marL - from) > 0.5) css.push(`margin-inline-start: ${px(marL - from)}`);
       if (Math.abs(indent) > 0.5) css.push(`text-indent: ${px(indent)}`);
       out.push(`<p${attrs(dir, css)}>${inner}</p>`);
