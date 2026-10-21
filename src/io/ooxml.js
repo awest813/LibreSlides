@@ -122,6 +122,13 @@ function mapLinear(hex, fn) {
     .join('');
 }
 
+/** "#rrggbb" tinted (towards white) or shaded (towards black), `amount` (0…1) being how much of the colour is kept, as DrawingML's tint and shade do. */
+export function tintShade(color, kind, amount) {
+  const hex = String(color || '').replace(/^#/, '');
+  if (!/^[0-9a-f]{6}$/i.test(hex)) return color;
+  return `#${kind === 'tint' ? mapLinear(hex, (x) => x * amount + (1 - amount)) : mapLinear(hex, (x) => x * amount)}`;
+}
+
 // Colour changes that work on hue (0), saturation (1) or luminance (2).
 const HSL_MODS = {
   hueMod: [0, (x, v) => x * v], hueOff: [0, (x, v) => x + v],

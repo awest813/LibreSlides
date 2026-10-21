@@ -300,6 +300,7 @@ export function sanitizeChart(chart) {
       };
       if (safeColor(s.color)) ser.color = safeColor(s.color);
       if (Array.isArray(s.pointColors)) ser.pointColors = s.pointColors.slice(0, CHART_LIMITS.points).map((p) => safeColor(p) || null);
+      if (Array.isArray(s.sizes)) ser.sizes = s.sizes.slice(0, CHART_LIMITS.points).map((v) => (typeof v === 'number' && Number.isFinite(v) ? v : null));
       if (['column', 'line', 'area'].includes(s.kind)) ser.kind = s.kind;
       if (s.secondary === true) ser.secondary = true;
       return ser;
@@ -309,7 +310,8 @@ export function sanitizeChart(chart) {
   };
   if (['clustered', 'stacked', 'percent'].includes(c.grouping)) out.grouping = c.grouping;
   if (typeof c.markers === 'boolean' && (c.markers || c.kind === 'scatter')) out.markers = c.markers;
-  for (const key of ['lines', 'smooth']) if (c[key] === true) out[key] = true;
+  for (const key of ['lines', 'smooth', 'filled']) if (c[key] === true) out[key] = true;
+  if (Number.isFinite(c.lineWidth) && c.lineWidth > 0) out.lineWidth = Math.min(20, c.lineWidth);
   for (const key of ['numberFormat', 'labelFormat']) if (chartFormat(c[key])) out[key] = c[key];
   if (Array.isArray(c.labelContent)) {
     const parts = LABEL_PARTS.filter((p) => c.labelContent.includes(p));

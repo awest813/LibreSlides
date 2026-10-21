@@ -60,6 +60,12 @@ export const onSecondaryAxis = (chart, k) => COMBO_KINDS.includes(chart.kind) &&
 export const scatterLines = (chart) => chart.lines === true;
 export const showsMarkers = (chart) => (chart.kind === 'scatter' ? chart.markers !== false : chart.markers === true);
 
+/** How wide a chart's lines are drawn (points): its own width, else PowerPoint's 2.25. */
+export const lineWidthOf = (chart) => (Number.isFinite(chart.lineWidth) && chart.lineWidth > 0 ? Math.min(20, chart.lineWidth) : 2.25);
+
+/** Whether a chart's categories are numbers along a value axis (scatter and bubble charts). */
+export const xyChart = (chart) => chart.kind === 'scatter' || chart.kind === 'bubble';
+
 // ------------------------------------------------------------------ numbers
 
 const numberFormats = new Map();
@@ -239,10 +245,10 @@ function layersOf(chart, n) {
     if (!byKey.has(key)) byKey.set(key, { kind, secondary, idx: [] });
     byKey.get(key).idx.push(k);
   });
-  const order = ['area', 'column', 'bar', 'line', 'scatter'];
+  const order = ['area', 'column', 'bar', 'line', 'scatter', 'bubble'];
   const stacking = chart.grouping === 'stacked' || chart.grouping === 'percent';
   return [...byKey.values()].sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind)).map((layer) => {
-    const stacked = stacking && layer.kind === chart.kind && layer.kind !== 'scatter';
+    const stacked = stacking && layer.kind === chart.kind && !['scatter', 'bubble', 'radar'].includes(layer.kind);
     const percent = stacked && chart.grouping === 'percent';
     const segs = segments(layer.idx.map((k) => series[k]), n, { stacked, percent, separateSigns: layer.kind === 'column' || layer.kind === 'bar' });
     return { ...layer, stacked, percent, segs };
@@ -254,7 +260,7 @@ function layersRange(layers) {
   let lo = Infinity;
   let hi = -Infinity;
   for (const l of layers) {
-    const [a, b] = valueRange(l.segs, { zero: l.kind !== 'line' && l.kind !== 'scatter' });
+    const [a, b] = valueRange(l.segs, { zero: !['line', 'scatter', 'bubble', 'radar'].includes(l.kind) });
     lo = Math.min(lo, a);
     hi = Math.max(hi, b);
   }
@@ -271,6 +277,8 @@ function legendEntries(chart, theme) {
   const markOf = (k) => {
     const own = seriesKind(chart, k);
     if (own === 'scatter') return scatterLines(chart) && !showsMarkers(chart) ? 'line' : 'dot';
+    if (own === 'bubble') return 'dot';
+    if (own === 'radar') return chart.filled ? 'box' : 'line';
     return own === 'line' ? 'line' : 'box';
   };
   return (chart.series || []).map((s, i) => ({ name: s.name || `Series ${i + 1}`, color: seriesColor(chart, i, theme), mark: markOf(i) }));
@@ -415,6 +423,35 @@ function drawAxisTitles(g, { left, bottom, right }, area, size, textOpts) {
   return { x, y, w, h };
 }
 
+/** `s` broken at spaces into lines no wider than `width` (null if a word is wider, or it takes more than `most` lines). */
+function wrap(s, width, size, most = 2) {
+  const lines = [];
+  for (const word of String(s).split(/\s+/).filter(Boolean)) {
+    if (textWidth(word, size) > width) return null;
+    const last = lines[lines.length - 1];
+    if (last != null && textWidth(`${last} ${word}`, size) <= width) lines[lines.length - 1] = `${last} ${word}`;
+    else lines.push(word);
+  }
+  return lines.length <= most ? lines.join('\n') : null;
+}
+
+/**
+ * How category labels go under a plot whose categories are `slot` wide:
+ * { lines (each label's text, null for one left out), turned, height }.
+ * As PowerPoint does, they're wrapped before they're turned, and only left
+ * out when even turned they'd run into each other.
+ */
+function categoryLayout(cats, slot, size, areaH) {
+  const room = slot - size * 0.3;
+  const widest = Math.max(0, ...cats.map((c) => textWidth(c, size)));
+  if (widest <= room) return { lines: cats, height: size * 1.7 };
+  const wrapped = cats.map((c) => wrap(c, room, size));
+  if (wrapped.every((w) => w != null)) return { lines: wrapped, height: size * 2.9 };
+  const height = Math.min(areaH * 0.45, widest * 0.71 + size * 1.2);
+  const step = Math.max(1, Math.ceil((size * 1.3) / Math.max(1, slot)));
+  return { lines: cats.map((c, i) => (i % step ? null : fit(c, (height - size) / 0.71, size))), turned: true, height };
+}
+
 function drawAxes(g, chart, area, size, theme, textOpts) {
   const kind = chart.kind;
   const n = categoryCount(chart);
@@ -445,8 +482,8 @@ function drawAxes(g, chart, area, size, theme, textOpts) {
   g.append(grid, plotG, labelsG);
   const valueText = (v, scale, pct = percent, fmt = chart.numberFormat) => tickText(fmt, v, scale, pct);
 
-  // Scatter charts have numbers along the bottom too: their categories are X values.
-  const xs = kind === 'scatter' ? (chart.categories || []).map((c, i) => (isNum(parseFloat(c)) ? parseFloat(c) : i + 1)) : null;
+  // Scatter and bubble charts have numbers along the bottom too: their categories are X values.
+  const xs = xyChart(chart) ? (chart.categories || []).map((c, i) => (isNum(parseFloat(c)) ? parseFloat(c) : i + 1)) : null;
   while (xs && xs.length < n) xs.push(xs.length + 1);
   const cats = Array.from({ length: n }, (_, i) => String(chart.categories?.[i] ?? ''));
 
@@ -469,7 +506,10 @@ function drawAxes(g, chart, area, size, theme, textOpts) {
     cats.forEach((c, i) => {
       if (i % step) return;
       // The first category is at the bottom, as in PowerPoint.
-      labelsG.append(label(plot.x - size * 0.4, plot.y + plot.h - (i + 0.5) * slot, fit(c, catW - size * 0.6, size), { size, anchor: 'end', ...muted }));
+      // Too long for the room: on two lines if there's height for them, else cut short.
+      const room = catW - size * 0.6;
+      const text = textWidth(c, size) <= room ? c : (slot * step >= size * 2.4 && wrap(c, room, size)) || fit(c, room, size);
+      labelsG.append(label(plot.x - size * 0.4, plot.y + plot.h - (i + 0.5) * slot, text, { size, anchor: 'end', ...muted }));
     });
     for (const layer of main) drawBars(plotG, labelsG, chart, layer, { n, slot, horizontal, theme, size, textOpts, toPx: X, place: (i) => plot.y + plot.h - (i + 1) * slot });
     return;
@@ -484,7 +524,10 @@ function drawAxes(g, chart, area, size, theme, textOpts) {
   const secondFormat = secondAxis.numberFormat || 'General';
   const probe2 = second.length ? axisScale(smin, smax, Math.max(2, Math.floor(area.h / (size * 2.6))), secondAxis, percent2 ? 100 : 1) : null;
   const tickW2 = probe2 ? Math.max(...ticksOf(probe2).map((t) => textWidth(valueText(t, probe2, percent2, secondFormat), size))) + size * 0.6 : size * 0.5;
-  const catH = size * 1.7;
+  // Category labels: on one line where they fit, else wrapped onto two, else turned, else only some of them.
+  const edgeToEdge = layers.every((l) => l.kind === 'area') && n > 1;
+  const cats_ = xs ? null : categoryLayout(cats, (area.w - tickW - tickW2) / (edgeToEdge ? Math.max(1, n - 1) : n), size, area.h);
+  const catH = cats_?.height ?? size * 1.7;
   const plot = { x: area.x + tickW, y: area.y + size * 0.5, w: area.w - tickW - tickW2, h: area.h - catH - size * 0.5 };
   if (plot.w <= 0 || plot.h <= 0) return;
   const scale = axisScale(vmin, vmax, ticksFor(plot.h), valueAxis, percent ? 100 : 1);
@@ -509,20 +552,24 @@ function drawAxes(g, chart, area, size, theme, textOpts) {
     const xr = niceScale(xmin, xmax, Math.max(2, Math.min(10, Math.floor(plot.w / (size * 5)))));
     const X = (v) => plot.x + ((v - xr.min) / (xr.max - xr.min)) * plot.w;
     for (const t of ticksOf(xr)) labelsG.append(label(X(t), plot.y + plot.h + size * 0.9, formatNumber(t, xr.digits), { size, ...muted }));
-    for (const layer of main) drawLines(plotG, labelsG, chart, layer, { cx: (i) => X(xs[i]), Y, theme, size, textOpts });
+    for (const layer of main) {
+      if (layer.kind === 'bubble') drawBubbles(plotG, labelsG, chart, layer, { cx: (i) => X(xs[i]), Y, theme, size, plot });
+      else drawLines(plotG, labelsG, chart, layer, { cx: (i) => X(xs[i]), Y, theme, size, textOpts });
+    }
     return;
   }
 
   // Categories along the bottom: in the middle of their slot, or on the
   // gridlines for area charts (which reach from edge to edge).
-  const edgeToEdge = layers.every((l) => l.kind === 'area') && n > 1;
   const slot = plot.w / (edgeToEdge ? n - 1 : n);
   const cx = (i) => plot.x + (edgeToEdge ? i * slot : (i + 0.5) * slot);
-  const widest = Math.max(...cats.map((c) => textWidth(c, size)));
-  const step = Math.max(1, Math.ceil((Math.min(widest, size * 12) + size * 0.6) / slot));
-  cats.forEach((c, i) => {
-    if (i % step) return;
-    labelsG.append(label(cx(i), plot.y + plot.h + size * 0.9, fit(c, slot * step - size * 0.3, size), { size, ...muted }));
+  cats_.lines.forEach((text, i) => {
+    if (text == null) return;
+    if (cats_.turned) {
+      const t = label(0, 0, text, { size, anchor: 'end', ...muted });
+      t.setAttribute('transform', `translate(${r1(cx(i) + size * 0.3)},${r1(plot.y + plot.h + size * 0.6)}) rotate(-45)`);
+      labelsG.append(t);
+    } else labelsG.append(label(cx(i), plot.y + plot.h + size * 0.9 + (text.includes('\n') ? size * 0.6 : 0), text, { size, ...muted }));
   });
 
   for (const layer of layers) {
@@ -617,7 +664,7 @@ function drawLines(g, labels, chart, layer, { cx, Y, theme, size, textOpts }) {
       else run.push([cx(i), Y(seg.to), seg.value, i]);
     });
     for (const pts of runs) {
-      if (joined && pts.length > 1) g.append(svgEl('path', { class: 'chart-line', d: linePath(pts, chart.smooth === true), fill: 'none', stroke: color, 'stroke-width': 2.25, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+      if (joined && pts.length > 1) g.append(svgEl('path', { class: 'chart-line', d: linePath(pts, chart.smooth === true), fill: 'none', stroke: color, 'stroke-width': lineWidthOf(chart), 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
       for (const [x, y, v, i] of pts) {
         if (markers || (!scatter && pts.length === 1)) g.append(svgEl('circle', { class: 'chart-marker', cx: r1(x), cy: r1(y), r: r1(Math.max(2, size * 0.3)), fill: color }));
         if (chart.dataLabels) labels.append(label(x + at[0] * size, y + at[1] * size, labelText(chart, v, chart.categories?.[i]), { size, anchor: at[2], cls: 'chart-label', ...textOpts }));
@@ -645,8 +692,89 @@ function drawAreas(g, labels, chart, layer, { cx, Y, y0, theme, size, textOpts }
 
 // ------------------------------------------------------------------ the chart
 
-/** The SVG for a chart element. */
-export function renderChart(el, ctx) {
+/**
+ * Bubbles: each point a circle whose area is its size, the largest a quarter
+ * of the plot's smaller side across (PowerPoint's bubble scale of 100%).
+ */
+function drawBubbles(g, labels, chart, layer, { cx, Y, theme, size, plot }) {
+  const biggest = Math.max(0, ...layer.idx.flatMap((k) => (chart.series[k].sizes || []).map((v) => (isNum(v) ? Math.abs(v) : 0))));
+  const maxR = Math.min(plot.w, plot.h) / 8;
+  layer.idx.forEach((k, j) => {
+    const color = seriesColor(chart, k, theme);
+    const sizes = chart.series[k].sizes || [];
+    layer.segs[j].forEach((seg, i) => {
+      if (!seg || seg.value == null) return;
+      const v = isNum(sizes[i]) ? Math.abs(sizes[i]) : 0;
+      const r = biggest ? Math.sqrt(v / biggest) * maxR : maxR / 2;
+      if (r <= 0) return;
+      const [x, y] = [cx(i), Y(seg.to)];
+      g.append(svgEl('circle', { class: 'chart-bubble', cx: r1(x), cy: r1(y), r: r1(r), fill: color, 'fill-opacity': 0.85, stroke: color, 'stroke-width': 0.75 }));
+      if (chart.dataLabels) labels.append(label(x, y, labelText(chart, seg.value, chart.categories?.[i]), { size, cls: 'chart-label', fill: contrastText(color) }));
+    });
+  });
+}
+
+/**
+ * Radar charts: a spoke per category from twelve o'clock round clockwise,
+ * the value scale as a web of rings, and each series a closed line (or a
+ * filled shape) through its points.
+ */
+function drawRadar(g, chart, area, size, theme, textOpts) {
+  const n = categoryCount(chart);
+  const series = chart.series || [];
+  if (!n || !series.length || area.w <= size * 4 || area.h <= size * 4) return;
+  const cats = Array.from({ length: n }, (_, i) => String(chart.categories?.[i] ?? ''));
+  const labelW = Math.min(area.w / 4, Math.max(...cats.map((c) => textWidth(c, size)))) + size * 0.5;
+  const R = Math.max(size, Math.min((area.w - labelW * 2) / 2, (area.h - size * 3) / 2));
+  const cx = area.x + area.w / 2;
+  const cy = area.y + area.h / 2;
+  const values = series.flatMap((s) => (s.values || []).filter(isNum));
+  const lo = Math.min(0, ...values);
+  const hi = Math.max(lo + 1e-9, ...values);
+  const scale = axisScale(lo, hi, Math.max(2, Math.min(8, Math.floor(R / (size * 1.6)))), chart.valueAxis || {});
+  const angle = (i) => -Math.PI / 2 + (i / n) * Math.PI * 2;
+  const at = (i, v) => {
+    const r = ((Math.min(scale.max, Math.max(scale.min, v)) - scale.min) / (scale.max - scale.min || 1)) * R;
+    return [cx + r * Math.cos(angle(i)), cy + r * Math.sin(angle(i))];
+  };
+  const ink = textOpts.fill;
+  const grid = svgEl('g', { class: 'chart-grid', stroke: ink, 'stroke-opacity': 0.18, 'stroke-width': 0.75, fill: 'none' });
+  const plotG = svgEl('g', { class: 'chart-plot' });
+  const labelsG = svgEl('g', { class: 'chart-labels' });
+  g.append(grid, plotG, labelsG);
+  const ring = (v) => Array.from({ length: n }, (_, i) => at(i, v).map(r1).join(',')).join(' ');
+  if (chart.valueAxis?.gridlines !== false) for (const t of ticksOf(scale)) if (t > scale.min) grid.append(svgEl('polygon', { points: ring(t) }));
+  for (let i = 0; i < n; i++) {
+    const [x, y] = at(i, scale.max);
+    grid.append(svgEl('line', { x1: r1(cx), y1: r1(cy), x2: r1(x), y2: r1(y), 'stroke-opacity': 0.45 }));
+    const c = Math.cos(angle(i));
+    const s = Math.sin(angle(i));
+    labelsG.append(label(cx + (R + size * 0.6) * c, cy + (R + size * 0.8) * s, fit(cats[i], labelW, size), { size, anchor: Math.abs(c) < 0.2 ? 'middle' : c > 0 ? 'start' : 'end', ...textOpts, opacity: 0.75 }));
+  }
+  for (const t of ticksOf(scale)) {
+    const [, y] = at(0, t);
+    labelsG.append(label(cx - size * 0.3, y, tickText(chart.numberFormat, t, scale, false), { size: size * 0.9, anchor: 'end', ...textOpts, opacity: 0.75 }));
+  }
+  const markers = showsMarkers(chart);
+  series.forEach((s, k) => {
+    const color = seriesColor(chart, k, theme);
+    const pts = [];
+    for (let i = 0; i < n; i++) if (isNum(s.values?.[i])) pts.push([...at(i, s.values[i]), s.values[i], i]);
+    if (pts.length > 1) {
+      const d = `M${pts.map(([x, y]) => `${r1(x)},${r1(y)}`).join('L')}${pts.length === n ? 'Z' : ''}`;
+      plotG.append(svgEl('path', chart.filled
+        ? { class: 'chart-area', d, fill: color, 'fill-opacity': 0.8, stroke: color, 'stroke-width': 0.75 }
+        : { class: 'chart-line', d, fill: 'none', stroke: color, 'stroke-width': lineWidthOf(chart), 'stroke-linejoin': 'round' }));
+    }
+    for (const [x, y, v, i] of pts) {
+      if (markers && !chart.filled) plotG.append(svgEl('circle', { class: 'chart-marker', cx: r1(x), cy: r1(y), r: r1(Math.max(2, size * 0.3)), fill: color }));
+      if (chart.dataLabels) labelsG.append(label(x, y - size * 0.8, labelText(chart, v, cats[i]), { size, cls: 'chart-label', ...textOpts }));
+    }
+  });
+}
+
+/** The SVG for a chart element (`picture`: the URL of a picture filling its chart area). */
+export function renderChart(el, ctx, picture = null) {
   const { theme } = ctx;
   const W = Math.max(1, el.w || 1);
   const H = Math.max(1, el.h || 1);
@@ -662,9 +790,10 @@ export function renderChart(el, ctx) {
   // The chart area's background and border.
   const fill = resolveColor(el.fill, theme, 'transparent');
   const stroke = el.stroke?.width && el.stroke.color && el.stroke.color !== 'none' ? resolveColor(el.stroke.color, theme) : null;
+  if (picture) svg.append(svgEl('image', { href: picture, x: 0, y: 0, width: W, height: H, preserveAspectRatio: 'none' }));
   if (fill !== 'transparent' || stroke) {
     const sw = stroke ? el.stroke.width : 0;
-    svg.append(svgEl('rect', { x: sw / 2, y: sw / 2, width: Math.max(0, W - sw), height: Math.max(0, H - sw), fill: fill === 'transparent' ? 'none' : fill, stroke: stroke || 'none', 'stroke-width': sw || null }));
+    svg.append(svgEl('rect', { x: sw / 2, y: sw / 2, width: Math.max(0, W - sw), height: Math.max(0, H - sw), fill: fill === 'transparent' || picture ? 'none' : fill, stroke: stroke || 'none', 'stroke-width': sw || null }));
   }
 
   const pad = size * 0.6;
@@ -678,6 +807,7 @@ export function renderChart(el, ctx) {
   svg.append(g);
   area = drawLegend(g, legendEntries(chart, theme), chart.legend || 'none', area, size, { fill: ink, opacity: 0.85 });
   if (chart.kind === 'pie' || chart.kind === 'doughnut') drawPie(g, chart, area, size, theme, textOpts);
+  else if (chart.kind === 'radar') drawRadar(g, chart, area, size, theme, textOpts);
   else drawAxes(g, chart, area, size, theme, textOpts);
   return svg;
 }

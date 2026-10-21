@@ -1,8 +1,8 @@
 import { uid, CHART_KINDS } from '../model/deck.js';
 import { resolveColor, backgroundBaseColor } from '../model/themes.js';
-import { seriesColor, pointColor, seriesKind, onSecondaryAxis, labelParts, showsMarkers, COMBO_KINDS } from '../render/chart.js';
+import { seriesColor, pointColor, seriesKind, onSecondaryAxis, labelParts, showsMarkers, lineWidthOf, COMBO_KINDS } from '../render/chart.js';
 import { formatValue, isGeneral, isPercentFormat } from '../render/number-format.js';
-import { EMU_PER_PT, kids, kid, path, desc, attr, rid, colorOf, blend, xmlText } from './ooxml.js';
+import { EMU_PER_PT, kids, kid, path, desc, attr, rid, colorOf, blend, xmlText, contentOf, tintShade, addMediaTo } from './ooxml.js';
 
 /**
  * PowerPoint charts (c:chartSpace parts) to and from LibreSlides chart
@@ -20,13 +20,16 @@ const isOn = (el) => !!el && !['0', 'false'].includes(attr(el, 'val'));
 
 // ------------------------------------------------------------------ reading
 
-/** Chart kinds by the plot element that holds them; 3-D charts are read as flat ones. */
+/**
+ * Chart kinds by the plot element that holds them; 3-D charts are read as
+ * flat ones, and stock and surface charts (which LibreSlides doesn't draw)
+ * as lines through their series.
+ */
 const PLOTS = {
   barChart: 'column', bar3DChart: 'column', lineChart: 'line', line3DChart: 'line', areaChart: 'area', area3DChart: 'area',
   pieChart: 'pie', pie3DChart: 'pie', ofPieChart: 'pie', doughnutChart: 'doughnut', scatterChart: 'scatter',
+  radarChart: 'radar', bubbleChart: 'bubble', stockChart: 'line', surfaceChart: 'line', surface3DChart: 'line',
 };
-// Charts LibreSlides can't draw (radar, bubble, stock, surface): left out of imports.
-const OTHER_PLOTS = new Set(['radarChart', 'bubbleChart', 'stockChart', 'surfaceChart', 'surface3DChart']);
 const GROUPING = { stacked: 'stacked', percentStacked: 'percent' };
 const LEGEND = { r: 'right', tr: 'right', l: 'left', t: 'top', b: 'bottom' };
 const LABEL_POSITIONS = new Set(['outEnd', 'inEnd', 'ctr', 'inBase', 'bestFit', 't', 'b', 'l', 'r']);
@@ -94,18 +97,52 @@ function fillColor(spPr, scheme) {
 }
 const lineColor = (spPr, scheme) => colorOf(kid(kid(spPr, 'ln'), 'solidFill'), scheme);
 
-/** The colour PowerPoint gives a series (or slice) that doesn't set one: the deck's accents in turn. */
-const accent = (i, scheme) => (scheme[`accent${(i % 6) + 1}`] ? `#${scheme[`accent${(i % 6) + 1}`].toLowerCase()}` : null);
+/** The chart's style (c:style, 1 to 48; Office 2010 writes 101 to 148 as c14:style too), PowerPoint's 2 when it has none. */
+export function chartStyleOf(space) {
+  const el = contentOf(space).find((c) => c.localName === 'style');
+  const v = +attr(el, 'val');
+  const n = v > 100 ? v - 100 : v;
+  return n >= 1 && n <= 48 ? Math.round(n) : 2;
+}
 
-function seriesColorOf(ser, kind, i, scheme) {
+// The greys of styles 1, 9, 17… and of style 41 (dark backgrounds), as tints of dark 1.
+const GREYS = [88500, 55000, 78000, 92500, 70000, 30000];
+const DARK_GREYS = [5000, 55000, 78000, 15000, 70000, 30000];
+
+/**
+ * The colours PowerPoint gives series (or slices) that don't set their own,
+ * for a chart style: each row of eight styles has greys, the six accents,
+ * then shades of one accent each. Each time the colours come round again
+ * (and for each series of a one-colour style) they're shaded darker or
+ * tinted lighter, evenly between -70% and +70% (as LibreOffice works it out).
+ */
+export function stylePalette(style, scheme, count) {
+  const n = (style - 1) % 8;
+  const color = (name) => (scheme[name] ? `#${scheme[name].toLowerCase()}` : null);
+  let pattern;
+  if (n === 0) pattern = (style === 41 ? DARK_GREYS : GREYS).map((t) => tintShade(color('dk1') || '#000000', 'tint', t / 100000));
+  else if (n === 1) pattern = [1, 2, 3, 4, 5, 6].map((k) => color(`accent${k}`));
+  else pattern = [color(`accent${n - 1}`)];
+  if (pattern.some((c) => !c)) return [];
+  const cycles = Math.max(1, Math.ceil(count / pattern.length));
+  return Array.from({ length: count }, (_, i) => {
+    const amount = ((Math.floor(i / pattern.length) + 1) / (cycles + 1)) * 1.4 - 0.7;
+    const base = pattern[i % pattern.length];
+    if (Math.abs(amount) < 1e-9) return base;
+    return amount < 0 ? tintShade(base, 'shade', 1 + amount) : tintShade(base, 'tint', 1 - amount);
+  });
+}
+
+function seriesColorOf(ser, kind, i, scheme, palette) {
   const spPr = kid(ser, 'spPr');
   const marker = kid(kid(ser, 'marker'), 'spPr');
   let color;
-  if (kind === 'line') color = lineColor(spPr, scheme) || fillColor(marker, scheme);
+  if (kind === 'line' || kind === 'radar') color = lineColor(spPr, scheme) || fillColor(marker, scheme) || (kind === 'radar' ? fillColor(spPr, scheme) : null);
   else if (kind === 'scatter') color = fillColor(marker, scheme) || lineColor(spPr, scheme) || fillColor(spPr, scheme);
   else color = fillColor(spPr, scheme);
-  const idx = +attr(kid(ser, 'idx'), 'val');
-  return color || accent(Number.isFinite(idx) ? idx : i, scheme);
+  const idx = kid(ser, 'idx') ? +attr(kid(ser, 'idx'), 'val') : NaN;
+  const k = Number.isFinite(idx) && idx >= 0 && idx < palette.length ? idx : i;
+  return color || palette[k % Math.max(1, palette.length)] || null;
 }
 
 /**
@@ -133,7 +170,7 @@ const axesById = (plotArea) => new Map(['valAx', 'catAx', 'dateAx', 'serAx'].fla
 function axesOf(plot, axes) {
   const own = kids(plot, 'axId').map((a) => axes.get(attr(a, 'val'))).filter(Boolean);
   const values = own.filter((a) => a.localName === 'valAx');
-  if (plot.localName === 'scatterChart') {
+  if (plot.localName === 'scatterChart' || plot.localName === 'bubbleChart') {
     const across = (a) => ['b', 't'].includes(attr(kid(a, 'axPos'), 'val'));
     return { val: values.find((a) => !across(a)) || values[1] || null, cat: values.find(across) || values[0] || null };
   }
@@ -176,18 +213,16 @@ function textStyleOf(space, chartEl, ctx) {
   return style;
 }
 
-/** Scatter series: one shared list of X values, with blanks where a series has no point. */
+/** Scatter (and bubble) series: one shared list of X values, with blanks where a series has no point. */
 function mergeScatter(list) {
   const same = list.every((s) => s.x.length === list[0].x.length && s.x.every((x, i) => x === list[0].x[i]));
-  if (same) return { categories: list[0].x.map((x) => (x == null ? '' : String(x))), values: list.map((s) => s.y) };
+  if (same) return { categories: list[0].x.map((x) => (x == null ? '' : String(x))), values: list.map((s) => s.y), sizes: list.map((s) => s.size) };
   const xs = [...new Set(list.flatMap((s) => s.x.filter(isNum)))].sort((a, b) => a - b).slice(0, MAX_POINTS);
-  return {
-    categories: xs.map(String),
-    values: list.map((s) => xs.map((x) => {
-      const i = s.x.lastIndexOf(x);
-      return i >= 0 ? s.y[i] ?? null : null;
-    })),
-  };
+  const at = (s, key) => xs.map((x) => {
+    const i = s.x.lastIndexOf(x);
+    return i >= 0 ? s[key]?.[i] ?? null : null;
+  });
+  return { categories: xs.map(String), values: list.map((s) => at(s, 'y')), sizes: list.map((s) => at(s, 'size')) };
 }
 
 const kindOf = (plot) => (PLOTS[plot.localName] === 'column' && attr(kid(plot, 'barDir'), 'val') === 'bar' ? 'bar' : PLOTS[plot.localName]);
@@ -212,9 +247,9 @@ function readScatterStyle(chart, plot, sers) {
 export function parseChart(space, ctx) {
   const chartEl = kid(space, 'chart');
   const plotArea = kid(chartEl, 'plotArea');
-  const plots = [...(plotArea?.children || [])].filter((c) => PLOTS[c.localName] || OTHER_PLOTS.has(c.localName));
+  const plots = [...(plotArea?.children || [])].filter((c) => PLOTS[c.localName]);
   const first = plots[0];
-  if (!first || !PLOTS[first.localName]) return null;
+  if (!first) return null;
   const kind = kindOf(first);
   const date1904 = isOn(kid(space, 'date1904'));
   const pie = kind === 'pie' || kind === 'doughnut';
@@ -228,17 +263,25 @@ export function parseChart(space, ctx) {
     return kids(p, 'ser').map((ser) => ({ ser, plot: p, kind: combo && kindOf(p) !== kind ? kindOf(p) : null, secondary: combo && !!val && val !== mainAxes.val }));
   });
   const chosen = (kind === 'pie' ? sers.slice(0, 1) : sers).slice(0, MAX_SERIES);
+  const style = chartStyleOf(space);
+  const palette = stylePalette(style, ctx.scheme, Math.max(chosen.length, 1));
 
   let categories = [];
   const series = chosen.map(({ ser, kind: own }, i) => ({
     name: textOf(kid(ser, 'tx')) || `Series ${i + 1}`,
     values: pointsOf(kid(ser, 'val') || kid(ser, 'yVal')).values.map(toNumber),
-    color: seriesColorOf(ser, own || kind, i, ctx.scheme),
+    color: seriesColorOf(ser, own || kind, i, ctx.scheme, palette),
   }));
-  if (kind === 'scatter') {
-    const merged = mergeScatter(chosen.map(({ ser }, i) => ({ x: pointsOf(kid(ser, 'xVal')).values.map(toNumber), y: series[i].values })));
+  if (kind === 'scatter' || kind === 'bubble') {
+    const merged = mergeScatter(chosen.map(({ ser }, i) => ({
+      x: pointsOf(kid(ser, 'xVal')).values.map(toNumber), y: series[i].values,
+      size: kind === 'bubble' ? pointsOf(kid(ser, 'bubbleSize')).values.map(toNumber) : null,
+    })));
     categories = merged.categories;
-    series.forEach((s, i) => { s.values = merged.values[i]; });
+    series.forEach((s, i) => {
+      s.values = merged.values[i];
+      if (kind === 'bubble') s.sizes = merged.sizes[i] || [];
+    });
   } else {
     const withCats = chosen.find(({ ser }) => kid(ser, 'cat'));
     categories = withCats ? categoryLabels(kid(withCats.ser, 'cat'), date1904, mainAxes.cat) : [];
@@ -252,6 +295,7 @@ export function parseChart(space, ctx) {
   while (categories.length < n) categories.push(String(categories.length + 1));
   for (const s of series) {
     s.values = Array.from({ length: n }, (_, i) => (isNum(s.values[i]) ? s.values[i] : null));
+    if (s.sizes) s.sizes = Array.from({ length: n }, (_, i) => (isNum(s.sizes[i]) ? s.sizes[i] : null));
     if (!s.color) delete s.color;
   }
 
@@ -264,7 +308,8 @@ export function parseChart(space, ctx) {
     const own = {};
     for (const dPt of kids(ser, 'dPt')) own[+attr(kid(dPt, 'idx'), 'val')] = fillColor(kid(dPt, 'spPr'), ctx.scheme);
     const plain = fillColor(kid(ser, 'spPr'), ctx.scheme);
-    series[0].pointColors = categories.map((_, i) => own[i] || (vary ? accent(i, ctx.scheme) : plain) || accent(i, ctx.scheme) || '#4472c4');
+    const points = stylePalette(style, ctx.scheme, categories.length);
+    series[0].pointColors = categories.map((_, i) => own[i] || (vary ? points[i] : plain) || points[i] || '#4472c4');
     for (const s of series) delete s.color;
   }
   const hole = toNumber(attr(kid(first, 'holeSize'), 'val'));
@@ -275,6 +320,18 @@ export function parseChart(space, ctx) {
   else if (kind === 'line') chart.markers = false;
   if (kind === 'scatter') readScatterStyle(chart, first, chosen.map(({ ser }) => ser));
   else if (chosen.some(({ ser }) => isOn(kid(ser, 'smooth')))) chart.smooth = true;
+  if (kind === 'radar') {
+    // Filled, or lines (marked unless the style or the series say not).
+    const radarStyle = attr(kid(first, 'radarStyle'), 'val') || 'marker';
+    if (radarStyle === 'filled') chart.filled = true;
+    chart.markers = radarStyle === 'marker' && attr(path(chosen[0]?.ser, 'marker', 'symbol'), 'val') !== 'none';
+  }
+  // A stock chart's prices are marked (their lines are usually hidden).
+  if (first.localName === 'stockChart') chart.markers = true;
+  // How wide lines are: their first series' own width (PowerPoint's default is 2.25pt).
+  const lined = chosen.find((s) => ['line', 'radar', 'scatter'].includes(s.kind || kind));
+  const lineW = +attr(path(lined?.ser, 'spPr', 'ln'), 'w');
+  if (lineW > 0 && Math.abs(lineW - 28575) > 600) chart.lineWidth = Math.round((lineW / EMU_PER_PT) * ctx.k * 100) / 100;
 
   // Columns and bars: their gap width and overlap (a stacked chart's bars always overlap).
   const bars = plots.find((p) => PLOTS[p.localName] === 'column');
@@ -323,7 +380,7 @@ export function parseChart(space, ctx) {
 }
 
 /** A chart graphic frame as a chart element, or null to leave it out. */
-export async function readChart({ pkg, node, rels, box, ctx }) {
+export async function readChart({ pkg, node, rels, box, ctx, deck }) {
   const rel = rels?.[rid(desc(node, 'chart')[0], 'id')];
   if (!box || !rel || rel.external) return null;
   const space = (await pkg.doc(rel.path))?.documentElement;
@@ -334,17 +391,25 @@ export async function readChart({ pkg, node, rels, box, ctx }) {
   const spPr = kid(space, 'spPr');
   const ln = kid(spPr, 'ln');
   const border = lineColor(spPr, ctx.scheme);
-  return {
+  const el = {
     id: uid(), type: 'chart', x: box.x, y: box.y, w: box.w, h: box.h, rot: 0, chart,
     fill: fillColor(spPr, ctx.scheme) || 'none',
     stroke: border ? { color: border, width: Math.round(((+attr(ln, 'w') || 9525) / EMU_PER_PT) * ctx.k * 10) / 10, dash: 'solid' } : { color: 'none', width: 1, dash: 'solid' },
     style: textStyleOf(space, kid(space, 'chart'), ctx),
   };
+  // A picture filling the chart area, stretched.
+  const blip = path(spPr, 'blipFill', 'blip');
+  if (blip && deck) {
+    const target = (await pkg.rels(rel.path))[rid(blip, 'embed')];
+    const data = target && !target.external ? await pkg.dataUrl(target.path) : null;
+    if (data) el.fillImage = { media: addMediaTo(deck, data) };
+  }
+  return el;
 }
 
 // ------------------------------------------------------------------ writing
 
-const TYPES = { column: 'bar', bar: 'bar', line: 'line', area: 'area', pie: 'pie', doughnut: 'doughnut', scatter: 'scatter' };
+const TYPES = { column: 'bar', bar: 'bar', line: 'line', area: 'area', pie: 'pie', doughnut: 'doughnut', scatter: 'scatter', bubble: 'bubble', radar: 'radar' };
 const LEGEND_POS = { right: 'r', left: 'l', top: 't', bottom: 'b' };
 const hex = (c) => (/^#[0-9a-f]{6}$/i.test(c || '') ? c.slice(1).toUpperCase() : null);
 
@@ -400,10 +465,11 @@ export function addChart(pptx, slide, el, theme, geom, objectName) {
 
   // A doughnut's outer rings are added to its XML afterwards (see finishCharts); the workbook has them all.
   let data = series.map((s, i) => ({ name: named(s, i), labels: categories, values: values(s) }));
-  if (kind === 'scatter') {
-    // The categories are the X values (numbered 1, 2, 3… where they aren't numbers).
+  if (kind === 'scatter' || kind === 'bubble') {
+    // The categories are the X values (numbered 1, 2, 3… where they aren't numbers); bubbles have sizes too.
     const xs = categories.map((c, i) => (Number.isFinite(parseFloat(c)) ? parseFloat(c) : i + 1));
-    data = [{ name: 'X', values: xs }, ...series.map((s, i) => ({ name: named(s, i), values: values(s) }))];
+    const sizes = (s) => categories.map((_, i) => (isNum(s.sizes?.[i]) ? s.sizes[i] : null));
+    data = [{ name: 'X', values: xs }, ...series.map((s, i) => ({ name: named(s, i), values: values(s), ...(kind === 'bubble' && { sizes: sizes(s) }) }))];
   }
   const colors = pie ? categories.map((_, i) => hex(pointColor(view, i, theme))) : series.map((_, i) => hex(seriesColor(view, i, theme)));
 
@@ -435,7 +501,7 @@ export function addChart(pptx, slide, el, theme, geom, objectName) {
     showLegend: !!LEGEND_POS[chart.legend], legendPos: LEGEND_POS[chart.legend] || 'r', legendFontFace: font, legendFontSize: size, legendColor: text,
     showValue: labels && parts.includes('value'), showPercent: pie && labels && parts.includes('percent'), showLabel: pie && labels && parts.includes('category'), showLeaderLines: false,
     dataLabelFormatCode: chart.labelFormat || format, dataLabelFontFace: font, dataLabelFontSize: size, dataLabelColor: text,
-    dataLabelPosition: labelSpot(kind === 'column' ? 'bar' : kind, chart.labelPosition),
+    dataLabelPosition: kind === 'radar' || kind === 'bubble' ? undefined : labelSpot(kind === 'column' ? 'bar' : kind, chart.labelPosition),
     catAxisLabelFontFace: font, catAxisLabelFontSize: size, catAxisLabelColor: text, catAxisLineColor: grid,
     showCatAxisTitle: !pie && !!catTitle, catAxisTitle: catTitle || undefined, catAxisTitleFontFace: font, catAxisTitleFontSize: size, catAxisTitleColor: text,
     valAxisLabelFontFace: font, valAxisLabelFontSize: size, valAxisLabelColor: text, valAxisLineShow: false,
@@ -443,9 +509,10 @@ export function addChart(pptx, slide, el, theme, geom, objectName) {
     valLabelFormatCode: xmlText(format),
     ...valueAxisOptions(chart.valueAxis, chart.valueAxis?.gridlines !== false, grid),
     valAxisTitleFontFace: font, valAxisTitleFontSize: size, valAxisTitleColor: text,
-    // Scatter charts have no vertical gridlines (as LibreSlides draws them).
-    catGridLine: kind === 'scatter' ? { style: 'none' } : undefined,
-    lineSize: kind === 'scatter' && !chart.lines ? 0 : 2.25,
+    // Scatter and bubble charts have no vertical gridlines (as LibreSlides draws them).
+    catGridLine: kind === 'scatter' || kind === 'bubble' ? { style: 'none' } : undefined,
+    lineSize: kind === 'scatter' && !chart.lines ? 0 : kind === 'bubble' ? 0.75 : lineWidthOf(chart),
+    radarStyle: chart.filled ? 'filled' : showsMarkers(view) ? 'marker' : 'standard',
     lineDataSymbol: showsMarkers(view) ? 'circle' : 'none',
     lineDataSymbolSize: 6,
     lineSmooth: chart.smooth === true,
@@ -455,7 +522,7 @@ export function addChart(pptx, slide, el, theme, geom, objectName) {
   };
 
   // Combination charts: a plot per kind and value axis, with a hidden second category axis for the secondary one.
-  const groups = pie || kind === 'scatter' || kind === 'bar' ? [] : plotGroups(view);
+  const groups = COMBO_KINDS.includes(kind) ? plotGroups(view) : [];
   if (groups.length > 1) {
     const types = groups.map((g) => ({
       type: TYPES[g.kind],
@@ -525,6 +592,32 @@ export function fixChartXml(xml, chart) {
   return xml;
 }
 
+const PICTURE_TYPES = { png: 'image/png', jpeg: 'image/jpeg', gif: 'image/gif' };
+
+/**
+ * A picture filling a chart's area: the picture added to the package (PNG,
+ * JPEG or GIF; other kinds are left out) and the chart area's fill made it.
+ */
+async function addChartPicture(zip, part, xml, data, name) {
+  const m = /^data:image\/(png|jpeg|gif);base64,(.*)$/.exec(data || '');
+  const area = /(<\/c:chart>\s*)<c:spPr>([\s\S]*?)<\/c:spPr>/.exec(xml);
+  if (!m || !area) return xml;
+  const ext = m[1] === 'jpeg' ? 'jpg' : m[1];
+  const media = `ppt/media/chart-picture-${name}.${ext}`;
+  zip.file(media, m[2], { base64: true });
+  const relsPath = part.replace(/([^/]+)$/, '_rels/$1.rels');
+  const rels = (await zip.file(relsPath)?.async('string')) || '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+  const id = 'rIdLsPicture';
+  zip.file(relsPath, rels.replace('</Relationships>', `<Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/${media.split('/').pop()}"/></Relationships>`));
+  const types = await zip.file('[Content_Types].xml')?.async('string');
+  if (types && !new RegExp(`Extension="${ext}"`, 'i').test(types)) zip.file('[Content_Types].xml', types.replace('<Default ', `<Default Extension="${ext}" ContentType="${PICTURE_TYPES[m[1]]}"/><Default `));
+  const line = /<a:ln\b[^>]*\/>|<a:ln\b[^>]*>[\s\S]*?<\/a:ln>/.exec(area[2])?.[0] || '';
+  const fill = `<c:spPr><a:blipFill><a:blip r:embed="${id}"/><a:stretch><a:fillRect/></a:stretch></a:blipFill>${line}</c:spPr>`;
+  let out = xml.slice(0, area.index) + area[1] + fill + xml.slice(area.index + area[0].length);
+  if (!/xmlns:r=/.test(out.slice(0, 500))) out = out.replace('<c:chartSpace ', '<c:chartSpace xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ');
+  return out;
+}
+
 /**
  * Finish the chart parts of an exported .pptx (see fixChartXml). Each
  * slide's charts are found from its graphic frames, which are in the order
@@ -547,7 +640,8 @@ export async function finishCharts(zip, deck) {
       const file = targets[k] && zip.file(targets[k]);
       if (!file) continue;
       const before = await file.async('string');
-      const after = fixChartXml(before, el.chart || {});
+      let after = fixChartXml(before, el.chart || {});
+      if (el.fillImage) after = await addChartPicture(zip, targets[k], after, deck.media?.[el.fillImage.media], `${i + 1}-${k + 1}`);
       if (after !== before) zip.file(targets[k], after);
     }
   }

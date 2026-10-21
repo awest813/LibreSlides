@@ -370,7 +370,7 @@ export function renderElement(el, ctx) {
   }
 
   if (el.type === 'table') div.append(renderTable(el, ctx));
-  if (el.type === 'chart') div.append(renderChart(el, ctx));
+  if (el.type === 'chart') div.append(renderChart(el, ctx, el.fillImage && ctx.deck?.media?.[el.fillImage.media] ? mediaUrl(ctx.deck, el.fillImage.media) : null));
   if (el.type === 'media') div.append(renderMedia(el, ctx));
   if (el.type === 'diagram') div.append(renderDiagram(el, ctx));
   return div;

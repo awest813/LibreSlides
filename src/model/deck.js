@@ -51,11 +51,12 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  *
  * A chart keeps its data in the element, so it can be edited and exported as
  * a real PowerPoint chart:
- *   chart { kind: column|bar|line|area|pie|doughnut|scatter,
+ *   chart { kind: column|bar|line|area|pie|doughnut|scatter|bubble|radar,
  *           grouping: clustered|stacked|percent (columns, bars, areas and lines),
- *           title, categories[], series[{ name, values[number|null], color?, pointColors?,
+ *           title, categories[], series[{ name, values[number|null], color?, pointColors?, sizes? (bubbles),
  *             kind?: column|line|area (combination charts), secondary? (right-hand axis) }],
- *           legend: right|bottom|top|left|none, dataLabels, markers (lines; scatter unless false),
+ *           legend: right|bottom|top|left|none, dataLabels, markers (lines, radar; scatter unless false),
+ *           filled? (radar), lineWidth? (pt, lines and radar; default 2.25),
  *           numberFormat?, labelFormat? (Excel codes: "#,##0.00", "0%", "$#,##0"…),
  *           labelContent?: [category, value, percent] (default value), labelPosition?
  *             (outEnd|inEnd|ctr|inBase|bestFit|t|b|l|r), lines?, smooth? (scatter, lines),
@@ -65,8 +66,8 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  * Every optional field may be missing (older decks): the defaults are PowerPoint's.
  * Series without a colour take the theme's accents in turn; pie slices use the
  * first series and doughnuts a ring per series (the first innermost), coloured
- * by the first series' pointColors. A scatter chart's categories are its X
- * values. `style` { size, color, font } sets its text, and `fill` and
+ * by the first series' pointColors. A scatter or bubble chart's categories are
+ * its X values (a bubble's size is in its series' sizes). `style` { size, color, font } sets its text, and `fill` and
  * `stroke` the chart area's background and border.
  *
  * Pictures may have colour adjustments, `adjust: { grayscale?, brightness?,
@@ -385,6 +386,8 @@ export const CHART_KINDS = [
   { id: 'pie', name: 'Pie' },
   { id: 'doughnut', name: 'Doughnut' },
   { id: 'scatter', name: 'Scatter (XY)' },
+  { id: 'bubble', name: 'Bubble' },
+  { id: 'radar', name: 'Radar' },
 ];
 
 /** A column chart with PowerPoint's sample data, ready to be edited. */
