@@ -227,36 +227,83 @@ function lineOf(ln, scheme, k) {
   return { color: color || '#000000', width: Math.round(w * 10) / 10, dash: !dash || dash === 'solid' ? 'solid' : /dot/i.test(dash) && !/dash/i.test(dash) ? 'dot' : /lgDash/.test(dash) ? 'longDash' : /dashDot/i.test(dash) ? 'dashDot' : 'dash' };
 }
 
-/** A shape's fill as { color, alpha } ('none' for no fill), or undefined when it takes the style's. */
-function fillOf(spPr, scheme) {
-  if (!spPr) return undefined;
-  if (kid(spPr, 'noFill')) return { color: 'none', alpha: 1 };
-  const solid = kid(spPr, 'solidFill');
-  if (solid) {
-    const color = colorOf(solid, scheme);
-    return color ? { color, alpha: alphaOf(solid) } : undefined;
+const FILLS = ['noFill', 'solidFill', 'gradFill', 'blipFill', 'pattFill', 'grpFill'];
+
+/**
+ * A fill element (a:solidFill, a:gradFill…) as { color, alpha, gradient? }:
+ * 'none' for no fill, the first colour standing in for a gradient (see
+ * model/deck.js). Undefined for fills LibreSlides can't show.
+ */
+function fillFrom(f, scheme) {
+  if (!f) return undefined;
+  if (f.localName === 'noFill') return { color: 'none', alpha: 1 };
+  if (f.localName === 'solidFill') {
+    const color = colorOf(f, scheme);
+    return color ? { color, alpha: alphaOf(f) } : undefined;
   }
-  const grad = kid(spPr, 'gradFill');
-  if (grad) {
-    const stop = desc(grad, 'gs')[0];
-    const color = colorOf(stop, scheme);
-    return color ? { color, alpha: alphaOf(stop) } : undefined;
+  if (f.localName === 'pattFill') {
+    // A pattern: its foreground colour.
+    const color = colorOf(kid(f, 'fgClr'), scheme);
+    return color ? { color, alpha: 1 } : undefined;
   }
-  return undefined;
+  if (f.localName !== 'gradFill') return undefined;
+  const stops = desc(kid(f, 'gsLst'), 'gs')
+    .map((gs) => ({ pos: Math.max(0, Math.min(1, +attr(gs, 'pos') / 100000 || 0)), color: colorOf(gs, scheme), opacity: alphaOf(gs) }))
+    .filter((s) => s.color)
+    .sort((a, b) => a.pos - b.pos)
+    .map(({ opacity, ...s }) => (opacity < 1 ? { ...s, opacity: Math.round(opacity * 100) / 100 } : s));
+  if (!stops.length) return undefined;
+  const gradient = { type: 'linear', angle: 180, stops };
+  const lin = kid(f, 'lin');
+  const shade = kid(f, 'path');
+  if (shade) {
+    // A path gradient: from the centre of its fill-to rectangle outwards.
+    const r = kid(shade, 'fillToRect');
+    const side = (n) => (+attr(r, n) || 0) / 100000;
+    Object.assign(gradient, { type: 'radial', cx: Math.round(((side('l') + 1 - side('r')) / 2) * 100) / 100, cy: Math.round(((side('t') + 1 - side('b')) / 2) * 100) / 100 });
+    delete gradient.angle;
+    // PowerPoint runs path gradients from the centre (the last stop) out to the edge (the first).
+    gradient.stops = stops.map((s) => ({ ...s, pos: 1 - s.pos })).reverse();
+  } else if (lin) gradient.angle = Math.round((+attr(lin, 'ang') / 60000 + 90) % 360);
+  return { color: stops[0].color, alpha: 1, gradient: stops.length > 1 ? gradient : undefined };
 }
 
-/** Theme default fill/line/font colour from <p:style> references. */
-function styleRefs(sp, scheme) {
+/** A shape's own fill (see fillFrom), or undefined when it takes the style's. */
+function fillOf(spPr, scheme) {
+  const f = spPr && [...spPr.children].find((c) => FILLS.includes(c.localName));
+  return fillFrom(f, scheme);
+}
+
+/**
+ * The look a shape takes from the theme through its <p:style>: fill (with
+ * the theme's fill style, so Office themes' gradients come through), line
+ * and font colour, and whether the theme's effect gives it a shadow.
+ */
+function styleRefs(sp, ctx) {
   const st = kid(sp, 'style');
   if (!st) return {};
+  const ref = (name) => kid(st, name);
+  const fillIdx = +(attr(ref('fillRef'), 'idx') || 0);
+  const fillColor = colorOf(ref('fillRef'), ctx.scheme);
+  // The style's colour stands in for "phClr" in the theme's fill.
+  const themeFill = fillIdx > 0 && fillColor ? (fillIdx >= 1001 ? ctx.themeBgFills : ctx.themeFills)?.[(fillIdx % 1000) - 1] : null;
+  const effect = ctx.themeEffects?.[+(attr(ref('effectRef'), 'idx') || 0) - 1];
   return {
-    fill: colorOf(kid(st, 'fillRef'), scheme),
-    line: colorOf(kid(st, 'lnRef'), scheme),
-    font: colorOf(kid(st, 'fontRef'), scheme),
-    hasLine: +(attr(kid(st, 'lnRef'), 'idx') || 0) > 0,
-    hasFill: +(attr(kid(st, 'fillRef'), 'idx') || 0) > 0,
+    fill: fillColor,
+    fillStyle: themeFill ? fillFrom(themeFill, { ...ctx.scheme, phClr: fillColor.slice(1) }) : undefined,
+    line: colorOf(ref('lnRef'), ctx.scheme),
+    font: colorOf(ref('fontRef'), ctx.scheme),
+    hasLine: +(attr(ref('lnRef'), 'idx') || 0) > 0,
+    hasFill: fillIdx > 0,
+    shadow: !!effect && desc(effect, 'outerShdw').length > 0,
   };
 }
+
+/** Whether a shape has a shadow: its own effects, else its style's. */
+const shadowOf = (spPr, refs) => {
+  const own = kid(spPr, 'effectLst');
+  return own ? kid(own, 'outerShdw') != null : !!refs.shadow;
+};
 
 /** The part of a picture shown (a:srcRect), as fractions cut from each side; null when uncropped. */
 function cropOf(blipFill) {
@@ -456,17 +503,21 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         break;
       }
     }
-    const grad = bgPr && kid(bgPr, 'gradFill');
-    if (grad) {
-      const stops = desc(grad, 'gs');
-      const lin = kid(grad, 'lin');
-      const ang = lin ? (+attr(lin, 'ang') / 60000 + 90) % 360 : 180;
-      slide.background = { type: 'gradient', from: colorOf(stops[0], ctx.scheme) || '#ffffff', to: colorOf(stops[stops.length - 1], ctx.scheme) || '#ffffff', angle: Math.round(ang) };
+    // The background's own fill, or the theme's background fill it refers to (in its colour).
+    let fill = bgPr && fillFrom([...bgPr.children].find((c) => FILLS.includes(c.localName)), ctx.scheme);
+    if (!fill && bgRef) {
+      const idx = +attr(bgRef, 'idx') || 0;
+      const refColor = colorOf(bgRef, ctx.scheme);
+      const themeFill = idx >= 1001 ? ctx.themeBgFills?.[idx - 1001] : ctx.themeFills?.[idx - 1];
+      fill = (themeFill && refColor && fillFrom(themeFill, { ...ctx.scheme, phClr: refColor.slice(1) })) || (refColor && { color: refColor });
+    }
+    if (fill?.gradient) {
+      const { stops, angle } = fill.gradient;
+      slide.background = { type: 'gradient', from: stops[0].color, to: stops[stops.length - 1].color, angle: angle ?? 180 };
       break;
     }
-    const color = colorOf(bgPr && kid(bgPr, 'solidFill'), ctx.scheme) || colorOf(bgRef, ctx.scheme);
-    if (color) {
-      slide.background = { type: 'solid', color };
+    if (fill?.color && fill.color !== 'none') {
+      slide.background = { type: 'solid', color: fill.color };
       break;
     }
   }
@@ -479,7 +530,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
   const lineElement = (node, b) => {
     if (!b) return null;
     const ln = kid(kid(node, 'spPr'), 'ln');
-    const refs = styleRefs(node, ctx.scheme);
+    const refs = styleRefs(node, ctx);
     const stroke = lineOf(ln, ctx.scheme, k) || { color: refs.line || defaultText, width: attr(ln, 'w') ? (+attr(ln, 'w') / EMU_PER_PT) * k : 1, dash: 'solid' };
     let [x1, x2] = [b.x, b.x + b.w];
     let [y1, y2] = [b.y, b.y + b.h];
@@ -553,14 +604,15 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         const txBody = kid(node, 'txBody');
         const role = ph ? PH_ROLE[ph.type] : null;
         if (ph && !role && !txBody?.textContent.trim()) continue; // empty date/footer/slide number
-        const refs = styleRefs(node, ctx.scheme);
+        const refs = styleRefs(node, ctx);
         const prst = attr(kid(spPr, 'prstGeom'), 'prst') || 'rect';
         const own = xfrmOf(spPr);
         const paths = kid(spPr, 'custGeom') && own ? customGeometry(kid(spPr, 'custGeom'), own.w * EMU_PER_PT, own.h * EMU_PER_PT) : null;
-        const ownFill = fillOf(spPr, ctx.scheme);
+        const ownFill = fillOf(spPr, ctx.scheme) ?? (refs.hasFill ? refs.fillStyle : undefined);
         let fill = ownFill?.color;
         if (fill === undefined) fill = refs.hasFill ? refs.fill : 'none';
         const alpha = ownFill?.alpha ?? 1;
+        const { gradient } = ownFill || {};
         const ln = kid(spPr, 'ln');
         let stroke = lineOf(ln, ctx.scheme, k);
         if (!stroke && refs.hasLine && refs.line && !kid(ln, 'noFill')) {
@@ -607,6 +659,8 @@ async function readSlide(pkg, slidePath, ctx, deck) {
           },
         };
         if (fadeAll) el.opacity = Math.round(alpha * 100) / 100;
+        if (gradient && fill !== 'none') el.gradient = gradient;
+        if (shadowOf(spPr, refs)) el.shadow = true;
         if (paths) {
           el.shape = 'custom';
           el.paths = paths;
@@ -642,6 +696,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         const crop = cropOf(blipFill);
         if (crop) el.crop = crop;
         if (amt != null && +amt < 100000) el.opacity = Math.max(0, Math.round(+amt / 1000) / 100);
+        if (shadowOf(kid(node, 'spPr'), styleRefs(node, ctx))) el.shadow = true;
         slide.elements.push(el);
       } else if (name === 'cxnSp') {
         const line = lineElement(node, place(xfrmOf(kid(node, 'spPr'))));
@@ -772,6 +827,11 @@ export async function importPptx(buffer, fallbackTitle = 'Presentation') {
   const masterRels = masterRel ? await pkg.rels(masterRel.path) : {};
   const themeRel = Object.values(masterRels).find((r) => r.type === 'theme') || Object.values(presRels).find((r) => r.type === 'theme');
   const themeDoc = themeRel ? await pkg.doc(themeRel.path) : null;
+  // The theme's fill and effect styles, which shapes refer to by number.
+  const styleList = (name) => [...(desc(themeDoc, name)[0]?.children || [])];
+  const themeFills = styleList('fillStyleLst');
+  const themeBgFills = styleList('bgFillStyleLst');
+  const themeEffects = styleList('effectStyleLst');
   const clr = desc(themeDoc, 'clrScheme')[0];
   for (const c of clr ? [...clr.children] : []) {
     const v = [...c.children][0];
@@ -792,7 +852,7 @@ export async function importPptx(buffer, fallbackTitle = 'Presentation') {
   const deck = newDeck({ title: titleEl?.textContent?.trim() || fallbackTitle, size, slides: [] });
   const stylesRel = Object.values(presRels).find((r) => r.type === 'tableStyles');
   const tableStyles = new Map(desc(stylesRel ? await pkg.doc(stylesRel.path) : null, 'tblStyle').map((s) => [attr(s, 'styleId'), s]));
-  const ctx = { k, ox, oy, scheme, fonts, txStyles, defaultTextStyle, tableStyles, fontScale: 1 };
+  const ctx = { k, ox, oy, scheme, fonts, txStyles, defaultTextStyle, tableStyles, themeFills, themeBgFills, themeEffects, fontScale: 1 };
   await readEmbeddedFonts({ pkg, pres, presRels, deck });
 
   const ids = desc(desc(pres, 'sldIdLst')[0], 'sldId');

@@ -133,6 +133,38 @@ function arrowHead(x1, y1, x2, y2, width, color) {
   return svgEl('polygon', { points: `${x2},${y2} ${p(0.45)} ${p(-0.45)}`, fill: color });
 }
 
+let gradientCount = 0;
+
+/**
+ * Add a shape's gradient (see model/deck.js) to its SVG and return the paint
+ * that uses it. Angles are CSS ones: 90 runs left to right, 180 top to bottom.
+ */
+export function gradientPaint(svg, g, w, h, theme) {
+  const id = `ls-grad-${++gradientCount}`;
+  let paint;
+  if (g.type === 'radial') {
+    const cx = (g.cx ?? 0.5) * w;
+    const cy = (g.cy ?? 0.5) * h;
+    // Out to the farthest corner, as PowerPoint's "from centre" gradients go.
+    const r = Math.max(...[[0, 0], [w, 0], [0, h], [w, h]].map(([x, y]) => Math.hypot(x - cx, y - cy)));
+    paint = svgEl('radialGradient', { id, gradientUnits: 'userSpaceOnUse', cx, cy, r });
+  } else {
+    const a = (((g.angle ?? 180) - 90) * Math.PI) / 180;
+    const r = Math.abs((w / 2) * Math.cos(a)) + Math.abs((h / 2) * Math.sin(a));
+    paint = svgEl('linearGradient', {
+      id, gradientUnits: 'userSpaceOnUse',
+      x1: w / 2 - Math.cos(a) * r, y1: h / 2 - Math.sin(a) * r, x2: w / 2 + Math.cos(a) * r, y2: h / 2 + Math.sin(a) * r,
+    });
+  }
+  for (const s of g.stops || []) {
+    paint.append(svgEl('stop', { offset: Math.max(0, Math.min(1, s.pos)), 'stop-color': resolveColor(s.color, theme, '#000'), 'stop-opacity': s.opacity ?? 1 }));
+  }
+  const defs = svgEl('defs');
+  defs.append(paint);
+  svg.append(defs);
+  return `url(#${id})`;
+}
+
 /** The DOM for one element. */
 export function renderElement(el, ctx) {
   const { theme } = ctx;
@@ -164,7 +196,7 @@ export function renderElement(el, ctx) {
 
   if (el.type === 'shape' || (el.type === 'text' && ((el.fill && el.fill !== 'none') || (el.stroke && el.stroke.color !== 'none' && el.stroke.width)))) {
     const svg = svgEl('svg', { class: 'el-svg', overflow: 'visible', width: el.w, height: el.h, viewBox: `0 0 ${el.w} ${el.h}`, preserveAspectRatio: 'none' });
-    const fill = resolveColor(el.fill, theme, 'transparent');
+    const fill = el.gradient && el.fill !== 'none' ? gradientPaint(svg, el.gradient, el.w, el.h, theme) : resolveColor(el.fill, theme, 'transparent');
     const stroke = strokeAttrs(el.stroke, theme);
     if (el.type === 'shape' && el.shape === 'custom' && Array.isArray(el.paths)) {
       for (const p of el.paths) {

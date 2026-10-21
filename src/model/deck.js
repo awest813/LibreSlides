@@ -9,6 +9,12 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  * slide   { id, layout, background|null, elements[], notes, transition{type, duration}, hidden }
  * element { id, type: text|shape|image|line|table, x, y, w, h, rot, opacity, … }
  *
+ * Shapes and text boxes may also have a gradient fill, `gradient: { type:
+ * 'linear'|'radial', angle (CSS degrees: 90 runs left to right) | cx, cy
+ * (centre, fractions of the box), stops: [{ pos 0–1, color, opacity? }] }`,
+ * with `fill` holding its first colour. Tables are cells[row][col] of
+ * { text, fill?, valign?, rowSpan?, colSpan?, merged? } (see tables.js).
+ *
  * Pictures live in deck.media and are referenced by id, so undo snapshots of
  * the slides stay small however many pictures a deck has.
  */

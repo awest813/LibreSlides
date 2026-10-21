@@ -49,6 +49,30 @@ function colorButton(label, value, theme, onPick, opts = {}) {
  * The right-hand panel: themes and backgrounds, transitions, animations and
  * the detailed format options for the selection.
  */
+/** Gradient fill controls for a shape: on/off, its end colours and its direction. */
+function gradientControls(app, el, theme) {
+  const g = el.gradient;
+  const toggle = checkbox('Gradient', !!g, (v) => app.setGradient(v
+    ? { type: 'linear', angle: 180, stops: [{ pos: 0, color: el.fill || 'theme:accent1' }, { pos: 1, color: 'theme:accent2' }] }
+    : null));
+  if (!g) return [toggle];
+  const stops = g.stops;
+  const withStop = (i, color) => ({ ...g, stops: stops.map((s, k) => (k === i ? { ...s, color } : s)) });
+  return [
+    toggle,
+    h('div', { class: 'pf-row' },
+      colorButton('From', stops[0].color, theme, (v) => app.setGradient(withStop(0, v))),
+      colorButton('To', stops[stops.length - 1].color, theme, (v) => app.setGradient(withStop(stops.length - 1, v)))),
+    field('Direction', select([
+      ['linear:180', 'Top to bottom'], ['linear:0', 'Bottom to top'], ['linear:90', 'Left to right'], ['linear:270', 'Right to left'],
+      ['linear:135', 'Diagonal'], ['linear:225', 'Diagonal (reverse)'], ['radial', 'From the centre'],
+    ], g.type === 'radial' ? 'radial' : `linear:${g.angle ?? 180}`, (v) => {
+      const [type, angle] = v.split(':');
+      app.setGradient({ ...g, type, angle: angle == null ? g.angle : +angle });
+    })),
+  ];
+}
+
 export class SidePanel {
   constructor(app) {
     this.app = app;
@@ -259,6 +283,7 @@ export class SidePanel {
       const fillable = els.some((e) => e.type === 'shape' || e.type === 'text' || e.type === 'table');
       const look = h('div', { class: 'pf-stack' });
       if (fillable) look.append(colorButton(el.type === 'table' ? 'Header colour' : 'Fill', el.fill, theme, (v) => app.setElementProp('fill', v), { allowNone: true }));
+      if (fillable && el.type !== 'table' && el.fill !== 'none') look.append(...gradientControls(app, el, theme));
       look.append(
         colorButton('Border', el.stroke?.width ? el.stroke.color : 'none', theme, (v) => app.setStroke({ color: v, width: Math.max(1, el.stroke?.width || 2) }), { allowNone: true, noneLabel: 'No border' }),
         field('Border weight', numberInput(el.stroke?.width || 0, (v) => app.setStroke({ width: v }), { min: 0, max: 50, step: 0.5, suffix: 'pt' })),

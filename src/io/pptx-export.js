@@ -228,34 +228,9 @@ async function imageSize(dataUrl) {
   }
 }
 
-/** A gradient background as a picture (JPEG keeps it small; the same gradient is drawn once). */
-const gradientCache = new Map();
-function gradientImage(bg, theme, w, h) {
-  const key = JSON.stringify([bg.from, bg.to, bg.angle, theme.id, w, h]);
-  if (!gradientCache.has(key)) gradientCache.set(key, drawGradient(bg, theme, w, h));
-  return gradientCache.get(key);
-}
-
-function drawGradient(bg, theme, w, h) {
-  const canvas = document.createElement('canvas');
-  canvas.width = 1280;
-  canvas.height = Math.round((1280 * h) / w);
-  const ctx = canvas.getContext('2d');
-  const a = (((bg.angle ?? 180) - 90) * Math.PI) / 180;
-  const cx = canvas.width / 2;
-  const cy = canvas.height / 2;
-  const r = Math.abs(cx * Math.cos(a)) + Math.abs(cy * Math.sin(a));
-  const g = ctx.createLinearGradient(cx - Math.cos(a) * r, cy - Math.sin(a) * r, cx + Math.cos(a) * r, cy + Math.sin(a) * r);
-  g.addColorStop(0, resolveColor(bg.from, theme));
-  g.addColorStop(1, resolveColor(bg.to, theme));
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL('image/jpeg', 0.92);
-}
-
 // ------------------------------------------------------------------ slides
 
-async function addElement(pptx, s, el, deck, theme) {
+async function addElement(pptx, s, el, deck, theme, marks) {
   const opacity = el.opacity ?? 1;
   const shadow = el.shadow ? { type: 'outer', blur: 8, offset: 4, angle: 90, color: '000000', opacity: 0.3 } : undefined;
   if (el.type === 'line') {
@@ -346,6 +321,11 @@ async function addElement(pptx, s, el, deck, theme) {
     fill: fillOpts(el.fill, theme, opacity),
     line: lineOpts(el.stroke, theme),
   };
+  if (el.gradient && opts.fill.type !== 'none') {
+    // pptxgenjs only writes solid fills: name the shape, and its fill becomes the gradient afterwards.
+    opts.objectName = `LibreSlides gradient ${marks.gradients.size + 1}`;
+    marks.gradients.set(opts.objectName, gradFillXml(el.gradient, theme, opacity));
+  }
   let extras = [];
   if (shape === 'custom') {
     // A freeform: one PowerPoint shape per kind of path (filled or not, outlined or not);
@@ -438,14 +418,53 @@ export function fixParagraphs(slideXml) {
   });
 }
 
+/** A LibreSlides gradient (see model/deck.js) as DrawingML, faded by `opacity`. */
+export function gradFillXml(g, theme, opacity = 1) {
+  let stops = g.stops || [];
+  // PowerPoint runs path gradients from the edge (first stop) in to the centre.
+  if (g.type === 'radial') stops = stops.map((s) => ({ ...s, pos: 1 - s.pos })).reverse();
+  const gs = stops.map((s) => {
+    const alpha = (s.opacity ?? 1) * opacity;
+    const hex = toHex(resolveColor(s.color, theme)) || '000000';
+    return `<a:gs pos="${Math.round(Math.max(0, Math.min(1, s.pos)) * 100000)}"><a:srgbClr val="${hex}">${alpha < 1 ? `<a:alpha val="${Math.round(alpha * 100000)}"/>` : ''}</a:srgbClr></a:gs>`;
+  }).join('');
+  let dir;
+  if (g.type === 'radial') {
+    const pct = (v) => Math.round(Math.max(0, Math.min(1, v)) * 100000);
+    const cx = g.cx ?? 0.5;
+    const cy = g.cy ?? 0.5;
+    dir = `<a:path path="circle"><a:fillToRect l="${pct(cx)}" t="${pct(cy)}" r="${pct(1 - cx)}" b="${pct(1 - cy)}"/></a:path>`;
+  } else dir = `<a:lin ang="${Math.round(((((g.angle ?? 180) - 90) % 360) + 360) % 360) * 60000}" scaled="0"/>`;
+  return `<a:gradFill rotWithShape="1"><a:gsLst>${gs}</a:gsLst>${dir}</a:gradFill>`;
+}
+
+/** Turn the solid fills of the shapes named for gradients (and a gradient background) into real gradients. */
+export function applyGradients(xml, marks) {
+  if (!marks) return xml;
+  for (const [name, grad] of marks.gradients) {
+    const at = xml.indexOf(`name="${name}"`);
+    if (at < 0) continue;
+    const start = xml.lastIndexOf('<p:sp>', at);
+    const end = xml.indexOf('</p:sp>', at);
+    const spPr = xml.slice(start, end).match(/<p:spPr>[\s\S]*?<\/p:spPr>/);
+    if (start < 0 || end < 0 || !spPr) continue;
+    // The shape's fill comes before its outline (whose own fill is inside <a:ln>).
+    const fixed = spPr[0].replace(/^([\s\S]*?)<a:solidFill>[\s\S]*?<\/a:solidFill>/, (whole, before) => (before.includes('<a:ln') ? whole : `${before}${grad}`));
+    const block = xml.slice(start, end).replace(spPr[0], fixed);
+    xml = xml.slice(0, start) + block + xml.slice(end);
+  }
+  if (marks.background) xml = xml.replace(/<p:bg>[\s\S]*?<\/p:bg>/, `<p:bg><p:bgPr>${marks.background}<a:effectLst/></p:bgPr></p:bg>`);
+  return xml;
+}
+
 /** Tidy the paragraphs, and add transitions and "skip slide" to the generated XML. */
-async function postProcess(buffer, deck) {
+async function postProcess(buffer, deck, allMarks) {
   const zip = await JSZip.loadAsync(buffer);
   for (const [i, slide] of deck.slides.entries()) {
     const path = `ppt/slides/slide${i + 1}.xml`;
     const file = zip.file(path);
     if (!file) continue;
-    let xml = fixParagraphs(await file.async('string'));
+    let xml = applyGradients(fixParagraphs(await file.async('string')), allMarks[i]);
     const t = slide.transition;
     if (t && TRANSITION_XML[t.type]) {
       const d = t.duration ?? 0.6;
@@ -471,27 +490,29 @@ export async function buildPptx(deck) {
   pptx.company = 'LibreSlides';
   pptx.theme = { headFontFace: theme.fonts.title, bodyFontFace: theme.fonts.body };
 
+  // What each slide needs fixing in the XML pptxgenjs writes (see applyGradients).
+  const allMarks = [];
   for (const slide of deck.slides) {
     const s = pptx.addSlide();
+    const marks = { gradients: new Map(), background: null };
+    allMarks.push(marks);
     const bg = slide.background || theme.background;
     if (bg.type === 'image' && deck.media?.[bg.media]) {
       const data = await exportableImage(deck.media[bg.media], w, h);
       if (data) s.background = { data: dataForPptx(data) };
     } else if (bg.type === 'gradient') {
-      try {
-        s.background = { data: dataForPptx(gradientImage(bg, theme, w, h)) };
-      } catch {
-        s.background = { color: toHex(resolveColor(bg.from, theme)) };
-      }
+      // Written as a solid colour, then made a real gradient afterwards.
+      s.background = { color: toHex(resolveColor(bg.from, theme)) || 'FFFFFF' };
+      marks.background = gradFillXml({ type: 'linear', angle: bg.angle, stops: [{ pos: 0, color: bg.from }, { pos: 1, color: bg.to }] }, theme);
     } else {
       s.background = { color: toHex(resolveColor(bg.color, theme, backgroundBaseColor(theme.background))) || 'FFFFFF' };
     }
-    for (const d of themeDecor(slide, deck)) await addElement(pptx, s, d, deck, theme);
-    for (const el of slide.elements) await addElement(pptx, s, el, deck, theme);
+    for (const d of themeDecor(slide, deck)) await addElement(pptx, s, d, deck, theme, marks);
+    for (const el of slide.elements) await addElement(pptx, s, el, deck, theme, marks);
     if (slide.notes) s.addNotes(slide.notes);
   }
   const buffer = await pptx.write({ outputType: 'arraybuffer' });
-  return postProcess(buffer, deck);
+  return postProcess(buffer, deck, allMarks);
 }
 
 export async function exportPptx(deck) {

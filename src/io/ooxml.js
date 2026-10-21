@@ -66,6 +66,13 @@ function mapLinear(hex, fn) {
     .join('');
 }
 
+// Colour changes that work on hue (0), saturation (1) or luminance (2).
+const HSL_MODS = {
+  hueMod: [0, (x, v) => x * v], hueOff: [0, (x, v) => x + v],
+  satMod: [1, (x, v) => x * v], satOff: [1, (x, v) => x + v],
+  lumMod: [2, (x, v) => x * v], lumOff: [2, (x, v) => x + v],
+};
+
 export const SCHEME_ALIAS = { tx1: 'dk1', bg1: 'lt1', tx2: 'dk2', bg2: 'lt2' };
 
 /** The colour of an element holding a colour choice (srgbClr, schemeClr…), as "#rrggbb". */
@@ -87,9 +94,11 @@ export function colorOf(holder, scheme) {
     if (!Number.isFinite(v)) continue;
     if (m.localName === 'tint') hex = mapLinear(hex, (x) => x * v + (1 - v));
     else if (m.localName === 'shade') hex = mapLinear(hex, (x) => x * v);
-    else if (m.localName === 'lumMod' || m.localName === 'lumOff') {
+    else if (HSL_MODS[m.localName]) {
+      const [i, change] = HSL_MODS[m.localName];
       const hsl = hexToHsl(hex);
-      hsl[2] = Math.max(0, Math.min(1, m.localName === 'lumMod' ? hsl[2] * v : hsl[2] + v));
+      // Hue offsets are in 60000ths of a degree (val / 100000 * 100000 / 60000 / 360 of a turn).
+      hsl[i] = i === 0 ? ((change(hsl[0], m.localName === 'hueOff' ? (v * 100000) / 60000 / 360 : v) % 1) + 1) % 1 : Math.max(0, Math.min(1, change(hsl[i], v)));
       hex = hslToHex(hsl);
     }
   }

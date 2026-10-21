@@ -129,6 +129,53 @@ describe('PowerPoint pictures and shapes', () => {
   });
 });
 
+describe('PowerPoint gradients and shadows', () => {
+  it('keeps linear and radial gradient fills as real gradients', async () => {
+    const a = newShape('rect', 10, 10, 200, 100);
+    a.gradient = { type: 'linear', angle: 90, stops: [{ pos: 0, color: '#ff0000' }, { pos: 0.5, color: '#00ff00', opacity: 0.5 }, { pos: 1, color: '#0000ff' }] };
+    a.fill = '#ff0000';
+    const b = newShape('ellipse', 300, 10, 100, 100);
+    b.gradient = { type: 'radial', cx: 0.25, cy: 0.5, stops: [{ pos: 0, color: '#ffffff' }, { pos: 1, color: '#000000' }] };
+    b.fill = '#ffffff';
+    b.shadow = true;
+    const xml = await slideXml(deckWith(a, b));
+    expect(xml.match(/<a:gradFill/g)).toHaveLength(2);
+    expect(xml).toContain('<a:lin ang="0" scaled="0"/>');
+    expect(xml).toContain('<a:alpha val="50000"/>');
+    expect(xml).toContain('<a:path path="circle"><a:fillToRect l="25000" t="50000" r="75000" b="50000"/></a:path>');
+    const [ba, bb] = (await roundTrip(deckWith(a, b))).slides[0].elements;
+    expect(ba.gradient).toEqual(a.gradient);
+    expect(bb.gradient).toEqual(b.gradient);
+    expect(bb.shadow).toBe(true);
+    expect(ba.shadow).toBeUndefined();
+  });
+
+  it('writes gradient backgrounds as gradients, not pictures', async () => {
+    const deck = deckWith(newTextBox(10, 10));
+    deck.slides[0].background = { type: 'gradient', from: '#112233', to: '#445566', angle: 135 };
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deck)));
+    expect(await zip.file('ppt/slides/slide1.xml').async('string')).toMatch(/<p:bg><p:bgPr><a:gradFill rotWithShape="1">[\s\S]*<a:lin ang="2700000"/);
+    expect(Object.values(zip.files).some((f) => f.name.startsWith('ppt/media/') && !f.dir)).toBe(false);
+    const back = await importPptx(await zip.generateAsync({ type: 'arraybuffer' }));
+    expect(back.slides[0].background).toEqual({ type: 'gradient', from: '#112233', to: '#445566', angle: 135 });
+  });
+
+  it('takes a shape\'s gradient from the theme\'s fill style', async () => {
+    const shape = newShape('rect', 0, 0, 200, 100);
+    shape.fill = '#3366cc';
+    const back = await roundTrip(deckWith(shape), async (zip) => {
+      const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+      // No fill of its own; the theme's second fill style in accent 1, as PowerPoint's default shapes have.
+      const styled = xml.replace(/(<a:prstGeom[\s\S]*?<\/a:prstGeom>)<a:solidFill>[\s\S]*?<\/a:solidFill>/, '$1')
+        .replace('</p:spPr>', '</p:spPr><p:style><a:lnRef idx="0"><a:schemeClr val="accent1"/></a:lnRef><a:fillRef idx="2"><a:schemeClr val="accent1"/></a:fillRef><a:effectRef idx="0"><a:schemeClr val="accent1"/></a:effectRef><a:fontRef idx="minor"><a:schemeClr val="lt1"/></a:fontRef></p:style>');
+      zip.file('ppt/slides/slide1.xml', styled);
+    });
+    const el = back.slides[0].elements[0];
+    expect(el.gradient?.stops).toHaveLength(3);
+    expect(el.fill).toBe(el.gradient.stops[0].color);
+  });
+});
+
 describe('PowerPoint freeform shapes', () => {
   /** Export one shape, swap its preset outline for `geometry` (or another preset), and read it back. */
   const withGeometry = async (geometry) => {

@@ -752,7 +752,24 @@ export class EditorScreen {
   }
 
   setElementProp(prop, value) {
-    this.updateSelected((e) => { if (e.type !== 'line' && e.type !== 'image') e[prop] = value; });
+    this.updateSelected((e) => {
+      if (e.type === 'line' || e.type === 'image') return;
+      e[prop] = value;
+      if (prop === 'fill') delete e.gradient; // a colour picked for the fill replaces a gradient
+    });
+  }
+
+  /** Give the selected shapes a gradient fill (null: back to a solid fill of its first colour). */
+  setGradient(gradient) {
+    this.updateSelected((e) => {
+      if (e.type !== 'shape' && e.type !== 'text') return;
+      if (!gradient) {
+        delete e.gradient;
+        return;
+      }
+      e.gradient = JSON.parse(JSON.stringify(gradient));
+      e.fill = gradient.stops[0].color;
+    });
   }
 
   setStroke(partial) {

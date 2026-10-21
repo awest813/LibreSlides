@@ -85,6 +85,21 @@ export function sanitizeElement(el) {
       if (el.shape === 'custom') el.shape = 'rect';
     }
   }
+  if (el.gradient != null) {
+    // A gradient: a known type, finite numbers, 2–10 stops of safe colours.
+    const g = el.gradient;
+    const stops = isObject(g) && Array.isArray(g.stops) ? g.stops.filter(isObject).slice(0, 10).map((s) => {
+      const stop = { pos: fraction(s.pos), color: safeColor(s.color) };
+      if (Number.isFinite(s.opacity) && s.opacity < 1) stop.opacity = Math.max(0, s.opacity);
+      return stop;
+    }).filter((s) => s.color) : [];
+    if (stops.length < 2) delete el.gradient;
+    else {
+      el.gradient = { type: g.type === 'radial' ? 'radial' : 'linear', stops };
+      if (el.gradient.type === 'radial') Object.assign(el.gradient, { cx: Number.isFinite(g.cx) ? fraction(g.cx) : 0.5, cy: Number.isFinite(g.cy) ? fraction(g.cy) : 0.5 });
+      else el.gradient.angle = Number.isFinite(g.angle) ? g.angle : 180;
+    }
+  }
   if (el.crop != null) {
     if (isObject(el.crop)) for (const side of ['l', 't', 'r', 'b']) el.crop[side] = fraction(el.crop[side]);
     else delete el.crop;
