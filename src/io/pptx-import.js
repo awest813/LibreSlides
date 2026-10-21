@@ -5,7 +5,9 @@ import { normalizeTable, NO_BORDER, CELL_MARGIN, SIDES } from '../model/tables.j
 import { evaluateGeometry, definitionFromXml } from '../model/geometry.js';
 import PRESETS from '../model/preset-shapes.js';
 import { cleanWarp } from '../model/warps.js';
-import { isDarkColor } from '../model/themes.js';
+import { isDarkColor, backgroundBaseColor, withOpacity } from '../model/themes.js';
+import { isPattern } from '../model/patterns.js';
+import { pictureSize, duotoneImage } from './images.js';
 import { readChart } from './pptx-chart.js';
 import { readAnimations } from './pptx-timing.js';
 import { readMedia } from './pptx-media.js';
@@ -413,9 +415,11 @@ function fillFrom(f, scheme) {
     return color ? { color, alpha: alphaOf(f) } : undefined;
   }
   if (f.localName === 'pattFill') {
-    // A pattern: its foreground colour.
-    const color = colorOf(kid(f, 'fgClr'), scheme);
-    return color ? { color, alpha: 1 } : undefined;
+    // A pattern (see model/patterns.js), its foreground colour standing in for it.
+    const fg = colorOf(kid(f, 'fgClr'), scheme) || '#000000';
+    const bg = colorOf(kid(f, 'bgClr'), scheme) || '#ffffff';
+    const preset = attr(f, 'prst');
+    return { color: fg, alpha: 1, pattern: { preset: isPattern(preset) ? preset : 'pct50', fg, bg } };
   }
   if (f.localName !== 'gradFill') return undefined;
   const stops = desc(kid(f, 'gsLst'), 'gs')
@@ -447,8 +451,9 @@ function fillOf(spPr, scheme) {
 
 /**
  * The look a shape takes from the theme through its <p:style>: fill (with
- * the theme's fill style, so Office themes' gradients come through), line
- * and font colour, and whether the theme's effect gives it a shadow.
+ * the theme's fill style, so Office themes' gradients and pictures come
+ * through), line (with the theme's line style's width and dash), font
+ * colour, and whether the theme's effect gives it a shadow.
  */
 function styleRefs(sp, ctx) {
   const st = kid(sp, 'style');
@@ -459,10 +464,17 @@ function styleRefs(sp, ctx) {
   // The style's colour stands in for "phClr" in the theme's fill.
   const themeFill = fillIdx > 0 && fillColor ? (fillIdx >= 1001 ? ctx.themeBgFills : ctx.themeFills)?.[(fillIdx % 1000) - 1] : null;
   const effect = ctx.themeEffects?.[+(attr(ref('effectRef'), 'idx') || 0) - 1];
+  // The theme's line style: its width and dash, in the style's colour.
+  const lineColor = colorOf(ref('lnRef'), ctx.scheme);
+  const themeLine = ctx.themeLines?.[+(attr(ref('lnRef'), 'idx') || 0) - 1];
+  const lineStyle = themeLine && lineColor ? lineOf(themeLine, { ...ctx.scheme, phClr: lineColor.slice(1) }, ctx.k) : null;
   return {
     fill: fillColor,
     fillStyle: themeFill ? fillFrom(themeFill, { ...ctx.scheme, phClr: fillColor.slice(1) }) : undefined,
-    line: colorOf(ref('lnRef'), ctx.scheme),
+    fillPicture: themeFill?.localName === 'blipFill' ? themeFill : null, // its picture is the theme's (ctx.themeRels)
+    line: lineStyle?.color || lineColor,
+    lineWidth: lineStyle?.width,
+    lineDash: lineStyle?.dash,
     font: colorOf(ref('fontRef'), ctx.scheme),
     hasLine: +(attr(ref('lnRef'), 'idx') || 0) > 0,
     hasFill: fillIdx > 0,
@@ -652,58 +664,215 @@ function outlineOf(spPr, box) {
   }
 }
 
+// ------------------------------------------------------------------ themes and backgrounds
+
+/** A slide's layout and master parts (null where it has none). */
+async function masterOfSlide(pkg, slidePath) {
+  const layoutRel = Object.values(await pkg.rels(slidePath)).find((r) => r.type === 'slideLayout' && !r.external);
+  const masterRel = layoutRel && Object.values(await pkg.rels(layoutRel.path)).find((r) => r.type === 'slideMaster' && !r.external);
+  return { layoutPath: layoutRel?.path || null, masterPath: masterRel?.path || null };
+}
+
+// The colours a colour map maps, and what each is when it doesn't say.
+const CLR_MAP_DEFAULTS = {
+  ...SCHEME_ALIAS,
+  ...Object.fromEntries(['accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6', 'hlink', 'folHlink'].map((n) => [n, n])),
+};
+
+/** A p:clrMap or a:overrideClrMapping as { bg1: 'lt1', … }, or null for none. */
+function clrMapOf(el) {
+  if (!el) return null;
+  return Object.fromEntries(Object.entries(CLR_MAP_DEFAULTS).map(([name, fallback]) => [name, attr(el, name) || fallback]));
+}
+
+/**
+ * A master's theme and text styles, read once however many slides use it:
+ * { colors (the theme's colour scheme, "RRGGBB" by name), clrMap, fonts,
+ * txStyles, themeFills, themeBgFills, themeEffects, themeLines (the theme's
+ * fill, effect and line styles, which shapes refer to by number), themeRels, name }.
+ */
+function masterTheme(pkg, masterPath, ctx) {
+  const key = masterPath || '';
+  if (!ctx.masters.has(key)) ctx.masters.set(key, readMasterTheme(pkg, masterPath, ctx.presRels));
+  return ctx.masters.get(key);
+}
+
+async function readMasterTheme(pkg, masterPath, presRels) {
+  const masterDoc = masterPath ? await pkg.doc(masterPath) : null;
+  const masterRels = masterPath ? await pkg.rels(masterPath) : {};
+  const themeRel = [...Object.values(masterRels), ...Object.values(presRels)].find((r) => r.type === 'theme' && !r.external);
+  const themeDoc = themeRel ? await pkg.doc(themeRel.path) : null;
+  const colors = {};
+  for (const c of desc(themeDoc, 'clrScheme')[0]?.children || []) {
+    const v = c.firstElementChild;
+    const hex = v?.localName === 'srgbClr' ? attr(v, 'val') : v?.localName === 'sysClr' ? attr(v, 'lastClr') || (attr(v, 'val') === 'window' ? 'FFFFFF' : '000000') : null;
+    if (/^[0-9a-f]{6}$/i.test(hex || '')) colors[c.localName] = hex;
+  }
+  const styleList = (name) => [...(desc(themeDoc, name)[0]?.children || [])];
+  const face = (name) => attr(path(desc(themeDoc, name)[0], 'latin'), 'typeface');
+  return {
+    colors,
+    clrMap: clrMapOf(kid(masterDoc?.documentElement, 'clrMap')) || { ...CLR_MAP_DEFAULTS },
+    fonts: { major: face('majorFont') || 'Calibri', minor: face('minorFont') || 'Calibri' },
+    txStyles: desc(masterDoc, 'txStyles')[0] || null,
+    themeFills: styleList('fillStyleLst'),
+    themeBgFills: styleList('bgFillStyleLst'),
+    themeEffects: styleList('effectStyleLst'),
+    themeLines: styleList('lnStyleLst'),
+    themeRels: themeRel ? await pkg.rels(themeRel.path) : {},
+    name: attr(themeDoc?.documentElement, 'name') || '',
+  };
+}
+
+/**
+ * The colours schemeClr names mean ("RRGGBB" by name): the theme's own
+ * (dk1, lt1, accent1…), and the ones the colour map maps (bg1, tx1…).
+ */
+function schemeOf(colors, clrMap) {
+  const scheme = { ...colors };
+  for (const [name, fallback] of Object.entries(CLR_MAP_DEFAULTS)) scheme[name] = colors[clrMap[name]] || colors[fallback];
+  return scheme;
+}
+
+/**
+ * What reading a slide needs from its master: the theme's colours (in the
+ * master's colour map, unless the layout or the slide override it), fonts,
+ * fill styles and text styles, added to the presentation's `ctx`.
+ */
+async function slideContext(pkg, ctx, masterPath, parts) {
+  const theme = await masterTheme(pkg, masterPath, ctx);
+  let { clrMap } = theme;
+  for (const d of parts) clrMap = clrMapOf(path(d?.documentElement, 'clrMapOvr', 'overrideClrMapping')) || clrMap;
+  const { colors, name, ...rest } = theme;
+  return { ...ctx, ...rest, clrMap, scheme: schemeOf(colors, clrMap) };
+}
+
+/**
+ * The deck's theme as PowerPoint had it (see model/deck.js), to write back
+ * into the files it saves: { name, colors: { dk1…folHlink: "#rrggbb" },
+ * dark (text light on dark: the colour map swaps them), fonts { major, minor } }.
+ */
+function importedThemeOf(theme) {
+  const names = ['dk1', 'lt1', 'dk2', 'lt2', 'accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6', 'hlink', 'folHlink'];
+  if (!names.every((n) => theme.colors[n])) return null;
+  return {
+    name: theme.name.slice(0, 100),
+    colors: Object.fromEntries(names.map((n) => [n, `#${theme.colors[n].toLowerCase()}`])),
+    dark: theme.clrMap.bg1 === 'dk1',
+    fonts: { ...theme.fonts },
+  };
+}
+
+const round2 = (v) => Math.round(v * 100) / 100;
+
+/**
+ * A picture fill (a:blipFill) as LibreSlides' (see model/deck.js and
+ * themes.js backgroundCss): { media, crop?, opacity?, tile? }, a tiled
+ * picture's tiles in points at the picture's own size (its resolution, or
+ * the fill's) times their scale. Null when the picture can't be shown.
+ */
+async function pictureFillOf(pkg, blipFill, rels, ctx, deck, scheme = ctx.scheme) {
+  const blip = kid(blipFill, 'blip');
+  const target = rels?.[rid(blip, 'embed')];
+  let data = target && !target.external ? await pkg.dataUrl(target.path) : null;
+  if (!data) return null;
+  // Recoloured in two colours (as themes' background pictures are), where pictures can be drawn.
+  const duo = kid(blip, 'duotone');
+  const [dark, light] = [...(duo?.children || [])].map((c) => colorOf({ children: [c] }, scheme));
+  if (dark && light) {
+    const key = `${dark} ${light} ${target.path}`;
+    if (!ctx.recolored.has(key)) ctx.recolored.set(key, duotoneImage(data, dark, light));
+    data = (await ctx.recolored.get(key)) || data;
+  }
+  const out = { media: addMediaTo(deck, data) };
+  const crop = cropOf(blipFill);
+  if (crop) out.crop = crop;
+  const amt = attr(kid(blip, 'alphaModFix'), 'amt');
+  if (amt != null && +amt < 100000) out.opacity = Math.max(0, Math.round(+amt / 1000) / 100);
+  const tile = kid(blipFill, 'tile');
+  const size = tile && pictureSize(data);
+  if (size) {
+    const num = (name, fallback) => (attr(tile, name) != null && Number.isFinite(+attr(tile, name)) ? +attr(tile, name) : fallback);
+    const dpi = +attr(blipFill, 'dpi') > 0 ? +attr(blipFill, 'dpi') : null;
+    const scale = (name) => Math.abs(num(name, 100000)) / 100000 || 1;
+    const w = ((size.w * 72) / (dpi || size.dpiX)) * scale('sx') * ctx.k;
+    const h = ((size.h * 72) / (dpi || size.dpiY)) * scale('sy') * ctx.k;
+    if (w >= 0.5 && h >= 0.5) {
+      out.tile = { w: round2(w), h: round2(h), x: round2((num('tx', 0) / EMU_PER_PT) * ctx.k), y: round2((num('ty', 0) / EMU_PER_PT) * ctx.k), align: attr(tile, 'algn') || 'tl' };
+      const flip = attr(tile, 'flip');
+      if (flip === 'x' || flip === 'y' || flip === 'xy') out.tile.flip = flip;
+    }
+  }
+  return out;
+}
+
+/** A gradient fill (see fillFrom) as a gradient background: its first and last colours, and all of it when there's more. */
+function gradientBackground(g) {
+  const { stops } = g;
+  const out = { type: 'gradient', from: stops[0].color, to: stops[stops.length - 1].color, angle: g.angle ?? 180 };
+  const plain = g.type === 'linear' && stops.length === 2 && stops[0].pos === 0 && stops[1].pos === 1 && stops.every((s) => s.opacity == null);
+  if (!plain) out.gradient = g;
+  return out;
+}
+
+/**
+ * A slide background (p:bg) as LibreSlides' (see themes.js backgroundCss):
+ * its own fill, or the theme's background fill it refers to, in its colour.
+ * Null when it has none LibreSlides can show.
+ */
+async function backgroundOf(pkg, bg, rels, ctx, deck) {
+  const bgPr = kid(bg, 'bgPr');
+  const bgRef = kid(bg, 'bgRef');
+  let f = bgPr && [...bgPr.children].find((c) => FILLS.includes(c.localName));
+  let { scheme } = ctx;
+  let refColor = null;
+  if (!f && bgRef) {
+    const idx = +attr(bgRef, 'idx') || 0;
+    refColor = colorOf(bgRef, ctx.scheme);
+    f = idx >= 1001 ? ctx.themeBgFills?.[idx - 1001] : idx > 0 ? ctx.themeFills?.[idx - 1] : null;
+    // The theme's fill, in the reference's colour; its pictures are the theme's.
+    rels = ctx.themeRels;
+    scheme = refColor ? { ...ctx.scheme, phClr: refColor.slice(1) } : ctx.scheme;
+  }
+  let out = null;
+  if (f?.localName === 'blipFill') {
+    const picture = await pictureFillOf(pkg, f, rels, ctx, deck, scheme);
+    if (picture) out = { type: 'image', media: picture.media, color: '#000000', ...(picture.tile && { tile: picture.tile }) };
+  } else if (f) {
+    const fill = fillFrom(f, scheme);
+    if (fill?.pattern) out = { type: 'pattern', pattern: fill.pattern };
+    else if (fill?.gradient) out = gradientBackground(fill.gradient);
+    else if (fill?.color && fill.color !== 'none') out = { type: 'solid', color: fill.color };
+  }
+  return out || (refColor ? { type: 'solid', color: refColor } : null);
+}
+
 // ------------------------------------------------------------------ slides
 
 const MAX_GROUP_DEPTH = 32;
 
-async function readSlide(pkg, slidePath, ctx, deck) {
+async function readSlide(pkg, slidePath, deckCtx, deck) {
   const doc = await pkg.doc(slidePath);
   const rels = await pkg.rels(slidePath);
-  const layoutRel = Object.values(rels).find((r) => r.type === 'slideLayout');
-  const layoutDoc = layoutRel ? await pkg.doc(layoutRel.path) : null;
-  const layoutRels = layoutRel ? await pkg.rels(layoutRel.path) : {};
-  const masterRel = Object.values(layoutRels).find((r) => r.type === 'slideMaster');
-  const masterDoc = masterRel ? await pkg.doc(masterRel.path) : null;
-  const masterRels = masterRel ? await pkg.rels(masterRel.path) : {};
+  const { layoutPath, masterPath } = await masterOfSlide(pkg, slidePath);
+  const layoutDoc = layoutPath ? await pkg.doc(layoutPath) : null;
+  const layoutRels = layoutPath ? await pkg.rels(layoutPath) : {};
+  const masterDoc = masterPath ? await pkg.doc(masterPath) : null;
+  const masterRels = masterPath ? await pkg.rels(masterPath) : {};
   const layoutPh = layoutDoc ? placeholders(layoutDoc) : [];
   const masterPh = masterDoc ? placeholders(masterDoc) : [];
+  // The slide's master's theme, in the colour map its layout or the slide itself may change.
+  const ctx = await slideContext(pkg, deckCtx, masterPath || deckCtx.firstMaster, [layoutDoc, doc]);
   const { k } = ctx;
   const slide = { id: uid(), layout: 'blank', background: null, elements: [], notes: '', transition: { type: 'none', duration: 0.6 }, hidden: attr(doc.documentElement, 'show') === '0', hideDecor: true };
 
   // Background: the slide's own, else the layout's, else the master's.
   for (const [d, r] of [[doc, rels], [layoutDoc, layoutRels], [masterDoc, masterRels]]) {
     const bg = d && path(d.documentElement, 'cSld', 'bg');
-    if (!bg) continue;
-    const bgPr = kid(bg, 'bgPr');
-    const bgRef = kid(bg, 'bgRef');
-    if (bgPr && kid(bgPr, 'blipFill')) {
-      const blip = desc(bgPr, 'blip')[0];
-      const target = r[rid(blip, 'embed')];
-      const data = target && (await pkg.dataUrl(target.path));
-      if (data) {
-        slide.background = { type: 'image', media: addMediaTo(deck, data), color: '#000000' };
-        break;
-      }
-    }
-    // The background's own fill, or the theme's background fill it refers to (in its colour).
-    let fill = bgPr && fillFrom([...bgPr.children].find((c) => FILLS.includes(c.localName)), ctx.scheme);
-    if (!fill && bgRef) {
-      const idx = +attr(bgRef, 'idx') || 0;
-      const refColor = colorOf(bgRef, ctx.scheme);
-      const themeFill = idx >= 1001 ? ctx.themeBgFills?.[idx - 1001] : ctx.themeFills?.[idx - 1];
-      fill = (themeFill && refColor && fillFrom(themeFill, { ...ctx.scheme, phClr: refColor.slice(1) })) || (refColor && { color: refColor });
-    }
-    if (fill?.gradient) {
-      const { stops, angle } = fill.gradient;
-      slide.background = { type: 'gradient', from: stops[0].color, to: stops[stops.length - 1].color, angle: angle ?? 180 };
-      break;
-    }
-    if (fill?.color && fill.color !== 'none') {
-      slide.background = { type: 'solid', color: fill.color };
-      break;
-    }
+    slide.background = bg ? await backgroundOf(pkg, bg, r, ctx, deck) : null;
+    if (slide.background) break;
   }
-  const bgColor = slide.background?.type === 'solid' ? slide.background.color : slide.background?.from || '#ffffff';
+  const bgColor = slide.background?.type === 'image' ? '#ffffff' : backgroundBaseColor(slide.background);
   const darkBg = isDarkColor(bgColor);
   const defaultText = darkBg ? (ctx.scheme.lt1 ? `#${ctx.scheme.lt1}` : '#ffffff') : (ctx.scheme.dk1 ? `#${ctx.scheme.dk1}` : '#000000');
   const masterStyle = (name, c) => lstStyleLevels(kid(ctx.txStyles, name), c);
@@ -713,7 +882,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
     if (!b) return null;
     const ln = kid(kid(node, 'spPr'), 'ln');
     const refs = styleRefs(node, ctx);
-    const stroke = lineOf(ln, ctx.scheme, k) || { color: refs.line || defaultText, width: attr(ln, 'w') ? (+attr(ln, 'w') / EMU_PER_PT) * k : 1, dash: 'solid' };
+    const stroke = lineOf(ln, ctx.scheme, k) || { color: refs.line || defaultText, width: attr(ln, 'w') ? (+attr(ln, 'w') / EMU_PER_PT) * k : refs.lineWidth ?? 1, dash: refs.lineDash || 'solid' };
     let [x1, x2] = [b.x, b.x + b.w];
     let [y1, y2] = [b.y, b.y + b.h];
     if (b.flipH) [x1, x2] = [x2, x1];
@@ -826,16 +995,17 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         let fill = ownFill?.color;
         if (fill === undefined) fill = refs.hasFill ? refs.fill : 'none';
         const alpha = ownFill?.alpha ?? 1;
-        const { gradient } = ownFill || {};
-        // A picture filling the shape (a photo in a circle…).
-        const blipFill = kid(spPr, 'blipFill');
-        const pictureTarget = blipFill && part.rels[rid(desc(blipFill, 'blip')[0], 'embed')];
-        const picture = pictureTarget && !pictureTarget.external ? await pkg.dataUrl(pictureTarget.path) : null;
+        const { gradient, pattern } = ownFill || {};
+        // A picture filling the shape (a photo in a circle…) or tiled over it: its own, or its style's from the theme.
+        const ownBlip = kid(spPr, 'blipFill');
+        const blipFill = ownBlip || (refs.hasFill && ![...(spPr?.children || [])].some((c) => FILLS.includes(c.localName)) ? refs.fillPicture : null);
+        const styleScheme = refs.fill ? { ...ctx.scheme, phClr: refs.fill.slice(1) } : ctx.scheme;
+        const picture = blipFill ? await pictureFillOf(pkg, blipFill, ownBlip ? part.rels : ctx.themeRels, ctx, deck, ownBlip ? ctx.scheme : styleScheme) : null;
         if (picture && fill === 'none') fill = '#ffffff';
         const ln = kid(spPr, 'ln');
         let stroke = lineOf(ln, ctx.scheme, k);
         if (!stroke && refs.hasLine && refs.line && !kid(ln, 'noFill')) {
-          stroke = { color: refs.line, width: attr(ln, 'w') ? Math.round((+attr(ln, 'w') / EMU_PER_PT) * k * 10) / 10 : 0.75, dash: 'solid' };
+          stroke = { color: refs.line, width: attr(ln, 'w') ? Math.round((+attr(ln, 'w') / EMU_PER_PT) * k * 10) / 10 : refs.lineWidth ?? 0.75, dash: refs.lineDash || 'solid' };
         }
         const bodyPr = kid(txBody, 'bodyPr');
         const fontScale = +(attr(kid(bodyPr, 'normAutofit'), 'fontScale') || 100000) / 100000;
@@ -886,11 +1056,8 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         };
         if (fadeAll) el.opacity = Math.round(alpha * 100) / 100;
         if (gradient && fill !== 'none') el.gradient = gradient;
-        if (picture) {
-          el.fillImage = { media: addMediaTo(deck, picture) };
-          const crop = cropOf(blipFill);
-          if (crop) el.fillImage.crop = crop;
-        }
+        if (pattern && fill !== 'none') el.pattern = pattern;
+        if (picture) el.fillImage = picture;
         if (shadowOf(spPr, refs)) el.shadow = true;
         if (paths) {
           Object.assign(el, { shape: 'custom', paths });
@@ -1182,31 +1349,10 @@ async function readPresentation(pkg, fallbackTitle) {
   const ox = (SW - W * k) / 2;
   const oy = (SH - H * k) / 2;
 
-  // Theme colours and fonts, from the first master's theme; the master's colour map says which is text and background.
-  const scheme = {};
-  const fonts = { major: 'Calibri', minor: 'Calibri' };
-  const masterRel = Object.values(presRels).find((r) => r.type === 'slideMaster');
-  const masterRels = masterRel ? await pkg.rels(masterRel.path) : {};
-  const themeRel = Object.values(masterRels).find((r) => r.type === 'theme') || Object.values(presRels).find((r) => r.type === 'theme');
-  const themeDoc = themeRel ? await pkg.doc(themeRel.path) : null;
-  // The theme's fill and effect styles, which shapes refer to by number.
-  const styleList = (name) => [...(desc(themeDoc, name)[0]?.children || [])];
-  const themeFills = styleList('fillStyleLst');
-  const themeBgFills = styleList('bgFillStyleLst');
-  const themeEffects = styleList('effectStyleLst');
-  const clr = desc(themeDoc, 'clrScheme')[0];
-  for (const c of clr ? [...clr.children] : []) {
-    const v = [...c.children][0];
-    scheme[c.localName] = v?.localName === 'srgbClr' ? attr(v, 'val') : v?.localName === 'sysClr' ? attr(v, 'lastClr') : null;
-  }
-  const masterDoc = masterRel ? await pkg.doc(masterRel.path) : null;
-  const clrMap = desc(masterDoc, 'clrMap')[0];
-  for (const [name, fallback] of Object.entries(SCHEME_ALIAS)) scheme[name] = scheme[attr(clrMap, name) || fallback] || scheme[fallback];
-  const major = attr(path(desc(themeDoc, 'majorFont')[0], 'latin'), 'typeface');
-  const minor = attr(path(desc(themeDoc, 'minorFont')[0], 'latin'), 'typeface');
-  if (major) fonts.major = major;
-  if (minor) fonts.minor = minor;
-  const txStyles = masterDoc ? desc(masterDoc, 'txStyles')[0] : null;
+  // Each slide takes its theme (colours, fonts, fill styles) and text styles from its own master
+  // (see slideContext); a slide without one, from the presentation's first master.
+  const masterIds = desc(desc(pres, 'sldMasterIdLst')[0], 'sldMasterId').map((m) => presRels[rid(m, 'id')]).filter((r) => r && !r.external);
+  const firstMaster = (masterIds[0] || Object.values(presRels).find((r) => r.type === 'slideMaster' && !r.external))?.path || null;
   const defaultTextStyle = desc(pres, 'defaultTextStyle')[0] || null;
 
   const core = await pkg.doc('docProps/core.xml');
@@ -1214,7 +1360,7 @@ async function readPresentation(pkg, fallbackTitle) {
   const deck = newDeck({ title: titleEl?.textContent?.trim() || fallbackTitle, size, slides: [] });
   const stylesRel = Object.values(presRels).find((r) => r.type === 'tableStyles');
   const tableStyles = new Map(desc(stylesRel ? await pkg.doc(stylesRel.path) : null, 'tblStyle').map((s) => [attr(s, 'styleId'), s]));
-  const ctx = { k, ox, oy, scheme, fonts, txStyles, defaultTextStyle, tableStyles, themeFills, themeBgFills, themeEffects, fontScale: 1 };
+  const ctx = { k, ox, oy, defaultTextStyle, tableStyles, presRels, firstMaster, masters: new Map(), recolored: new Map(), fontScale: 1 };
   await readEmbeddedFonts({ pkg, pres, presRels, deck });
 
   const ids = desc(desc(pres, 'sldIdLst')[0], 'sldId');
@@ -1249,8 +1395,13 @@ async function readPresentation(pkg, fallbackTitle) {
       for (const row of el.cells || []) for (const c of row) if (c.text?.includes('#slide-path:')) c.text = fix(c.text);
     }
   }
+  const firstSlideMaster = slidePaths.length ? (await masterOfSlide(pkg, slidePaths[0])).masterPath : null;
   // Dark presentations get the dark theme, so new slides match (a picture background says nothing either way).
   const firstBg = deck.slides[0].background;
-  if (firstBg && firstBg.type !== 'image' && isDarkColor(firstBg.color || firstBg.from)) deck.themeId = 'simple-dark';
+  if (firstBg && firstBg.type !== 'image' && isDarkColor(backgroundBaseColor(firstBg))) deck.themeId = 'simple-dark';
+  // The first slide's theme is the presentation's, written back into the files it saves (see pptx-export.js).
+  const theme = await masterTheme(pkg, firstSlideMaster || firstMaster, ctx);
+  const imported = importedThemeOf(theme);
+  if (imported) deck.importedTheme = imported;
   return deck;
 }

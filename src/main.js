@@ -50,7 +50,8 @@ async function importAndOpen(file, handle = null, { show = true } = {}) {
       if (!deck.file?.dirty) {
         // Changed on disk and nothing newer here: reload the same presentation from the file.
         const fresh = await importFile(file);
-        Object.assign(deck, { slides: fresh.slides, media: fresh.media, size: fresh.size, themeId: fresh.themeId, file: link });
+        Object.assign(deck, { slides: fresh.slides, media: fresh.media, size: fresh.size, themeId: fresh.themeId, importedTheme: fresh.importedTheme, file: link });
+        if (!deck.importedTheme) delete deck.importedTheme;
         await saveDeck(deck);
         await dropOpenCopy(deck.id);
         toast(`Reloaded “${file.name}”, which changed on disk`, { type: 'success' });
