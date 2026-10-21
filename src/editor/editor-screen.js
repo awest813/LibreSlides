@@ -11,13 +11,14 @@ import { showInstallHelp } from '../ui/install.js';
 import { getDeck, saveDeck, onStorageChange } from '../storage/db.js';
 import {
   slideSize, newSlide, layoutElements, cloneSlide, cloneElement, canHoldText, boxOf, moveElement, addMedia, newImage, newTable,
-  htmlToText, SIZES, uid,
+  htmlToText, SIZES, uid, newMedia, mediaIdsOf,
 } from '../model/deck.js';
 import { themeById, resolveColor } from '../model/themes.js';
 import { FONT_SIZES } from '../model/fonts.js';
 import { textStyle } from '../render/render.js';
 import { sanitizeHtml, sanitizeElement } from '../io/sanitize.js';
 import { readImageFile } from '../io/images.js';
+import { readMediaFile, mediaTypeOf, isMediaData, LARGE_MEDIA_BYTES } from '../io/media-files.js';
 import { SlideCanvas, aabb } from './canvas.js';
 import { Filmstrip } from './filmstrip.js';
 import { Toolbar } from './toolbar.js';
@@ -186,7 +187,9 @@ export class EditorScreen {
       e.preventDefault();
       e.stopPropagation();
       const images = files.filter((f) => f.type.startsWith('image/'));
+      const clips = files.filter((f) => !f.type.startsWith('image/') && mediaTypeOf(f)); // videos and sounds
       if (images.length) this.insertImageFiles(images, this.canvas.toSlide(e));
+      else if (clips.length) for (const f of clips) this.insertMediaFile(f, this.canvas.toSlide(e));
       else {
         // The handle must be requested synchronously, during the drop event.
         handleFromDataTransfer(e.dataTransfer, files[0]).then((handle) => this.options.onOpenFile?.(files[0], handle));
@@ -554,7 +557,7 @@ export class EditorScreen {
         for (const el of s.elements) {
           if (el.type === 'line') {
             el.x1 *= sx; el.x2 *= sx;
-          } else if (el.type === 'image' || (el.type === 'shape' && el.lockRatio)) {
+          } else if (el.type === 'image' || el.type === 'media' || (el.type === 'shape' && el.lockRatio)) {
             // Keep proportions: scale about the element's centre.
             const k = Math.min(1, sx);
             const cx = (el.x + el.w / 2) * sx;
@@ -630,7 +633,7 @@ export class EditorScreen {
   /** Pictures referenced by elements, so a copy carries them along. */
   mediaFor(els) {
     const media = {};
-    for (const el of els) if (el.media && this.deck.media[el.media]) media[el.media] = this.deck.media[el.media];
+    for (const el of els) for (const id of mediaIdsOf(el)) if (this.deck.media[id]) media[id] = this.deck.media[id];
     return media;
   }
 
@@ -638,7 +641,10 @@ export class EditorScreen {
   importMedia(media, els) {
     const map = {};
     for (const [id, data] of Object.entries(media || {})) map[id] = addMedia(this.deck, data);
-    for (const el of els) if (el.media && map[el.media]) el.media = map[el.media];
+    for (const el of els) {
+      if (el.media && map[el.media]) el.media = map[el.media];
+      if (el.poster && map[el.poster]) el.poster = map[el.poster];
+    }
   }
 
   clipboardPayload() {
@@ -725,7 +731,9 @@ export class EditorScreen {
         const payload = JSON.parse(custom);
         // Clipboard data can come from any page: clean text and colours like an opened file.
         for (const el of payload.elements || []) sanitizeElement(el);
-        payload.media = Object.fromEntries(Object.entries(payload.media || {}).filter(([, v]) => /^data:image\//.test(v)));
+        payload.media = Object.fromEntries(Object.entries(payload.media || {}).filter(([, v]) => /^data:image\//.test(v) || isMediaData(v)));
+        // A video or sound whose file didn't come along can't play.
+        payload.elements = (payload.elements || []).filter((el) => el.type !== 'media' || isMediaData(payload.media[el.media]));
         this.pasteElements(payload);
         return;
       } catch { /* fall through to text */ }
@@ -1059,6 +1067,38 @@ export class EditorScreen {
       }
     }
     if (els.length) this.addElements(els);
+  }
+
+  // ---------------------------------------------------------------- video & sound
+
+  async insertMedia() {
+    const file = await pickFileInput('video/*,audio/*');
+    if (file) this.insertMediaFile(file);
+  }
+
+  /** Add a video or sound file to the slide: a video fills most of it, a sound is a speaker button. */
+  async insertMediaFile(file, at = null) {
+    if (file.size > LARGE_MEDIA_BYTES) {
+      toast(`“${file.name}” is ${Math.round(file.size / 1048576)} MB. It’s kept in this browser’s storage with the presentation, which makes saving and opening slower.`, { timeout: 9000 });
+    }
+    let info;
+    try {
+      info = await readMediaFile(file);
+    } catch (err) {
+      toast(`${file.name}: ${err.message || 'couldn’t read this file'}`, { type: 'error' });
+      return;
+    }
+    if (info.kind === 'video' && !info.width) toast('This browser can’t show this video, so it may not play here (it will in PowerPoint if PowerPoint can play it).', { timeout: 8000 });
+    const { w, h: H } = this.size;
+    const vw = info.width || 16;
+    const vh = info.height || 9;
+    const k = Math.min((w * 0.6) / vw, (H * 0.6) / vh);
+    const [bw, bh] = info.kind === 'video' ? [Math.round(vw * k), Math.round(vh * k)] : [64, 64];
+    const cx = at ? at.x : w / 2;
+    const cy = at ? at.y : H / 2;
+    const el = newMedia(info.kind, addMedia(this.deck, info.dataUrl), info.poster && addMedia(this.deck, info.poster), Math.round(cx - bw / 2), Math.round(cy - bh / 2), bw, bh);
+    if (info.duration) el.duration = info.duration;
+    this.addElements([el]);
   }
 
   async replaceImage() {

@@ -481,8 +481,8 @@ export class SlideCanvas {
     const [, sx, sy] = HANDLES.find(([n]) => n === handle);
     const p0 = this.toSlide(e);
     const corner = sx !== 0 && sy !== 0;
-    // Pictures keep their proportions from the corners unless Shift is held; other shapes only with Shift.
-    const lockDefault = el.type === 'image' || !!el.lockRatio;
+    // Pictures and videos keep their proportions from the corners unless Shift is held; other shapes only with Shift.
+    const lockDefault = el.type === 'image' || el.type === 'media' || !!el.lockRatio;
     this.track(e, {
       move: (ev) => {
         const p = this.toSlide(ev);

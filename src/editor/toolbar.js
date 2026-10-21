@@ -100,6 +100,7 @@ export class Toolbar {
       Insert: () => [
         { label: 'Text box', icon: 'textBox', run: () => app.canvas.setTool({ type: 'text' }) },
         { label: 'Image…', icon: 'image', run: () => app.insertImage() },
+        { label: 'Video or audio…', icon: 'media', run: () => app.insertMedia() },
         { label: 'Table…', icon: 'table', run: () => this.tableMenu(this.menuButtons.Insert) },
         'separator',
         ...SHAPES.slice(0, 6).map((s) => ({ label: s.name, run: () => app.canvas.setTool({ type: 'shape', shape: s.id }) })),

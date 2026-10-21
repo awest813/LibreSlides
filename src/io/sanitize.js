@@ -1,5 +1,6 @@
 import DOMPurify from 'dompurify';
 import { PATH_ARGS } from '../model/shapes.js';
+import { isMediaData } from './media-files.js';
 
 /**
  * Text in slides is HTML. Anything that comes from outside (opened files,
@@ -34,6 +35,20 @@ export function sanitizeHtml(html) {
 }
 
 const isImageData = (v) => typeof v === 'string' && /^data:image\/(png|jpe?g|gif|webp|svg\+xml|bmp|avif);/i.test(v);
+
+/**
+ * A video or sound element: a known kind and a playable file, else it's
+ * dropped. The poster must be a picture, and the play settings plain values.
+ */
+function keepMediaElement(el, deck) {
+  if (el.kind !== 'video' && el.kind !== 'audio') return false;
+  if (!isMediaData(deck.media?.[el.media])) return false;
+  if (el.poster != null && !isImageData(deck.media?.[el.poster])) delete el.poster;
+  el.autoplay = el.autoplay === true;
+  el.loop = el.loop === true;
+  if (el.duration != null && !(Number.isFinite(el.duration) && el.duration > 0)) delete el.duration;
+  return true;
+}
 
 /**
  * A colour value we draw: hex, rgb()/rgba(), a theme colour, none or transparent.
@@ -104,6 +119,7 @@ export function sanitizeDeck(deck) {
     } else s.background = null;
   }
   for (const [id, data] of Object.entries(deck.media || {})) {
+    if (isMediaData(data)) continue; // videos and sounds only ever play through <video> and <audio>
     if (!isImageData(data)) delete deck.media[id];
     else if (/^data:image\/svg\+xml/i.test(data)) {
       // SVG can carry script; it only ever renders through <img>, which doesn't run it, but keep it tidy.
@@ -119,6 +135,7 @@ export function sanitizeDeck(deck) {
   // Pictures that were dropped (unsupported or unsafe) leave nothing behind.
   for (const s of deck.slides || []) {
     s.elements = (s.elements || []).filter((el) => el.type !== 'image' || deck.media?.[el.media]);
+    s.elements = s.elements.filter((el) => el.type !== 'media' || keepMediaElement(el, deck));
     if (s.background?.type === 'image' && !deck.media?.[s.background.media]) s.background = null;
   }
   return deck;

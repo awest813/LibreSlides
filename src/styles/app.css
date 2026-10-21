@@ -27,6 +27,16 @@
 .el-text-body > * + *, .el-text-body li + li, .el-text-body li > ul, .el-text-body li > ol { margin-top: var(--para-gap, 0); }
 .el-text-body a, .cell-body a { color: inherit; text-decoration: underline; }
 .el-img { display: block; width: 100%; height: 100%; }
+/* Videos and sounds: the poster (or a dark frame) with a play mark; a real player in the slideshow */
+.el-media-frame { position: relative; width: 100%; height: 100%; overflow: hidden; }
+.el-media-blank { width: 100%; height: 100%; background: #1f1f1f; }
+.el-media-badge { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); pointer-events: none; }
+.el-media-badge svg { display: block; width: 100%; height: 100%; }
+.el-media-player { display: block; width: 100%; height: 100%; object-fit: fill; background: #000; }
+audio.el-media-player { display: none; }
+.el-media-toggle { all: unset; position: absolute; inset: 0; display: grid; place-items: center; cursor: pointer; border-radius: 6px; }
+.el-media-toggle:focus-visible { outline: 2px solid #fff; }
+.el-media-toggle.is-playing { box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.7); }
 .el-table-grid { width: 100%; height: 100%; border-collapse: collapse; table-layout: fixed; }
 .el-table-grid td { padding: 4px 7px; vertical-align: middle; overflow-wrap: anywhere; white-space: pre-wrap; }
 .cell-body { outline: none; min-height: 1em; }

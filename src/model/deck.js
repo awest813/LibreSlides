@@ -7,10 +7,14 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  *
  * deck    { id, title, themeId, size, slides[], media{id: dataUrl}, createdAt, updatedAt }
  * slide   { id, layout, background|null, elements[], notes, transition{type, duration}, hidden }
- * element { id, type: text|shape|image|line|table, x, y, w, h, rot, opacity, … }
+ * element { id, type: text|shape|image|line|table|media, x, y, w, h, rot, opacity, … }
+ * media   { id, type: 'media', kind: 'video'|'audio', media, poster?, x, y, w, h, rot, autoplay?, loop? }
  *
- * Pictures live in deck.media and are referenced by id, so undo snapshots of
- * the slides stay small however many pictures a deck has.
+ * Pictures, videos and sounds live in deck.media (as data URLs) and are
+ * referenced by id, so undo snapshots of the slides stay small however many
+ * a deck has. A video or sound element points at its file (`media`) and at
+ * the picture shown until it plays (`poster`, optional). It plays when the
+ * slide appears if `autoplay`, otherwise when its control is clicked.
  */
 export const SIZES = {
   '16:9': { w: 960, h: 540, label: 'Widescreen (16:9)' },
@@ -144,6 +148,13 @@ export function newImage(media, x, y, w, h) {
   return { id: uid(), type: 'image', media, x, y, w, h, rot: 0, stroke: { color: 'none', width: 2, dash: 'solid' }, radius: 0 };
 }
 
+/** A video or sound: `media` is its file, `poster` the picture shown until it plays. */
+export function newMedia(kind, media, poster, x, y, w, h) {
+  const el = { id: uid(), type: 'media', kind, media, x, y, w, h, rot: 0, autoplay: false, loop: false };
+  if (poster) el.poster = poster;
+  return el;
+}
+
 export function newTable(rows, cols, x, y, w, h) {
   return {
     id: uid(), type: 'table', x, y, w, h, rot: 0, header: true,
@@ -199,12 +210,15 @@ export function addMedia(deck, dataUrl) {
   return id;
 }
 
-/** Ids of the pictures the deck still uses. */
+/** The deck.media ids an element refers to (a picture, or a video and its poster). */
+export const mediaIdsOf = (el) => [el?.media, el?.poster].filter(Boolean);
+
+/** Ids of the pictures, videos and sounds the deck still uses. */
 export function usedMedia(deck) {
   const used = new Set();
   for (const s of deck.slides) {
     if (s.background?.media) used.add(s.background.media);
-    for (const el of s.elements) if (el.media) used.add(el.media);
+    for (const el of s.elements) for (const id of mediaIdsOf(el)) used.add(id);
   }
   return used;
 }

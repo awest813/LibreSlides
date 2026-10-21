@@ -21,7 +21,7 @@ const svgEl = (tag, attrs = {}) => {
 
 const blobUrls = new Map(); // media id → { data, url }
 
-/** An object URL for a deck picture (cheaper to reuse across thumbnails than its data URL). */
+/** An object URL for a deck picture, video or sound (cheaper to reuse across thumbnails than its data URL). */
 export function mediaUrl(deck, id) {
   const data = deck?.media?.[id];
   if (!data) return '';
@@ -269,8 +269,9 @@ export const themeDecor = (slide, deck) => {
 /**
  * Render a whole slide. Options:
  *   editing – show placeholder hints on empty placeholders
+ *   live    – videos and sounds can play (the slideshow), instead of showing their poster
  */
-export function renderSlide(slide, deck, { editing = false } = {}) {
+export function renderSlide(slide, deck, { editing = false, live = false } = {}) {
   const theme = themeById(deck.themeId);
   const { w, h } = slideSize(deck);
   const root = document.createElement('div');
@@ -278,7 +279,7 @@ export function renderSlide(slide, deck, { editing = false } = {}) {
   root.style.width = `${w}px`;
   root.style.height = `${h}px`;
   root.style.background = backgroundCss(slide.background, theme, (id) => mediaUrl(deck, id));
-  const ctx = { theme, deck, editing };
+  const ctx = { theme, deck, editing, live };
   const decor = document.createElement('div');
   decor.className = 'slide-decor';
   for (const d of decorElements(slide, theme, w, h)) decor.append(renderElement(d, ctx));
