@@ -171,6 +171,7 @@ function runStyle(node, root, base, links) {
     const deco = `${st.textDecoration || ''} ${st.textDecorationLine || ''}`;
     if (/underline/.test(deco)) s.underline = true;
     if (/line-through/.test(deco)) s.strike = true;
+    if (/\bnone\b/.test(deco) && !/underline|line-through/.test(deco)) Object.assign(s, { underline: false, strike: false });
     if (st.color && toHex(st.color)) Object.assign(s, { color: toHex(st.color), noFill: false });
     if (st.backgroundColor) s.highlight = toHex(st.backgroundColor) || s.highlight;
     if (st.fontSize && /px|pt$/.test(st.fontSize)) s.fontSize = parseFloat(st.fontSize);
@@ -185,19 +186,22 @@ function runStyle(node, root, base, links) {
 
 /**
  * What pptxgenjs can't write — capitals, fields, outlines, gradient text,
- * shadows and glows — travels in the run's language as "x-ls-" and hex-coded
- * JSON, and is written into the XML afterwards (see fixRuns).
+ * shadows and glows, and bold or italic turned off in a box that has them —
+ * travels in the run's language as "x-ls-" and hex-coded JSON, and is
+ * written into the XML afterwards (see fixRuns).
  */
 const EXTRAS_LANG = 'x-ls-';
 const hexOf = (str) => [...new TextEncoder().encode(str)].map((b) => b.toString(16).padStart(2, '0')).join('');
 const unhex = (hex) => new TextDecoder().decode(new Uint8Array(hex.match(/../g).map((h) => parseInt(h, 16))));
 
 function toRunOptions(s) {
+  // Formatting a run turns off is written as off, or it would take the box's
+  // (pptxgenjs gives every run the box's options, and only writes b and i when they're on).
   const o = {};
-  if (s.bold) o.bold = true;
-  if (s.italic) o.italic = true;
-  if (s.underline) o.underline = { style: 'sng' };
-  if (s.strike) o.strike = 'sngStrike';
+  if (s.bold != null) o.bold = !!s.bold;
+  if (s.italic != null) o.italic = !!s.italic;
+  if (s.underline != null) o.underline = { style: s.underline ? 'sng' : 'none' };
+  if (s.strike != null) o.strike = s.strike ? 'sngStrike' : 'noStrike';
   if (s.color) o.color = s.color;
   if (s.highlight) o.highlight = s.highlight;
   if (s.fontSize) o.fontSize = s.fontSize;
@@ -209,6 +213,8 @@ function toRunOptions(s) {
   const extras = {};
   for (const key of ['caps', 'field', 'outline', 'gradient', 'shadows']) if (s[key]) extras[key] = s[key];
   if (s.noFill && !s.gradient) extras.noFill = true;
+  const off = [s.bold === false && 'b', s.italic === false && 'i'].filter(Boolean);
+  if (off.length) extras.off = off;
   if (Object.keys(extras).length) o.lang = EXTRAS_LANG + hexOf(JSON.stringify(extras));
   return o;
 }
@@ -225,6 +231,7 @@ function runWithExtras(hex, attrs, body) {
     return `<a:rPr lang="en-US"${attrs}>${body}</a:rPr>`;
   }
   if (extras.caps === 'all' || extras.caps === 'small') attrs += ` cap="${extras.caps}"`;
+  for (const name of extras.off || []) if (name === 'b' || name === 'i') attrs = `${attrs.replace(new RegExp(` ${name}="[^"]*"`), '')} ${name}="0"`;
   if (extras.field) attrs += ` x-ls-fld="${extras.field}"`;
   const [, solid = '', rest] = /^(<a:solidFill>[\s\S]*?<\/a:solidFill>)?([\s\S]*)$/.exec(body);
   const o = extras.outline;
@@ -887,6 +894,69 @@ function timelineOf(xml, timeline) {
   return { anims, media };
 }
 
+// Picture formats by their first bytes, for parts named after another format.
+const PICTURE_MAGIC = [
+  { bytes: [0x89, 0x50, 0x4e, 0x47], ext: 'png', type: 'image/png' },
+  { bytes: [0xff, 0xd8, 0xff], ext: 'jpg', type: 'image/jpeg', also: ['jpeg'] },
+  { bytes: [0x47, 0x49, 0x46, 0x38], ext: 'gif', type: 'image/gif' },
+];
+const sameBytes = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+// Characters XML 1.0 can't hold (control characters, lone surrogates), which text may carry into pptxgenjs's XML.
+const NOT_XML = /[\ud800-\udbff][\udc00-\udfff]|[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff\ud800-\udfff]/g;
+
+/**
+ * Last touches to the package: each picture stored once (pptxgenjs writes a
+ * copy per use, so a master's logo would be on every slide) under the name
+ * of its real format (it calls slide backgrounds .png whatever they are),
+ * no content types for parts that aren't there, and no characters XML can't hold.
+ */
+export async function tidyPackage(zip) {
+  const renamed = new Map(); // ppt/media/… → the name it now has
+  const kept = new Map(); // byte length → [{ name, bytes }]
+  for (const file of zip.file(/^ppt\/media\/[^/]+$/)) {
+    const bytes = await file.async('uint8array');
+    const ext = (/\.([^.]+)$/.exec(file.name)?.[1] || '').toLowerCase();
+    const real = PICTURE_MAGIC.find((m) => m.bytes.every((b, i) => bytes[i] === b));
+    let name = file.name;
+    if (real && ext !== real.ext && !real.also?.includes(ext)) {
+      name = `${file.name.replace(/\.[^.]*$/, '')}.${real.ext}`;
+      while (zip.file(name) || [...renamed.values()].includes(name)) name = name.replace(/(\.[^.]+)$/, '-1$1');
+    }
+    const same = (kept.get(bytes.length) || []).find((k) => k.name.split('.').pop() === name.split('.').pop() && sameBytes(k.bytes, bytes));
+    if (same) name = same.name;
+    else (kept.get(bytes.length) || kept.set(bytes.length, []).get(bytes.length)).push({ name, bytes });
+    if (name === file.name) continue;
+    renamed.set(file.name, name);
+    zip.remove(file.name);
+    if (!same) zip.file(name, bytes);
+  }
+  const typesPath = '[Content_Types].xml';
+  let types = await zip.file(typesPath).async('string');
+  if (renamed.size) {
+    for (const file of zip.file(/\.rels$/)) {
+      const rels = await file.async('string');
+      // Relationships point at media from parts one folder below ppt/ (slides, layouts, diagrams…).
+      const fixed = rels.replace(/Target="\.\.\/media\/([^"]+)"/g, (m, base) => {
+        const to = renamed.get(`ppt/media/${base}`);
+        return to ? `Target="../media/${to.split('/').pop()}"` : m;
+      });
+      if (fixed !== rels) zip.file(file.name, fixed);
+    }
+    for (const m of PICTURE_MAGIC) {
+      const used = [...renamed.values()].some((n) => n.endsWith(`.${m.ext}`));
+      if (used && !new RegExp(`<Default Extension="${m.ext}"`, 'i').test(types)) types = types.replace(/<Types\b[^>]*>/, (t) => `${t}<Default Extension="${m.ext}" ContentType="${m.type}"/>`);
+    }
+  }
+  // pptxgenjs lists a slide master per slide, though there's one.
+  types = types.replace(/<Override PartName="\/([^"]+)"[^>]*\/>/g, (o, part) => (zip.file(part) ? o : ''));
+  zip.file(typesPath, types);
+  for (const file of zip.file(/\.(xml|rels)$/)) {
+    const xml = await file.async('string');
+    const clean = xml.replace(NOT_XML, (c) => (c.length === 2 ? c : ''));
+    if (clean !== xml) zip.file(file.name, clean);
+  }
+}
+
 /** Tidy the paragraphs, and add transitions and "skip slide" to the generated XML. */
 async function postProcess(buffer, deck, allMarks) {
   const zip = await JSZip.loadAsync(buffer);
@@ -916,6 +986,7 @@ async function postProcess(buffer, deck, allMarks) {
   await writeComments(zip, deck);
   await writeSections(zip, deck);
   await embedFonts(zip, deck);
+  await tidyPackage(zip);
   return zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', compression: 'DEFLATE' });
 }
 
