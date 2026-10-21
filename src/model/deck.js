@@ -22,6 +22,10 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  * categories are its X values. `style` { size, color, font } sets its text,
  * and `fill` and `stroke` the chart area's background and border.
  *
+ * Pictures may have colour adjustments, `adjust: { grayscale?, brightness?,
+ * contrast? }` (-1 to 1), and be cropped to a shape, `clip: { shape, paths?,
+ * preset? }` as shape elements have (an oval, a PowerPoint preset…).
+ *
  * Elements sharing a `groupId` are a group: selected, moved and saved
  * together, next to each other in the stacking order.
  *

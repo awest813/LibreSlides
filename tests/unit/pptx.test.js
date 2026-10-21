@@ -228,6 +228,29 @@ describe('PowerPoint pictures in shapes and SmartArt', () => {
     expect(el.fillImage.crop).toEqual({ l: 0.1, t: 0, r: 0.2, b: 0 });
   });
 
+  it('keeps a picture cropped to a shape, and its colour adjustments', async () => {
+    const oval = newImage('m1', 10, 10, 200, 100);
+    oval.clip = { shape: 'ellipse' };
+    oval.adjust = { grayscale: true, brightness: 0.2, contrast: -0.3 };
+    const cloud = newImage('m1', 300, 10, 200, 100);
+    cloud.clip = { shape: 'custom', paths: [{ cmds: [['M', 0, 0], ['L', 1, 1], ['Z']] }], preset: { name: 'cloud' } };
+    const deck = deckWith(oval, cloud);
+    deck.media.m1 = PNG;
+    const xml = await slideXml(deck);
+    expect(xml).toContain('<a:grayscl/><a:lum bright="20000" contrast="-30000"/>');
+    expect(xml).toContain('<a:prstGeom prst="ellipse"><a:avLst></a:avLst></a:prstGeom>');
+    expect(xml).toContain('<a:prstGeom prst="cloud">');
+    const [a, b] = (await roundTrip(deck)).slides[0].elements;
+    expect(a.clip).toEqual({ shape: 'ellipse' });
+    expect(a.adjust).toEqual({ grayscale: true, brightness: 0.2, contrast: -0.3 });
+    expect(b.clip).toMatchObject({ shape: 'custom', preset: { name: 'cloud' } });
+    expect(b.clip.paths.length).toBeGreaterThan(1);
+    // Drawn clipped and filtered.
+    const node = renderElement(a, { theme: themeById(deck.themeId), deck });
+    expect(node.querySelector('.el-img').style.clipPath).toMatch(/^path\(/);
+    expect(node.querySelector('.el-img').style.filter).toBe('grayscale(1) brightness(1.2) contrast(0.7)');
+  });
+
   /** A slide with a SmartArt diagram in a frame at (1 in, 1 in); `drawing` is the drawn copy's shapes (or none). */
   const withSmartArt = (drawing) => roundTrip(deckWith(), async (zip) => {
     const ns = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"';

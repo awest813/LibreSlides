@@ -303,6 +303,11 @@ async function addElement(pptx, s, el, deck, theme, marks) {
     }
     if (el.radius) opts.rounding = el.radius >= Math.min(el.w, el.h) / 2;
     if (opacity < 1) opts.transparency = Math.round((1 - opacity) * 100);
+    // Cropped to a shape, or colour adjustments: added to the picture's XML afterwards.
+    if (el.clip || el.adjust) {
+      opts.objectName ||= `LibreSlides shape ${++marks.count}`;
+      marks.pictureLooks.set(opts.objectName, { clip: el.clip, adjust: el.adjust });
+    }
     s.addImage(opts);
     return;
   }
@@ -552,6 +557,41 @@ async function applyPictureFills(zip, slideNo, xml, marks) {
   return xml;
 }
 
+/** Where the shape called `name` is in a slide's XML: the closest <p:sp>, <p:pic> or <p:graphicFrame> opened before its name. */
+function shapeBlock(xml, name) {
+  const at = xml.indexOf(`name="${name}"`);
+  if (at < 0) return null;
+  const [tag, start] = ['<p:sp>', '<p:pic>', '<p:graphicFrame>'].map((t) => [t, xml.lastIndexOf(t, at)]).sort((a, b) => b[1] - a[1])[0];
+  const close = `</${tag.slice(1)}`;
+  const end = xml.indexOf(close, at);
+  return start < 0 || end < 0 ? null : { start, end: end + close.length };
+}
+
+/** Change the XML of the shape called `name`. */
+function editShape(xml, name, change) {
+  const b = shapeBlock(xml, name);
+  return b ? xml.slice(0, b.start) + change(xml.slice(b.start, b.end)) + xml.slice(b.end) : xml;
+}
+
+/** A pictures' colour adjustments (see render.js pictureFilters) and the shape it's cropped to. */
+function applyPictureLooks(xml, looks) {
+  for (const [name, { clip, adjust }] of looks || []) {
+    xml = editShape(xml, name, (pic) => {
+      const a = adjust || {};
+      const pct = (v) => Math.round(v * 100000);
+      const effects = (a.grayscale ? '<a:grayscl/>' : '') + (a.brightness || a.contrast ? `<a:lum${a.brightness ? ` bright="${pct(a.brightness)}"` : ''}${a.contrast ? ` contrast="${pct(a.contrast)}"` : ''}/>` : '');
+      if (effects) pic = pic.replace(/<a:blip ([^>]*?)\/>|<a:blip ([^>]*)>/, (m, selfClosing, open) => (selfClosing != null ? `<a:blip ${selfClosing}>${effects}</a:blip>` : `<a:blip ${open}>${effects}`));
+      const shape = clip?.preset?.name || (clip?.shape !== 'custom' && clip?.shape);
+      if (shape) {
+        const adj = clip.preset?.adj ? Object.entries(clip.preset.adj).map(([k, v]) => `<a:gd name="${k}" fmla="val ${Math.round(v)}"/>`).join('') : '';
+        pic = pic.replace(/<a:prstGeom prst="[^"]*">[\s\S]*?<\/a:prstGeom>|<a:prstGeom prst="[^"]*"\/>/, `<a:prstGeom prst="${shape}"><a:avLst>${adj}</a:avLst></a:prstGeom>`);
+      }
+      return pic;
+    });
+  }
+  return xml;
+}
+
 /**
  * pptxgenjs has no groups: gather each group's shapes (found by name, in their
  * stacking order) into a <p:grpSp> where the first of them was.
@@ -563,14 +603,8 @@ export function applyGroups(xml, members) {
   for (const list of byGroup.values()) {
     const blocks = [];
     for (const { name } of list) {
-      const at = xml.indexOf(`name="${name}"`);
-      if (at < 0) continue;
-      // The shape is the closest <p:sp>, <p:pic> or <p:graphicFrame> opened before its name.
-      const open = ['<p:sp>', '<p:pic>', '<p:graphicFrame>'].map((t) => [t, xml.lastIndexOf(t, at)]).sort((a, b) => b[1] - a[1])[0];
-      const close = `</${open[0].slice(1)}`;
-      const end = xml.indexOf(close, at) + close.length;
-      if (open[1] < 0 || end < close.length) continue;
-      blocks.push({ start: open[1], end, xml: xml.slice(open[1], end) });
+      const b = shapeBlock(xml, name);
+      if (b) blocks.push({ ...b, xml: xml.slice(b.start, b.end) });
     }
     if (blocks.length < 2) continue;
     blocks.sort((a, b) => a.start - b.start);
@@ -628,7 +662,7 @@ async function postProcess(buffer, deck, allMarks) {
     const path = `ppt/slides/slide${i + 1}.xml`;
     const file = zip.file(path);
     if (!file) continue;
-    let xml = applyGradients(fixParagraphs(await file.async('string')), allMarks[i]);
+    let xml = applyPictureLooks(applyGradients(fixParagraphs(await file.async('string')), allMarks[i]), allMarks[i].pictureLooks);
     xml = await applyPictureFills(zip, i + 1, xml, allMarks[i]);
     const t = slide.transition;
     if (t && TRANSITION_XML[t.type]) {
@@ -661,7 +695,7 @@ export async function buildPptx(deck) {
   const allMarks = [];
   for (const slide of deck.slides) {
     const s = pptx.addSlide();
-    const marks = { count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), timeline: [], groups: [], background: null };
+    const marks = { count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), pictureLooks: new Map(), timeline: [], groups: [], background: null };
     marks.groupSizes = slide.elements.reduce((m, e) => (e.groupId ? m.set(e.groupId, (m.get(e.groupId) || 0) + 1) : m), new Map());
     allMarks.push(marks);
     const bg = slide.background || theme.background;

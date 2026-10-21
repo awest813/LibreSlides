@@ -761,6 +761,20 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         if (crop) el.crop = crop;
         if (amt != null && +amt < 100000) el.opacity = Math.max(0, Math.round(+amt / 1000) / 100);
         if (shadowOf(kid(node, 'spPr'), styleRefs(node, ctx))) el.shadow = true;
+        // Cropped to a shape, and colour adjustments.
+        const picPr = kid(node, 'spPr');
+        const clipName = attr(kid(picPr, 'prstGeom'), 'prst');
+        if ((clipName && clipName !== 'rect') || kid(picPr, 'custGeom')) {
+          const outline = outlineOf(picPr, xfrmOf(picPr));
+          if (outline) el.clip = { shape: 'custom', paths: outline.paths, ...(outline.preset && { preset: outline.preset }) };
+          else if (SHAPE_IDS.has(clipName)) el.clip = { shape: clipName };
+        }
+        const adjust = {};
+        if (kid(blip, 'grayscl')) adjust.grayscale = true;
+        const lum = kid(blip, 'lum');
+        if (+attr(lum, 'bright')) adjust.brightness = Math.max(-1, Math.min(1, +attr(lum, 'bright') / 100000));
+        if (+attr(lum, 'contrast')) adjust.contrast = Math.max(-1, Math.min(1, +attr(lum, 'contrast') / 100000));
+        if (Object.keys(adjust).length) el.adjust = adjust;
         slide.elements.push(el);
       } else if (name === 'cxnSp') {
         const spPr = kid(node, 'spPr');

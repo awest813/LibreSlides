@@ -118,6 +118,21 @@ export function sanitizeElement(el) {
       else el.gradient.angle = Number.isFinite(g.angle) ? g.angle : 180;
     }
   }
+  if (el.adjust != null) {
+    const a = el.adjust;
+    el.adjust = isObject(a) ? Object.fromEntries([['grayscale', a.grayscale === true || undefined], ...['brightness', 'contrast'].map((k) => [k, Number.isFinite(a[k]) ? Math.max(-1, Math.min(1, a[k])) : undefined])].filter(([, v]) => v)) : {};
+    if (!Object.keys(el.adjust).length) delete el.adjust;
+  }
+  if (el.clip != null) {
+    // Cropped to a shape: a shape name, or a freeform outline (checked as shapes' are).
+    const c = el.clip;
+    if (!isObject(c) || typeof c.shape !== 'string' || !/^[a-zA-Z0-9]{1,40}$/.test(c.shape)) delete el.clip;
+    else if (c.shape === 'custom') {
+      const holder = sanitizeElement({ shape: 'custom', paths: c.paths, preset: c.preset });
+      if (holder.shape !== 'custom') delete el.clip;
+      else el.clip = { shape: 'custom', paths: holder.paths, ...(holder.preset && { preset: holder.preset }) };
+    } else el.clip = { shape: c.shape };
+  }
   if (el.textRect != null) {
     if (isObject(el.textRect)) el.textRect = Object.fromEntries(['l', 't', 'r', 'b'].map((k) => [k, Number.isFinite(el.textRect[k]) ? Math.max(-1, Math.min(1, el.textRect[k])) : 0]));
     else delete el.textRect;

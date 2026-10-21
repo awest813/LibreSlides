@@ -186,6 +186,22 @@ export function gradientPaint(svg, g, w, h, theme) {
   return `url(#${id})`;
 }
 
+/** The outline a picture is cropped to (see deck.js), as SVG path data for a w × h box. */
+function clipPath(clip, w, h) {
+  if (clip.shape === 'custom' && Array.isArray(clip.paths)) return clip.paths.map((p) => customPath(p.cmds, w, h)).join('');
+  return clip.shape && clip.shape !== 'rect' ? shapePath(clip.shape, w, h) : null;
+}
+
+/** A picture's colour adjustments as CSS filters: greyscale, brightness and contrast (-1 to 1, 0 unchanged). */
+export function pictureFilters(adjust) {
+  if (!adjust) return [];
+  const out = [];
+  if (adjust.grayscale) out.push('grayscale(1)');
+  if (adjust.brightness) out.push(`brightness(${Math.max(0, 1 + adjust.brightness)})`);
+  if (adjust.contrast) out.push(`contrast(${Math.max(0, 1 + adjust.contrast)})`);
+  return out;
+}
+
 /** A picture stretched over a shape (keeping only the part its crop leaves), as an SVG paint. */
 function picturePaint(svg, el, url) {
   const id = `ls-pic-${++gradientCount}`;
@@ -296,13 +312,23 @@ export function renderElement(el, ctx) {
       frame.append(img);
     }
     if (el.radius) frame.style.borderRadius = `${el.radius}px`;
-    if (el.stroke && el.stroke.color !== 'none' && el.stroke.width) {
+    // A picture cropped to a shape (a circle…): clipped to its outline, which also carries the border.
+    const clip = el.clip && clipPath(el.clip, el.w, el.h);
+    const border = el.stroke && el.stroke.color !== 'none' && el.stroke.width;
+    if (clip) frame.style.clipPath = `path('${clip}')`;
+    else if (border) {
       frame.style.outline = `${el.stroke.width}px ${el.stroke.dash && el.stroke.dash !== 'solid' ? 'dashed' : 'solid'} ${resolveColor(el.stroke.color, theme)}`;
       frame.style.outlineOffset = `-${el.stroke.width / 2}px`;
     }
-    if (shadow) frame.style.filter = shadow;
+    const filters = [...pictureFilters(el.adjust), shadow].filter(Boolean);
+    if (filters.length) frame.style.filter = filters.join(' ');
     if (el.flipH || el.flipV) frame.style.transform = `scale(${el.flipH ? -1 : 1}, ${el.flipV ? -1 : 1})`;
     div.append(frame);
+    if (clip && border) {
+      const svg = svgEl('svg', { class: 'el-svg', overflow: 'visible', width: el.w, height: el.h });
+      svg.append(svgEl('path', { d: clip, fill: 'none', ...strokeAttrs(el.stroke, theme) }));
+      div.append(svg);
+    }
   }
 
   if (el.type === 'table') div.append(renderTable(el, ctx));

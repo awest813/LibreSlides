@@ -3,6 +3,7 @@ import { icon } from '../ui/icons.js';
 import { openColorPicker } from '../ui/color-picker.js';
 import { THEMES, resolveColor, backgroundBaseColor } from '../model/themes.js';
 import { SIZES, slideSize, LAYOUTS, TRANSITIONS, ANIMATIONS, CHART_KINDS, newSlide, fillPlaceholders, canHoldText, slideText } from '../model/deck.js';
+import { SHAPES } from '../model/shapes.js';
 import { renderThumb, textStyle } from '../render/render.js';
 import { seriesColor, pointColor } from '../render/chart.js';
 
@@ -50,6 +51,24 @@ function colorButton(label, value, theme, onPick, opts = {}) {
  * The right-hand panel: themes and backgrounds, transitions, animations and
  * the detailed format options for the selection.
  */
+/** Set or clear one of a picture's colour adjustments. */
+function setAdjust(e, key, value) {
+  e.adjust = { ...(e.adjust || {}), [key]: value };
+  if (!e.adjust[key]) delete e.adjust[key];
+  if (!Object.keys(e.adjust).length) delete e.adjust;
+}
+
+/** A slider for a picture's brightness or contrast (-100 to 100, 0 unchanged). */
+function adjustSlider(label, el, key, upd) {
+  const input = h('input', { type: 'range', min: '-100', max: '100', value: String(Math.round((el.adjust?.[key] || 0) * 100)) });
+  const out = h('output', {}, input.value);
+  input.addEventListener('input', () => {
+    out.textContent = input.value;
+    upd((e) => { setAdjust(e, key, +input.value / 100 || undefined); }, key);
+  });
+  return field(label, h('div', { class: 'pf-row' }, input, out));
+}
+
 /** Gradient fill controls for a shape: on/off, its end colours and its direction. */
 function gradientControls(app, el, theme) {
   const g = el.gradient;
@@ -323,6 +342,18 @@ export class SidePanel {
       out.push(section('Picture',
         field('Fit', select([['fill', 'Stretch to box'], ['cover', 'Fill box (crop)'], ['contain', 'Fit inside box']], el.fit || 'fill', (v) => upd((e) => { e.fit = v; }))),
         field('Corner radius', numberInput(el.radius || 0, (v) => upd((e) => { e.radius = v; }), { min: 0, suffix: 'pt' })),
+        field('Crop to shape', select([
+          ['rect', 'None'],
+          ...(el.clip?.shape === 'custom' ? [['custom', 'PowerPoint shape']] : []),
+          ...SHAPES.filter((s) => s.id !== 'rect' && s.group !== 'Callouts').map((s) => [s.id, s.name]),
+        ], el.clip?.shape || 'rect', (v) => upd((e) => {
+          if (v === 'custom') return;
+          if (v === 'rect') delete e.clip;
+          else e.clip = { shape: v };
+        }))),
+        checkbox('Greyscale', el.adjust?.grayscale, (v) => upd((e) => { setAdjust(e, 'grayscale', v || undefined); })),
+        adjustSlider('Brightness', el, 'brightness', upd),
+        adjustSlider('Contrast', el, 'contrast', upd),
         h('div', { class: 'pf-row' },
           h('button', { type: 'button', class: 'btn', onclick: () => app.flip('h') }, 'Flip horizontally'),
           h('button', { type: 'button', class: 'btn', onclick: () => app.flip('v') }, 'Flip vertically')),
