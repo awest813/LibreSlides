@@ -70,19 +70,24 @@ export class Toolbar {
         'separator',
         { label: 'Back to all presentations', icon: 'home', run: () => app.goHome() },
       ],
-      Edit: () => [
-        { label: 'Undo', icon: 'undo', shortcut: 'Mod-Z', disabled: !app.history.canUndo, run: () => app.undo() },
-        { label: 'Redo', icon: 'redo', shortcut: 'Mod-Y', disabled: !app.history.canRedo, run: () => app.redo() },
-        'separator',
-        { label: 'Cut', icon: 'cut', shortcut: 'Mod-X', disabled: !app.selection.length, run: () => app.copySelection({ cut: true }) },
-        { label: 'Copy', icon: 'copy', shortcut: 'Mod-C', disabled: !app.selection.length, run: () => app.copySelection() },
-        { label: 'Paste', icon: 'paste', shortcut: 'Mod-V', run: () => app.pasteFromMenu() },
-        { label: 'Duplicate', icon: 'duplicate', shortcut: 'Mod-D', disabled: !app.selection.length, run: () => app.duplicateSelection() },
-        { label: 'Delete', icon: 'trash', shortcut: 'Delete', disabled: !app.selection.length, run: () => app.deleteSelection() },
-        'separator',
-        { label: 'Select all', shortcut: 'Mod-A', run: () => app.selectAll() },
-        { label: 'Select none', run: () => app.setSelection([]) },
-      ],
+      Edit: () => {
+        // While typing, these act on the selected text.
+        const typing = app.canvas.isEditing;
+        const none = typing ? !app.hasTextSelection() : !app.selection.length;
+        return [
+          { label: 'Undo', icon: 'undo', shortcut: 'Mod-Z', disabled: !app.history.canUndo && !typing, run: () => app.undo() },
+          { label: 'Redo', icon: 'redo', shortcut: 'Mod-Y', disabled: !app.history.canRedo, run: () => app.redo() },
+          'separator',
+          { label: 'Cut', icon: 'cut', shortcut: 'Mod-X', disabled: none, run: () => app.editCommand('cut') },
+          { label: 'Copy', icon: 'copy', shortcut: 'Mod-C', disabled: none, run: () => app.editCommand('copy') },
+          { label: 'Paste', icon: 'paste', shortcut: 'Mod-V', run: () => app.editCommand('paste') },
+          { label: 'Duplicate', icon: 'duplicate', shortcut: 'Mod-D', disabled: typing || !app.selection.length, run: () => app.duplicateSelection() },
+          { label: 'Delete', icon: 'trash', shortcut: 'Delete', disabled: none, run: () => app.editCommand('delete') },
+          'separator',
+          { label: 'Select all', shortcut: 'Mod-A', run: () => app.selectAll() },
+          { label: 'Select none', run: () => app.setSelection([]) },
+        ];
+      },
       View: () => [
         { label: 'Slideshow', icon: 'present', shortcut: 'Mod-Enter', run: () => app.present({ fromStart: false }) },
         { label: 'Slideshow from beginning', icon: 'play', shortcut: 'F5', run: () => app.present({ fromStart: true }) },

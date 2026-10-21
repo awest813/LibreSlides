@@ -724,7 +724,12 @@ export class EditorScreen {
     this.change(() => { for (const e of this.selectedElements()) delete e.groupId; });
   }
 
+  /** Select everything on the slide, or all the text of the box (or table cell) being edited. */
   selectAll() {
+    if (this.canvas.restoreSelection()) {
+      document.execCommand('selectAll');
+      return;
+    }
     this.setSelection(this.slide.elements.map((e) => e.id));
   }
 
@@ -775,6 +780,55 @@ export class EditorScreen {
       this.slide.elements.push(...copies);
     });
     this.setSelection(copies.map((c) => c.id));
+  }
+
+  /** Whether text is selected in the box being edited (what Edit › Cut and Copy act on then). */
+  hasTextSelection() {
+    const r = this.canvas.editing && this.canvas.savedRange;
+    return !!r && !r.collapsed;
+  }
+
+  /**
+   * Edit › Cut, Copy, Paste and Delete (and the same in the context menu):
+   * on the selected text while a box is being edited, as in PowerPoint and
+   * Slides, otherwise on the selected objects.
+   */
+  editCommand(cmd) {
+    if (!this.canvas.editing) {
+      if (cmd === 'cut') this.copySelection({ cut: true });
+      else if (cmd === 'copy') this.copySelection();
+      else if (cmd === 'paste') this.pasteFromMenu();
+      else this.deleteSelection();
+      return;
+    }
+    if (cmd === 'paste') {
+      this.pasteIntoText();
+      return;
+    }
+    this.canvas.execText(() => {
+      if (cmd === 'delete') {
+        document.execCommand('delete');
+        return;
+      }
+      const text = String(document.getSelection() || '');
+      // Allowed from a click in Chromium and Firefox; elsewhere write the text ourselves.
+      if (!document.execCommand(cmd)) {
+        navigator.clipboard?.writeText?.(text).catch(() => {});
+        if (cmd === 'cut') document.execCommand('delete');
+      }
+    });
+  }
+
+  /** Paste plain text at the cursor of the box being edited (from a menu, where the browser can't paste itself). */
+  async pasteIntoText() {
+    let text;
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      toast(`Use ${shortcutLabel('Mod-V')} to paste from other apps.`);
+      return;
+    }
+    if (text) this.canvas.execText(() => exec('insertText', text.replace(/\r\n?/g, '\n')));
   }
 
   async pasteFromMenu() {
@@ -1599,11 +1653,11 @@ export class EditorScreen {
   canvasMenu(at) {
     const has = this.selection.length > 0;
     const items = has ? [
-      { label: 'Cut', icon: 'cut', shortcut: 'Mod-X', run: () => this.copySelection({ cut: true }) },
-      { label: 'Copy', icon: 'copy', shortcut: 'Mod-C', run: () => this.copySelection() },
-      { label: 'Paste', icon: 'paste', shortcut: 'Mod-V', run: () => this.pasteFromMenu() },
+      { label: 'Cut', icon: 'cut', shortcut: 'Mod-X', run: () => this.editCommand('cut') },
+      { label: 'Copy', icon: 'copy', shortcut: 'Mod-C', run: () => this.editCommand('copy') },
+      { label: 'Paste', icon: 'paste', shortcut: 'Mod-V', run: () => this.editCommand('paste') },
       { label: 'Duplicate', icon: 'duplicate', shortcut: 'Mod-D', run: () => this.duplicateSelection() },
-      { label: 'Delete', icon: 'trash', shortcut: 'Delete', run: () => this.deleteSelection() },
+      { label: 'Delete', icon: 'trash', shortcut: 'Delete', run: () => this.editCommand('delete') },
       'separator',
       { label: 'Bring to front', icon: 'toFront', shortcut: 'Mod-Shift-Up', run: () => this.order('front') },
       { label: 'Send to back', icon: 'toBack', shortcut: 'Mod-Shift-Down', run: () => this.order('back') },

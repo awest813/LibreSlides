@@ -98,6 +98,45 @@ describe('editor: undo', () => {
   });
 });
 
+describe('editor: Edit menu while typing', () => {
+  it('cuts the selected text, not the whole box being edited', () => {
+    const box = newTextBox(10, 10);
+    box.text = '<p>Hello world</p>';
+    const ed = openEditor(deckWith(box));
+    ed.setSelection([box.id]);
+    ed.canvas.startEdit(box.id);
+    const text = ed.canvas.editing.bodies[0].querySelector('p').firstChild;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 5);
+    ed.canvas.savedRange = range;
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const exec = vi.spyOn(document, 'execCommand');
+    // The menu offers Cut for the selected text.
+    ed.toolbar.menuButtons.Edit.click();
+    const cut = [...document.querySelectorAll('.popover .menu-item')].find((b) => b.textContent.startsWith('Cut'));
+    expect(cut.disabled).toBe(false);
+    cut.click();
+    expect(ed.slide.elements).toHaveLength(1);
+    expect(ed.canvas.editing?.id).toBe(box.id);
+    expect(exec).toHaveBeenCalledWith('cut');
+    // jsdom can't cut: the text goes to the clipboard and is deleted.
+    expect(writeText).toHaveBeenCalledWith('Hello');
+    expect(exec).toHaveBeenCalledWith('delete');
+    exec.mockRestore();
+    delete navigator.clipboard;
+  });
+
+  it('deletes the selected objects from the menu when nothing is being typed', () => {
+    const shape = newShape('rect', 0, 0);
+    const ed = openEditor(deckWith(shape));
+    ed.setSelection([shape.id]);
+    ed.editCommand('delete');
+    expect(ed.slide.elements).toHaveLength(0);
+  });
+});
+
 describe('editor: changing slides while typing', () => {
   it('applies a layout to a slide whose placeholder is being edited', () => {
     const d = deckWith();
