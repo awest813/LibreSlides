@@ -53,7 +53,11 @@ function metaOf(deck) {
   const media = {};
   if (cover) {
     if (cover.background?.media) media[cover.background.media] = deck.media?.[cover.background.media];
-    for (const el of cover.elements) if (el.media && deck.media?.[el.media]) media[el.media] = deck.media[el.media];
+    // A video shows as its poster in a thumbnail, so the video itself stays out of the list record.
+    for (const el of cover.elements) {
+      const id = el.type === 'media' ? el.poster : el.media;
+      if (id && deck.media?.[id]) media[id] = deck.media[id];
+    }
   }
   return {
     id: deck.id,

@@ -7,16 +7,21 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  *
  * deck    { id, title, themeId, size, slides[], media{id: dataUrl}, createdAt, updatedAt }
  * slide   { id, layout, background|null, elements[], notes, transition{type, duration}, hidden }
- * element { id, type: text|shape|image|line|table, x, y, w, h, rot, opacity, … }
+ * element { id, type: text|shape|image|line|table|media, x, y, w, h, rot, opacity, … }
+ * media   { id, type: 'media', kind: 'video'|'audio', media, poster?, x, y, w, h, rot, autoplay?, loop? }
  *
  * Shapes and text boxes may also have a gradient fill, `gradient: { type:
  * 'linear'|'radial', angle (CSS degrees: 90 runs left to right) | cx, cy
  * (centre, fractions of the box), stops: [{ pos 0–1, color, opacity? }] }`,
- * with `fill` holding its first colour. Tables are cells[row][col] of
- * { text, fill?, valign?, rowSpan?, colSpan?, merged? } (see tables.js).
+ * with `fill` holding its first colour, or a picture fill, `fillImage:
+ * { media, crop? }`. Tables are cells[row][col] of { text, fill?, valign?,
+ * rowSpan?, colSpan?, merged? } (see tables.js).
  *
- * Pictures live in deck.media and are referenced by id, so undo snapshots of
- * the slides stay small however many pictures a deck has.
+ * Pictures, videos and sounds live in deck.media (as data URLs) and are
+ * referenced by id, so undo snapshots of the slides stay small however many
+ * a deck has. A video or sound element points at its file (`media`) and at
+ * the picture shown until it plays (`poster`, optional). It plays when the
+ * slide appears if `autoplay`, otherwise when its control is clicked.
  */
 export const SIZES = {
   '16:9': { w: 960, h: 540, label: 'Widescreen (16:9)' },
@@ -150,6 +155,13 @@ export function newImage(media, x, y, w, h) {
   return { id: uid(), type: 'image', media, x, y, w, h, rot: 0, stroke: { color: 'none', width: 2, dash: 'solid' }, radius: 0 };
 }
 
+/** A video or sound: `media` is its file, `poster` the picture shown until it plays. */
+export function newMedia(kind, media, poster, x, y, w, h) {
+  const el = { id: uid(), type: 'media', kind, media, x, y, w, h, rot: 0, autoplay: false, loop: false };
+  if (poster) el.poster = poster;
+  return el;
+}
+
 export function newTable(rows, cols, x, y, w, h) {
   return {
     id: uid(), type: 'table', x, y, w, h, rot: 0, header: true,
@@ -214,11 +226,14 @@ export function mediaSlots(el) {
   return slots;
 }
 
-/** Ids of the pictures the deck still uses. */
+/** The deck.media ids an element refers to (a picture, a video and its poster, a fill picture). */
+export const mediaIdsOf = (el) => mediaSlots(el).map(([o, key]) => o[key]);
+
+/** Ids of the pictures, videos and sounds the deck still uses. */
 export function usedMedia(deck) {
   const used = new Set();
   for (const s of deck.slides) {
-    for (const holder of [s.background, ...s.elements]) for (const [o, key] of mediaSlots(holder)) used.add(o[key]);
+    for (const holder of [s.background, ...s.elements]) for (const id of mediaIdsOf(holder)) used.add(id);
   }
   return used;
 }

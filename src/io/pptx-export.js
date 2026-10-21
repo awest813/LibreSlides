@@ -6,7 +6,7 @@ import { textStyle, themeDecor } from '../render/render.js';
 import { safeFileName } from '../ui/dom.js';
 import { saveFile } from './files.js';
 import { addChart } from './pptx-chart.js';
-import { addMediaElement } from './pptx-media.js';
+import { addMediaElement, finishMedia } from './pptx-media.js';
 import { embedFonts } from './pptx-fonts.js';
 
 /**
@@ -521,6 +521,7 @@ async function postProcess(buffer, deck, allMarks) {
     if (slide.hidden) xml = xml.replace(/<p:sld(\s)/, '<p:sld show="0"$1');
     zip.file(path, xml);
   }
+  await finishMedia(zip, deck);
   await embedFonts(zip, deck);
   return zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', compression: 'DEFLATE' });
 }

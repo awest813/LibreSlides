@@ -227,7 +227,7 @@ export class SidePanel {
     const animated = app.slide.elements.filter((e) => e.anim && e.anim.effect !== 'none').sort((x, y) => (x.anim.order || 0) - (y.anim.order || 0));
     const list = h('ol', { class: 'anim-list' });
     animated.forEach((el, i) => {
-      const name = (canHoldText(el) && slideText({ elements: [el] })) || ({ image: 'Picture', line: 'Line', table: 'Table', shape: 'Shape', text: 'Text box' }[el.type]);
+      const name = (canHoldText(el) && slideText({ elements: [el] })) || ({ image: 'Picture', line: 'Line', table: 'Table', shape: 'Shape', text: 'Text box', media: el.kind === 'audio' ? 'Sound' : 'Video' }[el.type]) || 'Object';
       const effect = ANIMATIONS.find((x) => x.id === el.anim.effect)?.name;
       list.append(h('li', { class: `anim-item${app.selection.includes(el.id) ? ' is-selected' : ''}` },
         h('button', { type: 'button', class: 'anim-name', onclick: () => app.setSelection([el.id]) }, h('b', {}, name.slice(0, 40)), h('small', {}, `${effect}${el.anim.start && el.anim.start !== 'click' ? ` · ${el.anim.start} previous` : ''}`)),
@@ -323,6 +323,13 @@ export class SidePanel {
           h('button', { type: 'button', class: 'btn', onclick: () => app.flip('v') }, 'Flip vertically')),
         h('button', { type: 'button', class: 'btn', onclick: () => app.resetImageSize() }, 'Reset size'),
         field('Alt text', alt)));
+    }
+
+    if (single && el.type === 'media') {
+      out.push(section(el.kind === 'audio' ? 'Sound' : 'Video',
+        checkbox('Play automatically in the slideshow', el.autoplay, (v) => upd((e) => { e.autoplay = v; })),
+        checkbox('Loop until the slide changes', el.loop, (v) => upd((e) => { e.loop = v; })),
+        h('p', { class: 'pf-hint' }, el.autoplay ? 'Starts when the slide (or its animation) appears.' : 'Click it in the slideshow to play.')));
     }
 
     if (single && el.type === 'table') {

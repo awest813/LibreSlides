@@ -103,12 +103,27 @@ const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').match
 
 // ------------------------------------------------------------------ player
 
-/** Draws a deck position into `host`, scaled to fit, with transitions and builds. */
+/** Pause every video and sound under `root` (a slide that's going away keeps playing otherwise). */
+function stopMedia(root) {
+  for (const m of root?.querySelectorAll('video, audio') || []) {
+    try {
+      m.pause();
+    } catch { /* not a real media element (tests) */ }
+  }
+}
+
+/**
+ * Draws a deck position into `host`, scaled to fit, with transitions and
+ * builds. With `media`, videos and sounds play (the slideshow and the
+ * audience window); otherwise they show their poster (the presenter's
+ * console and previews in the editor, which shouldn't make a sound).
+ */
 export class Player {
-  constructor(deck, host, { animate = true } = {}) {
+  constructor(deck, host, { animate = true, media = true } = {}) {
     this.deck = deck;
     this.host = host;
     this.animate = animate;
+    this.media = media;
     this.pos = null;
     this.layer = null;
     this.frame = h('div', { class: 'show-frame' });
@@ -120,6 +135,7 @@ export class Player {
 
   destroy() {
     this.observer.disconnect();
+    stopMedia(this.frame);
     this.frame.remove();
   }
 
@@ -136,7 +152,7 @@ export class Player {
 
   makeLayer(i, step) {
     const slide = this.deck.slides[i];
-    const node = renderSlide(slide, this.deck);
+    const node = renderSlide(slide, this.deck, { live: this.media });
     node.style.transformOrigin = '0 0';
     node.style.transform = `scale(${this.scale || 1})`;
     const steps = buildSteps(slide);
@@ -175,13 +191,31 @@ export class Player {
     const frames = anim && forward && tr ? transitionFrames(tr.type) : null;
     for (const a of this.running || []) a.finish();
     this.running = [];
+    stopMedia(old);
     if (frames) {
       const opts = { duration: (tr.duration ?? 0.6) * 1000, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'both' };
       this.running.push(layer.animate(frames.incoming, opts));
       if (old && frames.outgoing) this.running.push(old.animate(frames.outgoing, opts));
       this.running[0].finished.catch(() => {}).then(() => old?.remove());
     } else old?.remove();
-    if (autoPlay) this.playStep(pos.i, 0, frames ? tr.duration ?? 0.6 : 0);
+    const settle = frames ? tr.duration ?? 0.6 : 0;
+    // Videos and sounds set to play by themselves start once the slide is in (those built in later, as they appear).
+    this.startMedia(layer, settle * 1000);
+    if (autoPlay) this.playStep(pos.i, 0, settle);
+  }
+
+  /** Play the videos and sounds under `root` that start by themselves, after `delay` ms. */
+  startMedia(root, delay = 0) {
+    if (!this.media) return;
+    for (const m of root.querySelectorAll('[data-autoplay]')) {
+      if (m.closest('.el')?.style.visibility === 'hidden') continue;
+      const play = () => {
+        // Browsers may refuse to play sound before the viewer has clicked; the controls still work.
+        if (m.isConnected) Promise.resolve().then(() => m.play()).catch(() => {});
+      };
+      if (delay > 0) setTimeout(play, delay);
+      else play();
+    }
   }
 
   playStep(i, k, extraDelay = 0) {
@@ -192,6 +226,7 @@ export class Player {
       const el = node.querySelector(`:scope > .el[data-id="${CSS.escape(it.id)}"]`);
       if (!el) continue;
       el.style.visibility = '';
+      this.startMedia(el, (it.delay + extraDelay) * 1000);
       const frames = entrance(it.effect, w, H, +(el.style.opacity || 1));
       if (!frames) continue;
       const duration = it.effect === 'appear' ? 1 : it.duration * 1000;
@@ -352,6 +387,8 @@ export function startSlideshow(deck, { start = 0, onExit = null, remote = null }
   };
   root.addEventListener('click', (e) => {
     if (e.target.closest('a[href], .show-controls, .show-notes')) return;
+    // Clicks on a video's controls or a sound's button play and pause it, not the slideshow.
+    if (e.target.closest('video, audio, .el-media-toggle')) return;
     if (!uncover()) next();
   });
   root.addEventListener('contextmenu', (e) => {
@@ -401,7 +438,7 @@ export function startPresenterView(deck, { start = 0, onExit = null } = {}) {
   let pos = firstPos(deck, start);
   const currentHost = h('div', { class: 'pv-current' });
   const nextHost = h('div', { class: 'pv-next-slide' });
-  const player = new Player(deck, currentHost, { animate: false });
+  const player = new Player(deck, currentHost, { animate: false, media: false });
   const notes = h('div', { class: 'pv-notes', tabindex: '0', 'aria-label': 'Speaker notes' });
   let notesSize = 22;
   const timerEl = h('span', { class: 'pv-timer' }, '0:00');
@@ -575,7 +612,7 @@ export function previewOnStage(app, { animations = false, transition = false } =
   const stage = app.canvas.stage;
   const host = h('div', { class: 'preview-host', title: 'Click to stop the preview' });
   stage.append(host);
-  const player = new Player(app.deck, host);
+  const player = new Player(app.deck, host, { media: false });
   const i = app.slideIndex;
   const done = () => {
     clearTimeout(timer);
