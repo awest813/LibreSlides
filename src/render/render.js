@@ -1,4 +1,4 @@
-import { themeById, resolveColor, backgroundCss, tileAlign } from '../model/themes.js';
+import { deckTheme, resolveColor, backgroundCss, tileAlign } from '../model/themes.js';
 import { patternPath, PATTERN_SIZE } from '../model/patterns.js';
 import { slideSize, isTitleLayout, PLACEHOLDER_HINTS, canHoldText, FIELD, fieldText } from '../model/deck.js';
 import { shapePath, customPath, textInset } from '../model/shapes.js';
@@ -491,7 +491,7 @@ function decorElements(slide, theme, W, H) {
 /** Theme decorations as plain elements (for export). */
 export const themeDecor = (slide, deck) => {
   const { w, h } = slideSize(deck);
-  return decorElements(slide, themeById(deck.themeId), w, h);
+  return decorElements(slide, deckTheme(deck), w, h);
 };
 
 /**
@@ -501,14 +501,17 @@ export const themeDecor = (slide, deck) => {
  */
 export function renderSlide(slide, deck, { editing = false, live = false } = {}) {
   registerDeckFonts(deck);
-  const theme = themeById(deck.themeId);
+  const theme = deckTheme(deck);
   const { w, h } = slideSize(deck);
   const root = document.createElement('div');
   root.className = `slide${editing ? ' is-editing' : ''}`;
   root.style.width = `${w}px`;
   root.style.height = `${h}px`;
-  root.style.background = backgroundCss(slide.background, theme, (id) => mediaUrl(deck, id));
+  const bg = slide.background || theme.background;
+  const mirrored = bg?.type === 'image' && bg.media && bg.tile?.w > 0 && bg.tile?.h > 0 && /[xy]/.test(bg.tile.flip || '');
+  root.style.background = mirrored ? resolveColor(bg.color || '#000', theme) : backgroundCss(slide.background, theme, (id) => mediaUrl(deck, id));
   const ctx = { theme, deck, editing, live, slideNo: slideNumber(slide, deck) };
+  if (mirrored) root.append(mirroredTiles(bg, mediaUrl(deck, bg.media), w, h));
   const decor = document.createElement('div');
   decor.className = 'slide-decor';
   for (const d of decorElements(slide, theme, w, h)) decor.append(renderElement(d, ctx));
@@ -516,6 +519,17 @@ export function renderSlide(slide, deck, { editing = false, live = false } = {})
   for (const el of slide.elements) root.append(renderElement(el, ctx));
   fillFields(root, slide, deck);
   return root;
+}
+
+/**
+ * A tiled background picture whose tiles mirror (see themes.js backgroundCss),
+ * drawn as an SVG layer behind everything: CSS can tile a picture but not flip
+ * every other tile.
+ */
+function mirroredTiles(bg, url, w, h) {
+  const svg = svgEl('svg', { class: 'slide-bg-tiles', width: w, height: h, viewBox: `0 0 ${w} ${h}`, 'aria-hidden': 'true' });
+  svg.append(svgEl('rect', { width: w, height: h, fill: picturePaint(svg, { w, h, fillImage: { tile: bg.tile } }, url) }));
+  return svg;
 }
 
 /** A slide's number in its deck (1 for one that isn't in it). */

@@ -166,10 +166,14 @@ export class SidePanel {
     const app = this.app;
     const { deck, slide, theme } = app;
     const themes = h('div', { class: 'theme-grid' });
-    for (const t of THEMES) {
-      const sample = { themeId: t.id, size: deck.size, media: {} };
+    // A PowerPoint file's own theme comes first, and is the current one until another is chosen.
+    const fromFile = !!deck.importedTheme;
+    const cards = [...(fromFile ? [{ id: deck.themeId, name: theme.name, imported: deck.importedTheme }] : []), ...THEMES];
+    for (const t of cards) {
+      const sample = { themeId: t.id, size: deck.size, media: {}, ...(t.imported && { importedTheme: t.imported }) };
       const s = fillPlaceholders(newSlide('title', sample), { title: t.name, subtitle: 'Aa' });
-      const b = h('button', { type: 'button', class: `theme-card${t.id === deck.themeId ? ' is-active' : ''}`, 'aria-label': `Theme: ${t.name}`, 'aria-pressed': String(t.id === deck.themeId), onclick: () => app.setTheme(t.id) },
+      const current = t.imported ? true : !fromFile && t.id === deck.themeId;
+      const b = h('button', { type: 'button', class: `theme-card${current ? ' is-active' : ''}`, 'aria-label': `Theme: ${t.name}${t.imported ? ' (from the file)' : ''}`, 'aria-pressed': String(current), onclick: () => !t.imported && app.setTheme(t.id) },
         renderThumb(s, sample, 112));
       themes.append(b);
     }

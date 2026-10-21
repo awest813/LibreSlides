@@ -12,6 +12,7 @@
 .slide { position: relative; overflow: hidden; user-select: none; -webkit-user-select: none; flex: none; }
 .slide-decor { position: absolute; inset: 0; pointer-events: none; }
 .slide-decor .el { pointer-events: none; }
+.slide-bg-tiles { position: absolute; inset: 0; pointer-events: none; }
 .el { position: absolute; box-sizing: border-box; }
 .el-svg { position: absolute; left: 0; top: 0; overflow: visible; }
 .el-svg .hit { pointer-events: stroke; }

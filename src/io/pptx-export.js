@@ -3,7 +3,7 @@ import JSZip from 'jszip';
 import { slideSize, boxOf, htmlToText, ANIM_KINDS, motionPath, FIELD, fieldText } from '../model/deck.js';
 import { cellBorder, cellMargin } from '../model/tables.js';
 import { isPlainWarp } from '../model/warps.js';
-import { themeById, resolveColor, backgroundBaseColor, backgroundGradient } from '../model/themes.js';
+import { themeById, deckTheme, resolveColor, backgroundBaseColor, backgroundGradient } from '../model/themes.js';
 import { textStyle, themeDecor } from '../render/render.js';
 import { safeFileName } from '../ui/dom.js';
 import { saveFile } from './files.js';
@@ -700,7 +700,8 @@ export function pattFillXml(p, theme, opacity = 1) {
  */
 export function tileXml(tile, data) {
   const size = pictureSizePt(data);
-  const pct = (v) => Math.max(1, Math.round(v * 100000));
+  // To 0.01%, so a tile at its picture's size reads 100%, not 99.999%.
+  const pct = (v) => Math.max(1, Math.round(v * 10000) * 10);
   const sx = size?.w ? pct(tile.w / size.w) : 100000;
   const sy = size?.h ? pct(tile.h / size.h) : 100000;
   return `<a:tile tx="${emu(tile.x || 0)}" ty="${emu(tile.y || 0)}" sx="${sx}" sy="${sy}" flip="${['x', 'y', 'xy'].includes(tile.flip) ? tile.flip : 'none'}" algn="${['t', 'tr', 'l', 'ctr', 'r', 'bl', 'b', 'br'].includes(tile.align) ? tile.align : 'tl'}"/>`;
@@ -919,7 +920,7 @@ async function applyDiagrams(zip, slideNo, xml, diagrams, deck) {
     const b = shapeBlock(xml, name);
     if (!b) continue;
     const cNvPr = /<p:cNvPr\b[^>]*?(?:\/>|>[\s\S]*?<\/p:cNvPr>)/.exec(xml.slice(b.start, b.end))?.[0];
-    const frame = await writeDiagram(zip, slideNo, el, themeById(deck.themeId), cNvPr, deck.media);
+    const frame = await writeDiagram(zip, slideNo, el, deckTheme(deck), cNvPr, deck.media);
     xml = xml.slice(0, b.start) + frame + xml.slice(b.end);
   }
   return xml;
@@ -1104,7 +1105,7 @@ async function postProcess(buffer, deck, allMarks) {
 
 /** Build the .pptx. Returns a Blob. */
 export async function buildPptx(deck) {
-  const theme = themeById(deck.themeId);
+  const theme = deckTheme(deck);
   const { w, h } = slideSize(deck);
   const pptx = new PptxGenJS();
   pptx.defineLayout({ name: 'LIBRESLIDES', width: w / IN, height: h / IN });

@@ -1,5 +1,5 @@
 import { BUNDLED_FONTS, FONT_FACES, embedFontsSetting } from '../model/fonts.js';
-import { themeById } from '../model/themes.js';
+import { deckTheme } from '../model/themes.js';
 import { desc, kid, attr, rid, xmlText } from './ooxml.js';
 import { safeFontFamily } from './sanitize.js';
 import { BUNDLED_FACES } from './bundled-fonts.js';
@@ -44,7 +44,7 @@ function htmlFonts(html, into) {
 /** Every font family a deck uses: the theme's, elements' own and those inside their text. */
 export function usedFonts(deck) {
   const fonts = new Set();
-  const theme = themeById(deck.themeId);
+  const theme = deckTheme(deck);
   fonts.add(theme.fonts.title);
   fonts.add(theme.fonts.body);
   for (const slide of deck.slides || []) {

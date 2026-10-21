@@ -100,6 +100,40 @@ export const DEFAULT_THEME = 'simple-light';
 
 export const themeById = (id) => THEMES.find((t) => t.id === id) || THEMES[0];
 
+const deckThemes = new WeakMap();
+
+/**
+ * The theme a deck is drawn and edited with: its LibreSlides theme, or, for a
+ * deck from a PowerPoint file that kept that file's theme (deck.importedTheme,
+ * see model/deck.js), that theme's colours, background and fonts, so "theme:"
+ * colours and the colour picker's swatches are the file's.
+ */
+export function deckTheme(deck) {
+  const base = themeById(deck?.themeId);
+  const t = deck?.importedTheme;
+  if (!t?.colors) return base;
+  const key = `${base.id}|${JSON.stringify(t)}`;
+  const cached = deckThemes.get(t);
+  if (cached?.key === key) return cached.theme;
+  const c = t.colors;
+  const pick = (k, fallback) => (/^#[0-9a-f]{6}$/i.test(c[k] || '') ? c[k] : fallback);
+  const text = pick(t.dark ? 'lt1' : 'dk1', base.colors.text);
+  const accents = Object.fromEntries([1, 2, 3, 4, 5, 6].map((i) => [`accent${i}`, pick(`accent${i}`, base.colors[`accent${i}`])]));
+  const theme = {
+    ...base,
+    name: t.name || 'From the file',
+    imported: true,
+    dark: !!t.dark,
+    background: { type: 'solid', color: pick(t.dark ? 'dk1' : 'lt1', backgroundBaseColor(base.background)) },
+    colors: { ...base.colors, title: text, text, ...accents },
+    fonts: { title: t.fonts?.major || base.fonts.title, body: t.fonts?.minor || base.fonts.body },
+    titleBold: false,
+    decor: { title: [], content: [] },
+  };
+  deckThemes.set(t, { key, theme });
+  return theme;
+}
+
 export const THEME_COLOR_KEYS = ['title', 'text', 'accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6'];
 
 /** A colour value: "#rrggbb", "rgba(…)", "theme:<key>", "none" or null (the fallback). */

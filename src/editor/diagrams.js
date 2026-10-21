@@ -2,7 +2,7 @@ import { h } from '../ui/dom.js';
 import { icon } from '../ui/icons.js';
 import { openDialog } from '../ui/dialog.js';
 import { DIAGRAM_LAYOUTS, DIAGRAM_COLORS, DIAGRAM_STYLES, newDiagram } from '../model/deck.js';
-import { themeById, backgroundCss } from '../model/themes.js';
+import { deckTheme, backgroundCss } from '../model/themes.js';
 import { outlineText, parseOutline, lineAt, addNode, removeNode, promote, demote, moveUp, moveDown } from '../model/diagram-outline.js';
 import { renderElement } from '../render/render.js';
 import { exportsAsSmartArt } from '../io/pptx-diagram.js';
@@ -16,7 +16,7 @@ import { field, select } from './fields.js';
 
 /** Insert › Diagram…: a card for each layout, drawn in the deck's theme. Resolves with the layout picked, or null. */
 export async function pickDiagramLayout(deck) {
-  const theme = themeById(deck.themeId);
+  const theme = deckTheme(deck);
   let chosen = null;
   const cards = DIAGRAM_LAYOUTS.map((kind) => {
     const sample = renderElement(newDiagram(kind.id, 0, 0, 240, 150), { theme, deck });

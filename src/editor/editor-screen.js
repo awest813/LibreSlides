@@ -15,7 +15,7 @@ import {
   sectionAt, setSections, moveSlidesWithSections, removeSlidesWithSections, DEFAULT_SECTION,
 } from '../model/deck.js';
 import { anchorOf, insertRow, insertCol, deleteRow, deleteCol, mergeCells, unmergeCell, blockRange, setBorders, setMargins } from '../model/tables.js';
-import { themeById, resolveColor } from '../model/themes.js';
+import { deckTheme, resolveColor } from '../model/themes.js';
 import { FONT_SIZES } from '../model/fonts.js';
 import { cleanWarp } from '../model/warps.js';
 import { textStyle } from '../render/render.js';
@@ -260,7 +260,7 @@ export class EditorScreen {
   // ---------------------------------------------------------------- state
 
   get slide() { return this.deck.slides[this.slideIndex]; }
-  get theme() { return themeById(this.deck.themeId); }
+  get theme() { return deckTheme(this.deck); }
   get size() { return slideSize(this.deck); }
 
   selectedElements() {
