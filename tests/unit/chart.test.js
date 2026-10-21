@@ -161,13 +161,106 @@ describe('reading PowerPoint charts', () => {
     expect(chart.series[0].pointColors).toHaveLength(3);
   });
 
-  it('leaves out charts it can’t draw', async () => {
-    const deck = await withChartXml(`<c:radarChart>${ser('A', [1, 2])}</c:radarChart>`);
-    expect(chartsOf(deck)).toHaveLength(0);
+  it('reads radar and bubble charts, and stock and surface charts as lines', async () => {
+    const radar = chartsOf(await withChartXml(`<c:radarChart><c:radarStyle val="filled"/>${ser('A', [1, 2, 3])}</c:radarChart>`))[0];
+    expect(radar.chart).toMatchObject({ kind: 'radar', filled: true, series: [{ name: 'A', values: [1, 2, 3] }] });
+    const xy = (tag, vals) => `<c:${tag}><c:numLit><c:ptCount val="${vals.length}"/>${vals.map((v, i) => `<c:pt idx="${i}"><c:v>${v}</c:v></c:pt>`).join('')}</c:numLit></c:${tag}>`;
+    const bubble = chartsOf(await withChartXml(`<c:bubbleChart><c:ser><c:idx val="0"/><c:tx><c:v>B</c:v></c:tx>${xy('xVal', [1, 2])}${xy('yVal', [5, 6])}${xy('bubbleSize', [10, 40])}</c:ser></c:bubbleChart>`))[0];
+    expect(bubble.chart).toMatchObject({ kind: 'bubble', categories: ['1', '2'], series: [{ values: [5, 6], sizes: [10, 40] }] });
+    for (const plot of ['stockChart', 'surfaceChart']) {
+      const chart = chartsOf(await withChartXml(`<c:${plot}>${ser('A', [1, 2])}${ser('B', [3, 4])}</c:${plot}>`))[0];
+      expect(chart.chart).toMatchObject({ kind: 'line', series: [{ values: [1, 2] }, { values: [3, 4] }] });
+    }
+  });
+
+  it('colours series as the chart\'s style says: accents in turn, or shades of one', async () => {
+    const noIdx = (x) => x.replace(/<c:idx val="0"\/>/g, '');
+    const two = chartsOf(await withChartXml(noIdx(`<c:barChart>${ser('A', [1])}${ser('B', [2])}</c:barChart>`)))[0];
+    const [a1, a2] = two.chart.series.map((s) => s.color);
+    expect(a1).not.toBe(a2);
+    // Style 12: shades of accent 2, darkest first (Office 2010 writes it as c14:style 112).
+    const style = '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:Choice Requires="c14" xmlns:c14="http://schemas.microsoft.com/office/drawing/2007/8/2/chart"><c14:style val="112"/></mc:Choice><mc:Fallback><c:style val="12"/></mc:Fallback></mc:AlternateContent>';
+    const deck = await roundTrip(deckWith(chartEl()), async (zip) => {
+      const part = chartParts(zip)[0];
+      const xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+        + `${style}<c:chart><c:plotArea><c:barChart>${ser('A', [1])}${ser('B', [2])}${ser('C', [3])}</c:barChart></c:plotArea></c:chart></c:chartSpace>`;
+      zip.file(part, noIdx(xml));
+    });
+    const colors = chartsOf(deck)[0].chart.series.map((s) => s.color);
+    const lum = (c) => [1, 3, 5].reduce((t, i) => t + parseInt(c.slice(i, i + 2), 16), 0);
+    expect(new Set(colors).size).toBe(3);
+    expect(lum(colors[0])).toBeLessThan(lum(colors[1]));
+    expect(lum(colors[1])).toBeLessThan(lum(colors[2]));
+    expect(colors[1]).toBe(a2);
+  });
+});
+
+describe('radar and bubble charts', () => {
+  const radar = () => chartEl({ kind: 'radar', categories: ['a', 'b', 'c', 'd', 'e'], series: [{ name: 'S', values: [1, 4, 2, 5, 3] }, { name: 'T', values: [2, 2, 2, 2, 2] }], legend: 'right' });
+  const bubble = () => chartEl({ kind: 'bubble', categories: ['1', '2', '3'], series: [{ name: 'B', values: [3, 1, 2], sizes: [10, 40, 0] }] });
+
+  it('draws a radar as a web with a closed line per series, or filled', () => {
+    const svg = render(radar());
+    expect(svg.querySelectorAll('.chart-line')).toHaveLength(2);
+    expect(svg.querySelector('.chart-line').getAttribute('d')).toMatch(/Z$/);
+    expect(svg.querySelectorAll('.chart-grid line')).toHaveLength(5);
+    expect(svg.querySelectorAll('.chart-legend line')).toHaveLength(2);
+    const filled = render(chartEl({ ...radar().chart, filled: true }));
+    expect(filled.querySelectorAll('.chart-area')).toHaveLength(2);
+  });
+
+  it('draws bubbles with areas as their sizes', () => {
+    const svg = render(bubble());
+    const r = [...svg.querySelectorAll('.chart-bubble')].map((c) => +c.getAttribute('r'));
+    expect(r).toHaveLength(2); // a size of 0 has no bubble
+    expect(r[1] / r[0]).toBeCloseTo(2, 1);
+  });
+
+  it('writes them as PowerPoint radar and bubble charts, and reads them back', async () => {
+    const zip = await exportZip(deckWith(radar(), bubble()));
+    const xml = await Promise.all(chartParts(zip).map((p) => zip.file(p).async('string')));
+    expect(xml[0]).toContain('<c:radarChart><c:radarStyle val="standard"/>');
+    expect(xml[1]).toContain('<c:bubbleChart>');
+    expect(xml[1]).toMatch(/<c:bubbleSize>[\s\S]*<c:v>40<\/c:v>/);
+    const back = chartsOf(await importPptx(await zip.generateAsync({ type: 'arraybuffer' }), 'x'));
+    expect(back[0].chart).toMatchObject({ kind: 'radar', series: [{ values: [1, 4, 2, 5, 3] }, { values: [2, 2, 2, 2, 2] }] });
+    expect(back[1].chart).toMatchObject({ kind: 'bubble', categories: ['1', '2', '3'], series: [{ values: [3, 1, 2], sizes: [10, 40, null] }] });
+  });
+});
+
+describe('chart area pictures', () => {
+  const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  it('draws, writes and reads back a picture filling the chart area', async () => {
+    const deck = deckWith(chartEl({}, { fillImage: { media: 'bg' } }));
+    deck.media = { bg: PNG };
+    const svg = renderChart(deck.slides[0].elements[0], { theme, deck }, PNG);
+    expect(svg.querySelector('image').getAttribute('href')).toBe(PNG);
+    const zip = await exportZip(deck);
+    const part = chartParts(zip)[0];
+    const xml = await zip.file(part).async('string');
+    expect(xml).toMatch(/<\/c:chart><c:spPr><a:blipFill><a:blip r:embed="rIdLsPicture"\/>/);
+    const rels = await zip.file(part.replace(/([^/]+)$/, '_rels/$1.rels')).async('string');
+    const target = /Id="rIdLsPicture"[^>]*Target="\.\.\/media\/([^"]+)"/.exec(rels)[1];
+    expect(zip.file(`ppt/media/${target}`)).toBeTruthy();
+    const back = await importPptx(await zip.generateAsync({ type: 'arraybuffer' }), 'x');
+    const el = chartsOf(back)[0];
+    expect(back.media[el.fillImage.media]).toBe(PNG);
   });
 });
 
 describe('drawing charts', () => {
+  it('wraps or turns category labels that don\'t fit, rather than leaving them out', () => {
+    const cats = ['North region', 'South region', 'East region', 'West region'];
+    const series = [{ name: 'S', values: [1, 2, 3, 4] }];
+    const texts = (svg) => [...svg.querySelectorAll('.chart-labels text')].map((t) => t.textContent);
+    const wrapped = render(chartEl({ categories: cats, series }, { w: 260, h: 200 }));
+    expect(texts(wrapped)).toEqual(expect.arrayContaining(['Northregion', 'Westregion']));
+    const turned = render(chartEl({ categories: ['Categorisation 1', 'Categorisation 2', 'Categorisation 3', 'Categorisation 4', 'Categorisation 5', 'Categorisation 6'], series }, { w: 200, h: 220 }));
+    const labels = [...turned.querySelectorAll('.chart-labels text[transform*="rotate(-45)"]')];
+    expect(labels).toHaveLength(6);
+  });
+
   it('draws a bar per value and a legend entry per series', () => {
     const svg = render(chartEl({ title: 'T', dataLabels: true }));
     expect(svg.tagName).toBe('svg');
@@ -230,7 +323,7 @@ describe('untrusted chart data', () => {
   it('keeps only well-formed chart data', () => {
     const deck = sanitizeDeck({ slides: [{ elements: [
       { type: 'chart', x: 0, y: 0, w: 10, h: 10, chart: {
-        kind: 'radar', grouping: 'sideways', title: { toString: () => 'x' }, legend: 'middle', dataLabels: 'yes', markers: true,
+        kind: 'funnel', grouping: 'sideways', title: { toString: () => 'x' }, legend: 'middle', dataLabels: 'yes', markers: true,
         categories: ['a', 2, null, { x: 1 }],
         series: [{ name: '<b>S</b>', values: [1, 'two', NaN, Infinity, -3], color: 'url(https://t/x)', pointColors: ['#fff', 'red;x'] }, 'junk', { values: 7 }],
       } },

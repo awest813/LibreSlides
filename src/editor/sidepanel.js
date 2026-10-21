@@ -501,7 +501,8 @@ function chartSections(el, theme, upd) {
       if (v === 'value') delete ch.labelContent;
     }))) : null,
     c.kind === 'scatter' ? checkbox('Lines', scatterLines(c), (v) => edit((ch) => { ch.lines = v || undefined; })) : null,
-    lines || c.kind === 'scatter' ? checkbox('Markers', showsMarkers(c), (v) => edit((ch) => { ch.markers = v; })) : null,
+    c.kind === 'radar' ? checkbox('Filled', c.filled, (v) => edit((ch) => { ch.filled = v || undefined; })) : null,
+    lines || c.kind === 'scatter' || (c.kind === 'radar' && !c.filled) ? checkbox('Markers', showsMarkers(c), (v) => edit((ch) => { ch.markers = v; })) : null,
     lines || scatterLines(c) ? checkbox('Smooth lines', c.smooth, (v) => edit((ch) => { ch.smooth = v || undefined; })) : null,
     field('Text size', numberInput(el.style?.size || 12, (v) => edit((ch, e) => { e.style = { ...e.style, size: v }; }), { min: 4, max: 72, suffix: 'pt' })),
     h('div', { class: 'pf-row' },
@@ -511,7 +512,8 @@ function chartSections(el, theme, upd) {
 
   // The data: a row per category and a column per series (only the first for pies; a ring each for doughnuts).
   const series = c.kind === 'pie' ? c.series.slice(0, 1) : c.series;
-  const head = h('tr', {}, h('th', {}, c.kind === 'scatter' ? 'X' : 'Category'), ...series.map((s, k) => h('th', {},
+  const xy = c.kind === 'scatter' || c.kind === 'bubble';
+  const head = h('tr', {}, h('th', {}, xy ? 'X' : 'Category'), ...series.map((s, k) => h('th', {},
     cellInput(s.name, `Name of series ${k + 1}`, (v) => edit((ch) => { ch.series[k].name = v; })),
     c.kind === 'pie' ? null : h('div', { class: 'chart-head' },
       pie ? null : swatch(`Colour of ${s.name}`, seriesColor(c, k, theme), theme, (v) => edit((ch) => { ch.series[k].color = v; })),
@@ -523,7 +525,13 @@ function chartSections(el, theme, upd) {
       const list = ch.series[k].values;
       while (list.length <= i) list.push(null);
       list[i] = parseValue(v);
-    }), true))),
+    }), true),
+    // A bubble's size, under its value.
+    c.kind === 'bubble' ? cellInput(s.sizes?.[i] ?? '', `Size of ${s.name}, ${cat}`, (v) => edit((ch) => {
+      const list = (ch.series[k].sizes ||= []);
+      while (list.length <= i) list.push(null);
+      list[i] = parseValue(v);
+    }), true) : null)),
     pie ? h('td', {}, swatch(`Colour of ${cat}`, pointColor(c, i, theme), theme, (v) => edit((ch) => {
       const first = ch.series[0];
       first.pointColors = ch.categories.map((_, j) => first.pointColors?.[j] || null);
@@ -534,12 +542,13 @@ function chartSections(el, theme, upd) {
       for (const s of ch.series) {
         s.values.splice(i, 1);
         s.pointColors?.splice(i, 1);
+        s.sizes?.splice(i, 1);
       }
     })) : null)));
   const grid = h('div', { class: 'chart-data' }, h('table', {}, h('thead', {}, head), h('tbody', {}, ...rows)));
   const buttons = h('div', { class: 'pf-row' },
     h('button', { type: 'button', class: 'btn', html: `${icon('plus')}<span>Row</span>`, onclick: () => edit((ch) => {
-      ch.categories.push(ch.kind === 'scatter' ? String(ch.categories.length + 1) : `Category ${ch.categories.length + 1}`);
+      ch.categories.push(ch.kind === 'scatter' || ch.kind === 'bubble' ? String(ch.categories.length + 1) : `Category ${ch.categories.length + 1}`);
       for (const s of ch.series) while (s.values.length < ch.categories.length) s.values.push(null);
     }) }),
     c.kind === 'pie' ? null : h('button', { type: 'button', class: 'btn', html: `${icon('plus')}<span>Series</span>`, onclick: () => edit((ch) => {
@@ -548,7 +557,7 @@ function chartSections(el, theme, upd) {
   return [
     section('Chart', options),
     chartMore(c, edit),
-    section('Chart data', grid, buttons, h('p', { class: 'pf-hint' }, c.kind === 'pie' ? 'Pie charts show the first series.' : c.kind === 'doughnut' ? 'Each series is a ring, the first innermost.' : 'Leave a cell empty for no point.')),
+    section('Chart data', grid, buttons, h('p', { class: 'pf-hint' }, c.kind === 'pie' ? 'Pie charts show the first series.' : c.kind === 'doughnut' ? 'Each series is a ring, the first innermost.' : c.kind === 'bubble' ? 'Each point has a Y value and, under it, its bubble\u2019s size.' : 'Leave a cell empty for no point.')),
   ];
 }
 

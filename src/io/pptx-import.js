@@ -17,7 +17,9 @@ import { readSections } from './pptx-sections.js';
 import { readDiagram } from './pptx-diagram.js';
 import { bulletGlyph, EAST_ASIAN, COMPLEX_SCRIPT } from './pptx-text.js';
 import { fontStack } from '../model/fonts.js';
-import { EMU_PER_PT, kids, kid, path, desc, attr, rid, SCHEME_ALIAS, colorOf, alphaOf, Package, addMediaTo } from './ooxml.js';
+import { EMU_PER_PT, kids, kid, path, desc, attr, rid, SCHEME_ALIAS, colorOf, alphaOf, blend, Package, addMediaTo, contentOf } from './ooxml.js';
+import { oleObjectOf, olePreview } from './pptx-ole.js';
+import { builtInTableStyle } from './pptx-table-styles.js';
 
 /**
  * PowerPoint (.pptx) reader. Brings in what LibreSlides can edit: text boxes
@@ -620,6 +622,12 @@ const shadowOf = (spPr, refs) => {
   return own ? kid(own, 'outerShdw') != null : !!refs.shadow;
 };
 
+/** How far a shape's or picture's soft edges (a:softEdge) fade in, in points; 0 for none. */
+function softEdgeOf(spPr, k) {
+  const rad = +attr(kid(kid(spPr, 'effectLst'), 'softEdge'), 'rad');
+  return rad > 0 ? Math.min(400, Math.round((rad / EMU_PER_PT) * k * 10) / 10) : 0;
+}
+
 /** The part of a picture shown (a:srcRect), as fractions cut from each side; null when uncropped. */
 function cropOf(blipFill) {
   const r = kid(blipFill, 'srcRect');
@@ -632,20 +640,6 @@ function cropOf(blipFill) {
 
 // ------------------------------------------------------------------ table styles
 
-// PowerPoint's default table style ("Medium Style 2 – Accent 1"), for files that use it without including it (parsed when first needed).
-const DEFAULT_TABLE_STYLE_ID = '{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}';
-let defaultTableStyle = null;
-const DEFAULT_TABLE_STYLE = `<a:tblStyle xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" styleId="${DEFAULT_TABLE_STYLE_ID}">
-<a:wholeTbl><a:tcTxStyle><a:schemeClr val="dk1"/></a:tcTxStyle><a:tcStyle><a:tcBdr><a:left><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:left><a:right><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:right><a:top><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:top><a:bottom><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:bottom><a:insideH><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:insideH><a:insideV><a:ln w="12700"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:insideV></a:tcBdr>
-<a:fill><a:solidFill><a:schemeClr val="accent1"><a:tint val="20000"/></a:schemeClr></a:solidFill></a:fill></a:tcStyle></a:wholeTbl>
-<a:band1H><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"><a:tint val="40000"/></a:schemeClr></a:solidFill></a:fill></a:tcStyle></a:band1H>
-<a:band1V><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"><a:tint val="40000"/></a:schemeClr></a:solidFill></a:fill></a:tcStyle></a:band1V>
-<a:lastCol><a:tcTxStyle b="on"><a:schemeClr val="lt1"/></a:tcTxStyle><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:fill></a:tcStyle></a:lastCol>
-<a:firstCol><a:tcTxStyle b="on"><a:schemeClr val="lt1"/></a:tcTxStyle><a:tcStyle><a:fill><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:fill></a:tcStyle></a:firstCol>
-<a:lastRow><a:tcTxStyle b="on"><a:schemeClr val="lt1"/></a:tcTxStyle><a:tcStyle><a:tcBdr><a:top><a:ln w="38100"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:top></a:tcBdr><a:fill><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:fill></a:tcStyle></a:lastRow>
-<a:firstRow><a:tcTxStyle b="on"><a:schemeClr val="lt1"/></a:tcTxStyle><a:tcStyle><a:tcBdr><a:bottom><a:ln w="38100"><a:solidFill><a:schemeClr val="lt1"/></a:solidFill></a:ln></a:bottom></a:tcBdr><a:fill><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:fill></a:tcStyle></a:firstRow>
-</a:tblStyle>`;
-
 /**
  * A cell border (an a:ln of a cell or a table style): a stroke, NO_BORDER for
  * none, undefined when it doesn't say (another part of the table style does).
@@ -656,6 +650,29 @@ function borderOf(ln, ctx) {
   return lineOf(ln, ctx.scheme, ctx.k) || undefined;
 }
 
+/** A table style's border for one side (a:left…): its a:ln, or the theme line it refers to (a:lnRef, taken as 1pt in its colour). */
+function styleBorderOf(side, ctx) {
+  const ref = kid(side, 'lnRef');
+  if (!kid(side, 'ln') && ref) {
+    const color = colorOf(ref, ctx.scheme);
+    return color && +attr(ref, 'idx') > 0 ? { color, width: Math.round(ctx.k * 10) / 10, dash: 'solid' } : NO_BORDER;
+  }
+  return borderOf(kid(side, 'ln'), ctx);
+}
+
+/** A table style part's fill: its own (a see-through one as it shows over white), the theme fill it refers to, 'none', or null. */
+function styleFillOf(tcStyle, ctx) {
+  const fill = kid(tcStyle, 'fill');
+  if (fill) {
+    if (kid(fill, 'noFill')) return 'none';
+    const solid = kid(fill, 'solidFill');
+    const color = colorOf(solid, ctx.scheme);
+    const alpha = alphaOf(solid);
+    return color && alpha < 1 ? blend(color, '#ffffff', alpha) : color;
+  }
+  return colorOf(kid(tcStyle, 'fillRef'), ctx.scheme);
+}
+
 /**
  * How a table style colours each cell: { cell(r, c, rs, cs) → { fill, color,
  * bold, borders: { t?, r?, b?, l? } } } (rs and cs: the cell's spans), or
@@ -663,20 +680,19 @@ function borderOf(ln, ctx) {
  */
 function tableLook(tblPr, ctx, rows, cols) {
   const id = path(tblPr, 'tableStyleId')?.textContent.trim();
-  let style = id && ctx.tableStyles?.get(id);
-  if (!style && id === DEFAULT_TABLE_STYLE_ID) style = (defaultTableStyle ||= new DOMParser().parseFromString(DEFAULT_TABLE_STYLE, 'application/xml').documentElement);
+  // The deck's own definition, else PowerPoint's built-in style of that id (see pptx-table-styles.js).
+  const style = id && (ctx.tableStyles?.get(id) || builtInTableStyle(id));
   if (!style) return null;
   const on = (name) => isTrue(attr(tblPr, name));
   const partLook = (name) => {
     const p = kid(style, name);
     if (!p) return null;
     const tx = kid(p, 'tcTxStyle');
-    const fill = path(p, 'tcStyle', 'fill');
     const bdr = path(p, 'tcStyle', 'tcBdr');
     return {
       // The part's borders: around it (left, right, top, bottom) and between its cells (insideH, insideV).
-      borders: Object.fromEntries(['left', 'right', 'top', 'bottom', 'insideH', 'insideV'].map((n) => [n, borderOf(kid(kid(bdr, n), 'ln'), ctx)])),
-      fill: fill && (kid(fill, 'noFill') ? 'none' : colorOf(kid(fill, 'solidFill'), ctx.scheme)),
+      borders: Object.fromEntries(['left', 'right', 'top', 'bottom', 'insideH', 'insideV'].map((n) => [n, kid(bdr, n) ? styleBorderOf(kid(bdr, n), ctx) : undefined])),
+      fill: styleFillOf(kid(p, 'tcStyle'), ctx),
       color: colorOf(tx, ctx.scheme) || colorOf(kid(tx, 'fontRef'), ctx.scheme),
       bold: attr(tx, 'b') === 'on' ? true : attr(tx, 'b') === 'off' ? false : undefined,
     };
@@ -1035,6 +1051,49 @@ async function readSlide(pkg, slidePath, deckCtx, deck) {
     };
   };
 
+  /**
+   * A picture (p:pic) in `box` (placed on the slide), with its crop, clip,
+   * transparency and colour adjustments; `data` stands in for its own picture
+   * (an OLE object's preview from its VML drawing). Null without a picture or box.
+   */
+  const pictureElement = async (node, box, rels, data = null) => {
+    const blipFill = kid(node, 'blipFill');
+    const blip = desc(blipFill || node, 'blip')[0];
+    if (!data) {
+      const target = rels[rid(blip, 'embed')];
+      data = target && !target.external ? await pkg.dataUrl(target.path) : null;
+    }
+    if (!data || !box) return null;
+    const spPr = kid(node, 'spPr');
+    const descr = attr(kid(nvOf(node), 'cNvPr'), 'descr');
+    const amt = attr(kid(blip, 'alphaModFix'), 'amt');
+    const el = {
+      id: uid(), type: 'image', media: addMediaTo(deck, data), x: box.x, y: box.y, w: box.w, h: box.h, rot: box.rot,
+      flipH: box.flipH || undefined, flipV: box.flipV || undefined, alt: descr || '', fit: 'fill',
+      stroke: lineOf(kid(spPr, 'ln'), ctx.scheme, k) || { color: 'none', width: 2, dash: 'solid' },
+    };
+    const crop = cropOf(blipFill);
+    if (crop) el.crop = crop;
+    if (amt != null && +amt < 100000) el.opacity = Math.max(0, Math.round(+amt / 1000) / 100);
+    if (spPr && shadowOf(spPr, styleRefs(node, ctx))) el.shadow = true;
+    const soft = softEdgeOf(spPr, k);
+    if (soft) el.softEdge = soft;
+    // Cropped to a shape, and colour adjustments.
+    const clipName = attr(kid(spPr, 'prstGeom'), 'prst');
+    if ((clipName && clipName !== 'rect') || kid(spPr, 'custGeom')) {
+      const outline = outlineOf(spPr, xfrmOf(spPr));
+      if (outline) el.clip = { shape: 'custom', paths: outline.paths, ...(outline.preset && { preset: outline.preset }) };
+      else if (SHAPE_IDS.has(clipName)) el.clip = { shape: clipName };
+    }
+    const adjust = {};
+    if (kid(blip, 'grayscl')) adjust.grayscale = true;
+    const lum = kid(blip, 'lum');
+    if (+attr(lum, 'bright')) adjust.brightness = Math.max(-1, Math.min(1, +attr(lum, 'bright') / 100000));
+    if (+attr(lum, 'contrast')) adjust.contrast = Math.max(-1, Math.min(1, +attr(lum, 'contrast') / 100000));
+    if (Object.keys(adjust).length) el.adjust = adjust;
+    return el;
+  };
+
   // The elements each of the slide's shapes became (by shape id), for its animations.
   const byShapeId = new Map();
   /**
@@ -1052,7 +1111,7 @@ async function readSlide(pkg, slidePath, deckCtx, deck) {
       // A click on the shape follows its link.
       if (pending.link) for (const el of made) el.link ||= pending.link;
     };
-    for (const node of container.children) {
+    for (const node of contentOf(container)) {
       settle();
       const cNvPr = kid(nvOf(node), 'cNvPr');
       pending = { id: attr(cNvPr, 'id'), from: slide.elements.length, link: linkOf(kid(cNvPr, 'hlinkClick'), part.rels) };
@@ -1194,6 +1253,8 @@ async function readSlide(pkg, slidePath, deckCtx, deck) {
         if (pattern && fill !== 'none') el.pattern = pattern;
         if (picture) el.fillImage = picture;
         if (shadowOf(spPr, refs)) el.shadow = true;
+        const soft = softEdgeOf(spPr, k);
+        if (soft) el.softEdge = soft;
         if (paths) {
           Object.assign(el, { shape: 'custom', paths });
           if (outline.textRect) el.textRect = outline.textRect;
@@ -1222,44 +1283,14 @@ async function readSlide(pkg, slidePath, deckCtx, deck) {
           slide.elements.push(media);
           continue;
         }
-        const blipFill = kid(node, 'blipFill');
-        const blip = desc(node, 'blip')[0];
-        const target = part.rels[rid(blip, 'embed')];
-        const data = target && !target.external ? await pkg.dataUrl(target.path) : null;
         const ph = phOf(node);
         let box = xfrmOf(kid(node, 'spPr'));
         if (!box && ph) {
           const inherited = findPh(layoutPh, ph) || findPh(masterPh, ph);
           box = inherited && xfrmOf(kid(inherited.sp, 'spPr'));
         }
-        box = place(box);
-        if (!data || !box) continue;
-        const descr = attr(cNvPr, 'descr');
-        const amt = attr(kid(blip, 'alphaModFix'), 'amt');
-        const el = {
-          id: uid(), type: 'image', media: addMediaTo(deck, data), x: box.x, y: box.y, w: box.w, h: box.h, rot: box.rot,
-          flipH: box.flipH || undefined, flipV: box.flipV || undefined, alt: descr || '', fit: 'fill',
-          stroke: lineOf(kid(kid(node, 'spPr'), 'ln'), ctx.scheme, k) || { color: 'none', width: 2, dash: 'solid' },
-        };
-        const crop = cropOf(blipFill);
-        if (crop) el.crop = crop;
-        if (amt != null && +amt < 100000) el.opacity = Math.max(0, Math.round(+amt / 1000) / 100);
-        if (shadowOf(kid(node, 'spPr'), styleRefs(node, ctx))) el.shadow = true;
-        // Cropped to a shape, and colour adjustments.
-        const picPr = kid(node, 'spPr');
-        const clipName = attr(kid(picPr, 'prstGeom'), 'prst');
-        if ((clipName && clipName !== 'rect') || kid(picPr, 'custGeom')) {
-          const outline = outlineOf(picPr, xfrmOf(picPr));
-          if (outline) el.clip = { shape: 'custom', paths: outline.paths, ...(outline.preset && { preset: outline.preset }) };
-          else if (SHAPE_IDS.has(clipName)) el.clip = { shape: clipName };
-        }
-        const adjust = {};
-        if (kid(blip, 'grayscl')) adjust.grayscale = true;
-        const lum = kid(blip, 'lum');
-        if (+attr(lum, 'bright')) adjust.brightness = Math.max(-1, Math.min(1, +attr(lum, 'bright') / 100000));
-        if (+attr(lum, 'contrast')) adjust.contrast = Math.max(-1, Math.min(1, +attr(lum, 'contrast') / 100000));
-        if (Object.keys(adjust).length) el.adjust = adjust;
-        slide.elements.push(el);
+        const el = await pictureElement(node, place(box), part.rels);
+        if (el) slide.elements.push(el);
       } else if (name === 'cxnSp') {
         const spPr = kid(node, 'spPr');
         const b = place(xfrmOf(spPr));
@@ -1283,6 +1314,19 @@ async function readSlide(pkg, slidePath, deckCtx, deck) {
         if (/\/diagram$/.test(uri)) {
           // (Not inside another diagram's drawing, which could lead back to itself.)
           if (!part.inner) await readSmartArt(node, group, part, depth);
+          continue;
+        }
+        const ole = oleObjectOf(desc(node, 'graphicData')[0]);
+        if (ole) {
+          // An embedded object: the picture of it PowerPoint shows, in the frame's box.
+          const preview = await olePreview(pkg, ole, part.rels);
+          const box = place(xfrmOf(node));
+          const data = preview?.path ? await pkg.dataUrl(preview.path) : null;
+          const el = preview && (await pictureElement(preview.pic || node, box, part.rels, data));
+          if (el) {
+            el.alt ||= attr(cNvPr, 'descr') || '';
+            slide.elements.push(el);
+          }
           continue;
         }
         const tbl = desc(node, 'tbl')[0];
@@ -1312,6 +1356,10 @@ async function readSlide(pkg, slidePath, deckCtx, deck) {
           if (+attr(tc, 'gridSpan') > 1) cell.colSpan = +attr(tc, 'gridSpan');
           if (+attr(tc, 'rowSpan') > 1) cell.rowSpan = +attr(tc, 'rowSpan');
           if (isTrue(attr(tc, 'hMerge')) || isTrue(attr(tc, 'vMerge'))) cell.merged = true;
+          // Text turned a quarter either way, or stacked (East Asian and WordArt vertical text).
+          const vert = attr(tcPr, 'vert');
+          if (vert === 'vert' || vert === 'vert270' || vert === 'eaVert') cell.vertical = vert;
+          else if (vert === 'wordArtVert' || vert === 'mongolianVert' || vert === 'wordArtVertRtl') cell.vertical = 'eaVert';
           const anchor = attr(tcPr, 'anchor');
           // PowerPoint puts cell text at the top unless told otherwise; LibreSlides' tables default to the middle.
           cell.valign = { ctr: 'middle', b: 'bottom' }[anchor] || 'top';
@@ -1538,5 +1586,7 @@ async function readPresentation(pkg, fallbackTitle) {
   const theme = await masterTheme(pkg, firstSlideMaster || firstMaster, ctx);
   const imported = importedThemeOf(theme);
   if (imported) deck.importedTheme = imported;
+  // What couldn't be brought in as it was, for the person opening it (not saved with the deck).
+  if (pkg.notes.size) Object.defineProperty(deck, 'importNotes', { value: [...pkg.notes], configurable: true });
   return deck;
 }

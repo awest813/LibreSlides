@@ -136,6 +136,10 @@ function cleanNumbers(el) {
     else delete el.opacity;
   }
   if (el.radius != null && !(Number.isFinite(el.radius) && el.radius >= 0)) delete el.radius;
+  if (el.softEdge != null) {
+    if (Number.isFinite(el.softEdge) && el.softEdge > 0) el.softEdge = Math.min(400, el.softEdge);
+    else delete el.softEdge;
+  }
   if (el.natural != null && !(isObject(el.natural) && [el.natural.w, el.natural.h].every((v) => Number.isFinite(v) && v > 0))) delete el.natural;
   if (el.id != null && !isId(el.id)) el.id = uid();
   if (el.groupId != null && !isId(el.groupId)) delete el.groupId;
@@ -233,6 +237,7 @@ export function sanitizeElement(el) {
         c.text = typeof c.text === 'string' ? sanitizeHtml(c.text) : '';
         if (c.fill != null) c.fill = safeColor(c.fill);
         if (c.valign != null && !['top', 'middle', 'bottom'].includes(c.valign)) delete c.valign;
+        if (c.vertical != null && !['vert', 'vert270', 'eaVert'].includes(c.vertical)) delete c.vertical;
         cleanCellLook(c);
       }
     }
@@ -386,6 +391,7 @@ export function sanitizeChart(chart) {
       };
       if (safeColor(s.color)) ser.color = safeColor(s.color);
       if (Array.isArray(s.pointColors)) ser.pointColors = s.pointColors.slice(0, CHART_LIMITS.points).map((p) => safeColor(p) || null);
+      if (Array.isArray(s.sizes)) ser.sizes = s.sizes.slice(0, CHART_LIMITS.points).map((v) => (typeof v === 'number' && Number.isFinite(v) ? v : null));
       if (['column', 'line', 'area'].includes(s.kind)) ser.kind = s.kind;
       if (s.secondary === true) ser.secondary = true;
       return ser;
@@ -395,7 +401,8 @@ export function sanitizeChart(chart) {
   };
   if (['clustered', 'stacked', 'percent'].includes(c.grouping)) out.grouping = c.grouping;
   if (typeof c.markers === 'boolean' && (c.markers || c.kind === 'scatter')) out.markers = c.markers;
-  for (const key of ['lines', 'smooth']) if (c[key] === true) out[key] = true;
+  for (const key of ['lines', 'smooth', 'filled']) if (c[key] === true) out[key] = true;
+  if (Number.isFinite(c.lineWidth) && c.lineWidth > 0) out.lineWidth = Math.min(20, c.lineWidth);
   for (const key of ['numberFormat', 'labelFormat']) if (chartFormat(c[key])) out[key] = c[key];
   if (Array.isArray(c.labelContent)) {
     const parts = LABEL_PARTS.filter((p) => c.labelContent.includes(p));
@@ -563,8 +570,11 @@ export function sanitizeDeck(deck) {
       // SVG can carry script; it only ever renders through <img>, which doesn't run it, but keep it tidy.
       try {
         const [head, body] = data.split(',');
-        const svg = head.endsWith(';base64') ? atob(body) : decodeURIComponent(body);
-        deck.media[id] = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } }))}`;
+        // Base64 holds the SVG's bytes, which are UTF-8.
+        const svg = head.endsWith(';base64') ? new TextDecoder().decode(Uint8Array.from(atob(body), (c) => c.charCodeAt(0))) : decodeURIComponent(body);
+        // (DOMPurify writes HTML: a no-break space comes out as &nbsp;, which SVG, being XML, doesn't know.)
+        const clean = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } }).replace(/&nbsp;/g, '&#160;');
+        deck.media[id] = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(clean)}`;
       } catch {
         delete deck.media[id];
       }
