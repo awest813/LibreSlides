@@ -1,6 +1,8 @@
 import { themeById, resolveColor, backgroundCss } from '../model/themes.js';
 import { slideSize, isTitleLayout, PLACEHOLDER_HINTS, canHoldText } from '../model/deck.js';
-import { shapePath, textInset } from '../model/shapes.js';
+import { shapePath, customPath, textInset } from '../model/shapes.js';
+import { renderChart } from './chart.js';
+import { renderMedia } from './media.js';
 import { fontStack } from '../model/fonts.js';
 
 /**
@@ -162,7 +164,13 @@ export function renderElement(el, ctx) {
 
   if (el.type === 'shape' || (el.type === 'text' && ((el.fill && el.fill !== 'none') || (el.stroke && el.stroke.color !== 'none' && el.stroke.width)))) {
     const svg = svgEl('svg', { class: 'el-svg', overflow: 'visible', width: el.w, height: el.h, viewBox: `0 0 ${el.w} ${el.h}`, preserveAspectRatio: 'none' });
-    svg.append(svgEl('path', { d: shapePath(el.type === 'shape' ? el.shape : 'rect', el.w, el.h), fill: resolveColor(el.fill, theme, 'transparent'), ...strokeAttrs(el.stroke, theme) }));
+    const fill = resolveColor(el.fill, theme, 'transparent');
+    const stroke = strokeAttrs(el.stroke, theme);
+    if (el.type === 'shape' && el.shape === 'custom' && Array.isArray(el.paths)) {
+      for (const p of el.paths) {
+        svg.append(svgEl('path', { d: customPath(p.cmds, el.w, el.h), fill: p.fill === false ? 'none' : fill, ...(p.stroke === false ? { stroke: 'none' } : stroke) }));
+      }
+    } else svg.append(svgEl('path', { d: shapePath(el.type === 'shape' ? el.shape : 'rect', el.w, el.h), fill, ...stroke }));
     if (shadow) svg.style.filter = shadow;
     if (el.flipH || el.flipV) svg.style.transform = `scale(${el.flipH ? -1 : 1}, ${el.flipV ? -1 : 1})`;
     div.append(svg);
@@ -176,17 +184,30 @@ export function renderElement(el, ctx) {
     img.draggable = false;
     img.className = 'el-img';
     img.style.objectFit = el.fit === 'cover' ? 'cover' : el.fit === 'contain' ? 'contain' : 'fill';
-    if (el.radius) img.style.borderRadius = `${el.radius}px`;
-    if (el.stroke && el.stroke.color !== 'none' && el.stroke.width) {
-      img.style.outline = `${el.stroke.width}px ${el.stroke.dash && el.stroke.dash !== 'solid' ? 'dashed' : 'solid'} ${resolveColor(el.stroke.color, theme)}`;
-      img.style.outlineOffset = `-${el.stroke.width / 2}px`;
+    // A cropped picture (from PowerPoint): the whole picture, positioned so the box shows the kept part.
+    let frame = img;
+    const crop = (!el.fit || el.fit === 'fill') && el.crop;
+    if (crop) {
+      const fw = Math.max(0.01, 1 - crop.l - crop.r);
+      const fh = Math.max(0.01, 1 - crop.t - crop.b);
+      Object.assign(img.style, { position: 'absolute', maxWidth: 'none', width: `${100 / fw}%`, height: `${100 / fh}%`, left: `${(-100 * crop.l) / fw}%`, top: `${(-100 * crop.t) / fh}%` });
+      frame = document.createElement('div');
+      Object.assign(frame.style, { position: 'relative', width: '100%', height: '100%', overflow: 'hidden' });
+      frame.append(img);
     }
-    if (shadow) img.style.filter = shadow;
-    if (el.flipH || el.flipV) img.style.transform = `scale(${el.flipH ? -1 : 1}, ${el.flipV ? -1 : 1})`;
-    div.append(img);
+    if (el.radius) frame.style.borderRadius = `${el.radius}px`;
+    if (el.stroke && el.stroke.color !== 'none' && el.stroke.width) {
+      frame.style.outline = `${el.stroke.width}px ${el.stroke.dash && el.stroke.dash !== 'solid' ? 'dashed' : 'solid'} ${resolveColor(el.stroke.color, theme)}`;
+      frame.style.outlineOffset = `-${el.stroke.width / 2}px`;
+    }
+    if (shadow) frame.style.filter = shadow;
+    if (el.flipH || el.flipV) frame.style.transform = `scale(${el.flipH ? -1 : 1}, ${el.flipV ? -1 : 1})`;
+    div.append(frame);
   }
 
   if (el.type === 'table') div.append(renderTable(el, ctx));
+  if (el.type === 'chart') div.append(renderChart(el, ctx));
+  if (el.type === 'media') div.append(renderMedia(el, ctx));
   return div;
 }
 

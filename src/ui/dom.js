@@ -28,7 +28,7 @@ export const escapeHtml = (value = '') =>
 
 export const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 export const modKey = isMac ? '⌘' : 'Ctrl';
-/** "Mod-Shift-L" → "Ctrl+Shift+L" (or "⌘⇧L" on a Mac), like Word's menus. */
+/** "Mod-Shift-L" → "Ctrl+Shift+L" (or "⌘⇧L" on a Mac), like PowerPoint's menus. */
 export const shortcutLabel = (s) => {
   if (!s) return '';
   const label = s.replace(/Mod/g, modKey).replace(/Shift/g, isMac ? '⇧' : 'Shift').replace(/Alt/g, isMac ? '⌥' : 'Alt');
@@ -45,7 +45,7 @@ let openPopover = null;
 /**
  * Where keyboard focus goes when the element holding it disappears (a menu
  * item that was clicked, a dialog opened from one): the editor screen points
- * this at the document so typing carries on there, as in Word.
+ * this at the document so typing carries on there, as in PowerPoint.
  */
 let focusFallback = null;
 export const setFocusFallback = (fn) => { focusFallback = fn; };
@@ -253,9 +253,9 @@ export function pickFileInput(accept = '') {
   });
 }
 
-export const safeFileName = (value = 'document') => {
+export const safeFileName = (value = 'presentation') => {
   const name = String(value).trim().replace(/[<>:"/\\|?*\u0000-\u001f]+/g, '-').replace(/[. ]+$/g, '');
-  return (name || 'document').slice(0, 120);
+  return (name || 'presentation').slice(0, 120);
 };
 
 export function formatDate(ts) {

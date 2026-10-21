@@ -98,6 +98,20 @@ export function shapePath(kind, w, h) {
   }
 }
 
+/**
+ * Freeform shapes (from PowerPoint's custom geometry) keep their outline as
+ * `paths: [{ cmds, fill, stroke }]`. Each command is ['M', x, y], ['L', x, y],
+ * ['C', x1, y1, x2, y2, x, y], ['Q', x1, y1, x, y] or ['Z'], with coordinates
+ * as fractions of the box, so the outline stretches with it. A path with
+ * `fill: false` or `stroke: false` isn't filled or outlined.
+ */
+export const PATH_ARGS = { M: 2, L: 2, C: 6, Q: 4, Z: 0 };
+
+/** SVG path data for freeform commands drawn in a w × h box. */
+export function customPath(cmds, w, h) {
+  return cmds.map(([op, ...n]) => op + n.map((v, i) => f(v * (i % 2 ? h : w))).join(' ')).join('');
+}
+
 /** Where text sits inside a shape (fractions of the box), so it stays inside the outline. */
 export function textInset(kind) {
   switch (kind) {

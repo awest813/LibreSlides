@@ -13,7 +13,11 @@ const section = (title, ...children) => h('section', { class: 'panel-section' },
 
 function numberInput(value, onValue, { step = 1, min = null, max = null, suffix = '' } = {}) {
   const input = h('input', { type: 'number', step, min, max, value: Number.isFinite(value) ? String(Math.round(value * 10) / 10) : '' });
+  let last = input.value;
   const fire = () => {
+    // Enter fires this, then the change event does too: one undo step.
+    if (input.value === last) return;
+    last = input.value;
     const n = parseFloat(input.value);
     if (Number.isFinite(n)) onValue(min != null ? Math.max(min, max != null ? Math.min(max, n) : n) : n);
   };
@@ -80,8 +84,10 @@ export class SidePanel {
     if (!this.current) return;
     const app = this.app;
     const key = `${this.current}|${app.slide.id}|${app.selection.join(',')}`;
-    // Don't rebuild under the user's fingers while they type or drag a slider here.
-    const typing = this.el.contains(document.activeElement) && document.activeElement.matches('input, textarea, select');
+    // Don't rebuild under the user's fingers while they type or drag a slider here. Selects,
+    // checkboxes and number fields only change things once a choice is made, so they rebuild
+    // (showing the controls that go with it, or the other side of a locked aspect ratio).
+    const typing = this.el.contains(document.activeElement) && document.activeElement.matches('textarea, input:not([type=number], [type=checkbox])');
     if (!force && key === this.key && typing) return;
     this.key = key;
     this.title.textContent = TITLES[this.current];

@@ -32,7 +32,7 @@ Not supported yet: charts, SmartArt, video and audio, grouping, comments and rea
 
 ## Getting started
 
-Requires Node.js 20+.
+Requires Node.js 22.12 or newer.
 
 ```bash
 npm install

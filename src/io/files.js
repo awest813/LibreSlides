@@ -8,6 +8,9 @@ import { sanitizeDeck } from './sanitize.js';
  */
 export const OPEN_ACCEPT = '.pptx,.lslides,.json,application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
+/** Version of the .lslides format this build writes (and the newest it reads). */
+const NATIVE_FORMAT = 1;
+
 export const extOf = (name = '') => (/\.([^.]+)$/.exec(name)?.[1] || '').toLowerCase();
 
 /** Save a file: the system "Save as" dialog where there is one (Chrome, Edge), a download elsewhere. */
@@ -36,7 +39,7 @@ export function portableCopy(deck) {
 
 /** The .lslides file for a deck. */
 export function nativeBlob(deck) {
-  const data = { app: 'LibreSlides', format: 1, deck: pruneMedia(portableCopy(deck)) };
+  const data = { app: 'LibreSlides', format: NATIVE_FORMAT, deck: pruneMedia(portableCopy(deck)) };
   return new Blob([JSON.stringify(data)], { type: 'application/vnd.libreslides+json' });
 }
 
@@ -66,8 +69,11 @@ export async function importFile(file) {
     } catch {
       throw Object.assign(new Error('This file is damaged or isn’t a LibreSlides presentation.'), { code: 'bad-file' });
     }
+    if (data?.app === 'LibreSlides' && data.format > NATIVE_FORMAT) {
+      throw Object.assign(new Error('This file was made by a newer version of LibreSlides. Reload the app to update it, then try again.'), { code: 'newer' });
+    }
     const deck = data?.deck;
-    if (!deck || !Array.isArray(deck.slides)) {
+    if (data?.app !== 'LibreSlides' || !deck || typeof deck !== 'object' || !Array.isArray(deck.slides)) {
       if (Array.isArray(data?.decks)) throw Object.assign(new Error('This is a backup of several presentations. Restore it from the start screen (⋯ › Restore from backup).'), { code: 'backup' });
       throw Object.assign(new Error('This isn’t a LibreSlides presentation.'), { code: 'bad-file' });
     }

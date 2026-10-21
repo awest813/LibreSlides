@@ -112,7 +112,8 @@
 .workspace { flex: 1; display: flex; min-height: 0; position: relative; }
 .center-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .canvas-wrap { flex: 1; overflow: auto; display: flex; background: var(--canvas); padding: 40px; outline: none; min-height: 0; }
-.stage { position: relative; margin: auto; flex: none; box-shadow: var(--page-shadow); background: #fff; }
+/* touch-action: dragging on the slide moves things instead of scrolling (which would cancel the drag). */
+.stage { position: relative; margin: auto; flex: none; box-shadow: var(--page-shadow); background: #fff; touch-action: none; }
 .stage > .slide { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
 .canvas-wrap .slide > .el:not(.el-line):hover { outline: 1px solid rgba(26, 115, 232, 0.55); outline-offset: -1px; }
 .canvas-wrap.is-drawing, .canvas-wrap.is-drawing .el, .canvas-wrap.is-drawing .stage { cursor: crosshair !important; }
@@ -225,7 +226,7 @@
 
 /* ------------------------------------------------------------------ start screen */
 .template-row { grid-template-columns: repeat(auto-fill, 220px); gap: 18px; }
-.template-thumb { aspect-ratio: auto; width: 220px; height: 124px; border-radius: 6px; }
+.template-thumb { width: 220px; height: 124px; border-radius: 6px; }
 .template-thumb.is-import { display: grid; place-items: center; }
 .import-inner { display: grid; justify-items: center; gap: 8px; }
 .deck-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, 222px); gap: 18px; }
@@ -306,9 +307,13 @@
 dialog.dialog { z-index: 3600; }
 
 /* ------------------------------------------------------------------ small screens */
+/* With text selected the toolbar is ~1490px wide; drop the labels on Animate/Format first. */
+@media (max-width: 1500px) {
+  .tb-group[data-group='element'] .tb-text { display: none; }
+}
 @media (max-width: 1100px) {
   :root { --panel-w: 270px; }
-  .tb-group[data-group='element'] .tb-text, .tb-group[data-group='slide'] .tb-text { display: none; }
+  .tb-group[data-group='slide'] .tb-text { display: none; }
 }
 @media (max-width: 900px) {
   .sidepanel { position: absolute; right: 0; top: 0; bottom: 0; z-index: 20; box-shadow: var(--shadow-popover); }
@@ -318,6 +323,7 @@ dialog.dialog { z-index: 3600; }
   .workspace { flex-direction: column; }
   .filmstrip { order: 2; width: auto; height: 128px; flex-direction: row; border-right: 0; border-top: 1px solid var(--border); }
   .filmstrip-list { display: flex; gap: 4px; padding: 6px; overflow-x: auto; overflow-y: hidden; }
+  .film-item { flex: none; }
   .film-item + .film-item { margin-top: 0; }
   .filmstrip-add span { display: none; }
   .filmstrip-add { align-self: center; padding: 0 10px; }
@@ -327,10 +333,11 @@ dialog.dialog { z-index: 3600; }
   .pv-main { grid-template-columns: 1fr; }
   .template-row, .deck-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
   .template-thumb { width: 100%; height: auto; aspect-ratio: 16 / 9; }
-  .template-thumb .slide-thumb { transform: scale(0.68); transform-origin: 0 0; }
   .start-inner { padding: 16px; }
-  .doc-toolbar { flex: 1; justify-content: flex-end; }
-  .doc-filter { width: auto; flex: 1; }
+  /* The search box gets a row of its own under the heading, with the ⋯ menu beside it. */
+  .start-section-title { flex-wrap: wrap; gap: 8px; }
+  .doc-toolbar { flex: 1 1 100%; min-width: 0; justify-content: flex-end; }
+  .doc-filter { width: auto; flex: 1; min-width: 0; }
 }
 
 /* ------------------------------------------------------------------ files & install */
@@ -341,4 +348,7 @@ dialog.dialog { z-index: 3600; }
 .install-steps { margin: 8px 0 0; padding-left: 20px; display: grid; gap: 6px; }
 @media (max-width: 600px) {
   .title-row .file-chip .file-chip-state { display: none; }
+  /* Too narrow for a readable "Save to file…": keep just the icon (the title and aria-label still say it). */
+  .title-row .file-chip.is-unlinked { flex: none; padding: 0 6px; }
+  .title-row .file-chip.is-unlinked .file-chip-name { display: none; }
 }

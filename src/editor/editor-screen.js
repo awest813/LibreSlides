@@ -28,7 +28,9 @@ import { VERSION, BUILD, diagnostics } from '../diagnostics.js';
 
 const CLIP_TYPE = 'application/x-libreslides+json';
 const isTextual = (el) => canHoldText(el) || el.type === 'table';
-const typingTarget = (t) => t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+// Where keys type text (so Ctrl+Z and friends are the field's own); not checkboxes, sliders or lists.
+const typingTarget = (t) => !!t && (t.isContentEditable || t.tagName === 'TEXTAREA'
+  || (t.tagName === 'INPUT' && !/^(checkbox|radio|range|color|button|submit|reset|file|image)$/.test(t.type)));
 
 let elementClipboard = null; // { elements, media } — shared by every editor in this tab
 let slideClipboard = null; // { slides, media }
@@ -259,6 +261,7 @@ export class EditorScreen {
     this.slideIndex = i;
     this.slideSelection = new Set([this.slide.id]);
     this.selection = s.selection.filter((id) => this.slide.elements.some((e) => e.id === id));
+    this.notesSlideId = null;
     this.filmstrip.render();
     this.refresh();
     this.markDirty();
@@ -266,8 +269,19 @@ export class EditorScreen {
 
   /** Record `before` as an undo step for a change already made, then save and redraw. */
   commit(before, { coalesce = null, render = true, structure = false } = {}) {
-    this.history.push(before, coalesce);
-    this.markDirty({ thumbs: !structure });
+    const after = this.snapshot();
+    if (after !== before) {
+      // Text typed in the box being edited is its own undo step, before this change.
+      const ed = this.canvas.editing;
+      if (ed && ed.before !== before) this.history.push(ed.before);
+      this.history.push(before, coalesce);
+      if (ed) {
+        const el = this.canvas.find(ed.id);
+        ed.before = after;
+        ed.original = JSON.stringify([el?.text, el?.cells]);
+      }
+      this.markDirty({ thumbs: !structure });
+    }
     if (structure) this.filmstrip.render();
     if (render) this.refresh();
     else this.onSelectionChanged();
@@ -285,7 +299,11 @@ export class EditorScreen {
     this.canvas.render();
     this.toolbar.update();
     this.panel.update();
-    if (document.activeElement !== this.notes) this.notes.value = this.slide.notes || '';
+    // Keep the notes the user is typing, unless they belong to another slide (or undo/redo changed them).
+    if (document.activeElement !== this.notes || this.notesSlideId !== this.slide.id) {
+      this.notes.value = this.slide.notes || '';
+      this.notesSlideId = this.slide.id;
+    }
   }
 
   markDirty({ thumbs = false } = {}) {
@@ -366,6 +384,7 @@ export class EditorScreen {
     this.slideIndex = Math.min(this.slideIndex, deck.slides.length - 1);
     this.selection = [];
     this.slideSelection = new Set([this.slide.id]);
+    this.notesSlideId = null;
     this.filmstrip.render();
     this.refresh();
     this.setSaveState('saved');
@@ -436,6 +455,7 @@ export class EditorScreen {
   }
 
   deleteSlides() {
+    this.canvas.endEdit(); // keep the text being typed (and its undo step)
     const idx = this.slideIndices();
     const first = idx[0];
     this.change(() => {
@@ -499,6 +519,7 @@ export class EditorScreen {
   }
 
   applyLayout(layout) {
+    this.canvas.endEdit(); // the placeholder being edited is replaced below
     this.change(() => {
       const s = this.slide;
       const { w, h: H } = this.size;
@@ -1051,6 +1072,7 @@ export class EditorScreen {
       this.change(() => {
         el.media = media;
         el.natural = { w: img.width, h: img.height };
+        delete el.crop; // the old picture's crop means nothing for the new one
         // Keep the width and position, take the new picture's proportions.
         const cy = el.y + el.h / 2;
         el.h = Math.round((el.w * img.height) / img.width);
@@ -1139,6 +1161,8 @@ export class EditorScreen {
           delete el.anim;
           continue;
         }
+        // Duration or start alone doesn't animate something that isn't animated.
+        if (!el.anim && !props.effect) continue;
         const fresh = !el.anim;
         el.anim = { effect: 'fade', duration: 0.5, start: 'click', ...(el.anim || {}), ...props };
         if (fresh) el.anim.order = order++;
@@ -1243,7 +1267,6 @@ export class EditorScreen {
     const run = (fn) => { e.preventDefault(); fn(); };
 
     // Anywhere in the editor
-    if (e.altKey && e.shiftKey && !mod && e.code === 'Digit5' && this.hasTextTarget()) return run(() => this.toggleTextProp('strike'));
     if (mod && k === 'o') return run(() => this.openFile());
     if (e.key === 'F5') return run(() => this.present({ fromStart: !e.shiftKey }));
     if (mod && k === 'enter') return run(() => this.present({ fromStart: e.shiftKey }));
@@ -1253,7 +1276,13 @@ export class EditorScreen {
     if (mod && k === '/') return run(() => this.showShortcuts());
     if (mod && (k === '=' || k === '+')) return run(() => this.zoomBy(1.25));
     if (mod && k === '-') return run(() => this.zoomBy(0.8));
-    if (mod && e.altKey && k === '0') return run(() => this.canvas.setZoom('fit'));
+    // By key position: Alt changes the character typed on a Mac (Alt+0 is º).
+    if (mod && e.altKey && e.code === 'Digit0') return run(() => this.canvas.setZoom('fit'));
+
+    // Strikethrough also while typing on the slide, but Alt+Shift+5 still types in other fields.
+    if (e.altKey && e.shiftKey && !mod && e.code === 'Digit5' && this.hasTextTarget() && (!typingTarget(e.target) || this.canvas.wrap.contains(e.target))) {
+      return run(() => this.toggleTextProp('strike'));
+    }
 
     if (typingTarget(e.target)) return;
     if (mod && !e.shiftKey && k === 'z') return run(() => this.undo());
@@ -1262,6 +1291,8 @@ export class EditorScreen {
     if (this.toolbar.toolbar.contains(e.target) || this.toolbar.menubar.contains(e.target)) {
       if (e.key !== 'Escape') return;
     }
+    // Space and Enter press a focused button (in the title bar…); arrows and Delete aren't for the slide either.
+    if (e.key !== 'Escape' && e.target.closest?.('button, a, [role=button]')) return;
 
     const els = this.selectedElements();
     if (e.key === 'Escape') {
@@ -1506,29 +1537,42 @@ export class EditorScreen {
   // ---------------------------------------------------------------- presenting
 
   async present({ fromStart = false } = {}) {
-    await this.flush();
-    const { startSlideshow } = await import('../present/present.js');
-    this.presentation = startSlideshow(this.deck, {
-      start: fromStart ? 0 : this.slideIndex,
-      onExit: (i) => {
-        this.presentation = null;
-        if (i != null) this.goToSlide(i);
-        this.focusCanvas();
-      },
-    });
+    // One show at a time (a held F5 repeats while the show is still loading).
+    if (this.presentation || this.presentPending) return;
+    this.presentPending = true;
+    try {
+      await this.flush();
+      const { startSlideshow } = await import('../present/present.js');
+      this.presentation = startSlideshow(this.deck, {
+        start: fromStart ? 0 : this.slideIndex,
+        onExit: (i) => {
+          this.presentation = null;
+          if (i != null) this.goToSlide(i);
+          this.focusCanvas();
+        },
+      });
+    } finally {
+      this.presentPending = false;
+    }
   }
 
   async presenterView() {
-    await this.flush();
-    const { startPresenterView } = await import('../present/present.js');
-    this.presentation = startPresenterView(this.deck, {
-      start: this.slideIndex,
-      onExit: (i) => {
-        this.presentation = null;
-        if (i != null) this.goToSlide(i);
-        this.focusCanvas();
-      },
-    });
+    if (this.presentation || this.presentPending) return;
+    this.presentPending = true;
+    try {
+      await this.flush();
+      const { startPresenterView } = await import('../present/present.js');
+      this.presentation = startPresenterView(this.deck, {
+        start: this.slideIndex,
+        onExit: (i) => {
+          this.presentation = null;
+          if (i != null) this.goToSlide(i);
+          this.focusCanvas();
+        },
+      });
+    } finally {
+      this.presentPending = false;
+    }
   }
 
   // ---------------------------------------------------------------- dialogs

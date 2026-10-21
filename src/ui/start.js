@@ -10,6 +10,19 @@ import { isInstalledWindow, showInstallHelp } from './install.js';
 const THUMB_W = 220;
 const templateDecks = new Map(); // built once per session, for the thumbnails
 
+/** Thumbnails are drawn THUMB_W wide; cards are narrower on phones, so size each one to its box. */
+function fitThumb(box) {
+  const frame = box.querySelector(':scope > .slide-thumb');
+  const slide = frame?.firstElementChild;
+  const width = box.clientWidth;
+  if (!slide || !width) return;
+  const k = width / parseFloat(slide.style.width);
+  frame.style.width = `${width}px`;
+  frame.style.height = `${Math.round(parseFloat(slide.style.height) * k)}px`;
+  slide.style.transform = `scale(${k})`;
+}
+const fitThumbs = (root) => root.querySelectorAll('.template-thumb, .deck-cover').forEach(fitThumb);
+
 function templateTiles({ onTemplate, onImport }) {
   const row = h('div', { class: 'template-row' });
   for (const t of TEMPLATES) {
@@ -88,6 +101,7 @@ function deckGrid({ onOpen, onDownload }) {
       open));
     }
     body.append(grid);
+    fitThumbs(grid);
   };
 
   const refresh = async () => {
@@ -163,10 +177,13 @@ export function renderStartScreen(root, { onOpen, onTemplate, onImport, onToggle
         grid.el,
         h('p', { class: 'start-foot' }, 'Presentations are saved in this browser and work offline. Nothing is uploaded.'))));
   root.replaceChildren(screen);
+  const resize = new ResizeObserver(() => fitThumbs(screen));
+  resize.observe(screen.querySelector('.start-inner'));
   const unStorage = onStorageChange(() => grid.refresh());
   const onInstalled = () => { installBtn.hidden = true; };
   window.addEventListener('appinstalled', onInstalled);
   cleanup = () => {
+    resize.disconnect();
     unStorage();
     window.removeEventListener('appinstalled', onInstalled);
   };

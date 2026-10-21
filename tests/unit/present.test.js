@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { buildSteps, nextPos, prevPos, firstPos } from '../../src/present/present.js';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { buildSteps, nextPos, prevPos, firstPos, Player, startSlideshow } from '../../src/present/present.js';
 import { newDeck, newSlide, newShape } from '../../src/model/deck.js';
 
 function deckWithAnimations() {
@@ -40,5 +40,62 @@ describe('slideshow positions', () => {
     expect(prevPos(d, { i: 3, step: 0 })).toEqual({ i: 1, step: 2 });
     expect(prevPos(d, { i: 0, step: 0 })).toBeNull();
     expect(firstPos(d, 2)).toEqual({ i: 3, step: 0 });
+  });
+});
+
+// jsdom lacks these.
+globalThis.ResizeObserver ||= class { observe() {} disconnect() {} unobserve() {} };
+globalThis.matchMedia ||= () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+globalThis.CSS ||= { escape: (s) => String(s).replace(/["\\]/g, '\\$&') };
+
+afterEach(() => {
+  document.body.replaceChildren();
+  delete Element.prototype.animate;
+});
+
+describe('playing a slideshow', () => {
+  it('plays the transition into a slide whose first animation starts by itself', () => {
+    const d = deckWithAnimations();
+    const s = d.slides[1];
+    const fade = s.elements[2];
+    fade.anim.start = 'with';
+    fade.opacity = 0.5;
+    s.transition = { type: 'fade', duration: 0.6 };
+    const animate = vi.fn(() => ({ finished: Promise.resolve(), finish() {} }));
+    Element.prototype.animate = animate;
+    const host = document.createElement('div');
+    document.body.append(host);
+    const player = new Player(d, host);
+    player.go(firstPos(d, 0));
+    player.go(nextPos(d, player.pos));
+    expect(player.pos).toEqual({ i: 1, step: 1 });
+    const layer = player.frame.lastElementChild;
+    expect(animate.mock.contexts).toContain(layer);
+    // The fade ends at the object's own opacity instead of jumping back to it.
+    const node = layer.querySelector(`[data-id="${fade.id}"]`);
+    const call = animate.mock.calls[animate.mock.contexts.indexOf(node)];
+    expect(call[0].at(-1).opacity).toBe(0.5);
+  });
+
+  it('brings the slide back on the first click after blacking out, and leaves Ctrl combinations alone', () => {
+    const show = startSlideshow(deckWithAnimations(), { start: 0 });
+    const root = document.querySelector('.show');
+    const curtain = root.querySelector('.show-curtain');
+    const key = (init) => {
+      const e = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
+      root.dispatchEvent(e);
+      return e;
+    };
+    key({ key: 'b' });
+    expect(curtain.hidden).toBe(false);
+    root.click();
+    expect(curtain.hidden).toBe(true);
+    expect(show.pos).toEqual({ i: 0, step: 0 });
+    expect(key({ key: 'p', ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(key({ key: 'n', metaKey: true }).defaultPrevented).toBe(false);
+    expect(show.pos).toEqual({ i: 0, step: 0 });
+    root.click();
+    expect(show.pos).toEqual({ i: 1, step: 0 });
+    show.exit();
   });
 });

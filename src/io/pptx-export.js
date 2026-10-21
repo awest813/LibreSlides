@@ -5,6 +5,9 @@ import { themeById, resolveColor, backgroundBaseColor } from '../model/themes.js
 import { textStyle, themeDecor } from '../render/render.js';
 import { safeFileName } from '../ui/dom.js';
 import { saveFile } from './files.js';
+import { addChart } from './pptx-chart.js';
+import { addMediaElement } from './pptx-media.js';
+import { embedFonts } from './pptx-fonts.js';
 
 /**
  * PowerPoint export with pptxgenjs. Slides become real PowerPoint text boxes,
@@ -118,18 +121,24 @@ export function htmlToRuns(html, base = {}) {
   const paragraphs = [];
   const collect = (block, para) => {
     const runs = [];
+    // A <br> is a line break inside the paragraph: the next run starts on a new line (<a:br/>).
+    let breaks = 0;
     const walk = (n) => {
       for (const c of n.childNodes) {
         if (c.nodeType === 3) {
           const text = c.textContent.replace(/​/g, '');
-          if (text) runs.push({ text, options: toRunOptions(runStyle(c, root, base)) });
-        } else if (c.nodeName === 'BR') runs.push({ br: true, options: toRunOptions(runStyle(c, root, base)) });
+          if (!text) continue;
+          const options = toRunOptions(runStyle(c, root, base));
+          if (breaks && !runs.length) runs.push({ text: '', options }); // the paragraph starts with an empty line
+          for (; breaks > 1; breaks--) runs.push({ text: '', options: { ...options, softBreakBefore: true } });
+          runs.push({ text, options: breaks ? { ...options, softBreakBefore: true } : options });
+          breaks = 0;
+        } else if (c.nodeName === 'BR') breaks++;
         else if (c.nodeName !== 'UL' && c.nodeName !== 'OL') walk(c);
       }
     };
     walk(block);
-    // A trailing <br> only keeps an empty line open in the editor.
-    while (runs.length && runs[runs.length - 1].br) runs.pop();
+    // Trailing <br>s only keep an empty line open in the editor.
     paragraphs.push({ runs, para });
   };
   const blockAlign = (el) => {
@@ -157,8 +166,8 @@ export function htmlToRuns(html, base = {}) {
     if (!runs.length) runs.push({ text: '', options: toRunOptions(base) });
     runs.forEach((r, k) => {
       const options = { ...r.options, ...pOpts };
-      if (r.br || (k === runs.length - 1 && i < paragraphs.length - 1)) options.breakLine = true;
-      out.push({ text: r.br ? '' : r.text, options });
+      if (k === runs.length - 1 && i < paragraphs.length - 1) options.breakLine = true;
+      out.push({ text: r.text, options });
     });
   });
   return out;
@@ -268,7 +277,13 @@ async function addElement(pptx, s, el, deck, theme) {
     const data = await exportableImage(deck.media?.[el.media], el.w, el.h);
     if (!data) return;
     const opts = { ...common, data: dataForPptx(data), altText: el.alt || '' };
-    if (el.fit === 'cover' || el.fit === 'contain') {
+    const crop = (!el.fit || el.fit === 'fill') && el.crop;
+    if (crop) {
+      // The whole picture at the size it's shown, and the part of it the box shows.
+      opts.w = g.w / Math.max(0.01, 1 - crop.l - crop.r);
+      opts.h = g.h / Math.max(0.01, 1 - crop.t - crop.b);
+      opts.sizing = { type: 'crop', x: crop.l * opts.w, y: crop.t * opts.h, w: g.w, h: g.h };
+    } else if (el.fit === 'cover' || el.fit === 'contain') {
       // pptxgenjs crops or fits using the picture's own proportions.
       const natural = el.natural?.w ? el.natural : await imageSize(data);
       if (natural?.w && natural?.h) {
@@ -280,6 +295,15 @@ async function addElement(pptx, s, el, deck, theme) {
     if (el.radius) opts.rounding = el.radius >= Math.min(el.w, el.h) / 2;
     if (opacity < 1) opts.transparency = Math.round((1 - opacity) * 100);
     s.addImage(opts);
+    return;
+  }
+
+  if (el.type === 'chart') {
+    addChart(pptx, s, el, theme, g);
+    return;
+  }
+  if (el.type === 'media') {
+    await addMediaElement(pptx, s, el, deck, g);
     return;
   }
 
@@ -309,7 +333,7 @@ async function addElement(pptx, s, el, deck, theme) {
 
   // Text boxes and shapes (with or without text).
   const t = textStyle(el, theme);
-  const shape = el.type === 'shape' ? el.shape : 'rect';
+  let shape = el.type === 'shape' ? el.shape : 'rect';
   const hasText = !!htmlToText(el.text || '');
   const opts = {
     ...common,
@@ -317,8 +341,31 @@ async function addElement(pptx, s, el, deck, theme) {
     fill: fillOpts(el.fill, theme, opacity),
     line: lineOpts(el.stroke, theme),
   };
+  let extras = [];
+  if (shape === 'custom') {
+    // A freeform: one PowerPoint shape per kind of path (filled or not, outlined or not);
+    // the first carries the text.
+    const kinds = new Map();
+    for (const p of el.paths || []) {
+      const key = `${p.fill !== false}${p.stroke !== false}`;
+      if (!kinds.has(key)) kinds.set(key, []);
+      kinds.get(key).push(p);
+    }
+    const parts = [...kinds.values()].map((paths) => ({
+      points: customPoints(paths, g),
+      fill: paths[0].fill === false ? { type: 'none' } : opts.fill,
+      line: paths[0].stroke === false ? { type: 'none' } : opts.line,
+    }));
+    if (!parts.length) parts.push({ points: customPoints([{ cmds: [['M', 0, 0], ['L', 1, 0], ['L', 1, 1], ['L', 0, 1], ['Z']] }], g), fill: opts.fill, line: opts.line });
+    shape = 'custGeom';
+    Object.assign(opts, { shape, ...parts[0] });
+    extras = parts.slice(1);
+  }
+  // Drawn over the main shape, in the order they were in.
+  const addExtras = () => { for (const extra of extras) s.addShape(shape, { ...common, ...extra }); };
   if (!hasText) {
     if (el.type === 'shape' || opts.fill.type !== 'none' || opts.line.type !== 'none') s.addShape(shape, opts);
+    addExtras();
     return;
   }
   const base = {
@@ -340,6 +387,24 @@ async function addElement(pptx, s, el, deck, theme) {
     isTextBox: el.type === 'text',
   });
   s.addText(htmlToRuns(el.text, {}), opts);
+  addExtras();
+}
+
+/** Freeform paths (fractions of the box) as pptxgenjs custom geometry points (inches from the box's corner). */
+function customPoints(paths, g) {
+  const pts = [];
+  for (const { cmds } of paths) {
+    for (const [op, ...n] of cmds) {
+      const x = (i) => n[i] * g.w;
+      const y = (i) => n[i] * g.h;
+      if (op === 'M') pts.push({ x: x(0), y: y(1), moveTo: true });
+      else if (op === 'L') pts.push({ x: x(0), y: y(1) });
+      else if (op === 'C') pts.push({ x: x(4), y: y(5), curve: { type: 'cubic', x1: x(0), y1: y(1), x2: x(2), y2: y(3) } });
+      else if (op === 'Q') pts.push({ x: x(2), y: y(3), curve: { type: 'quadratic', x1: x(0), y1: y(1) } });
+      else if (op === 'Z') pts.push({ close: true });
+    }
+  }
+  return pts;
 }
 
 const TRANSITION_XML = {
@@ -351,14 +416,31 @@ const TRANSITION_XML = {
   flip: '<p:fade thruBlk="1"/>',
 };
 
-/** Add transitions and "skip slide" to the generated XML. */
+/**
+ * pptxgenjs writes paragraph properties before every run of a paragraph, but
+ * PowerPoint only allows them first (it offers to "repair" the file
+ * otherwise). Keep the first <a:pPr> of each paragraph and drop the rest.
+ */
+export function fixParagraphs(slideXml) {
+  return slideXml.replace(/<a:p>([\s\S]*?)<\/a:p>/g, (para, inner) => {
+    let first = true;
+    const body = inner.replace(/<a:pPr\b[^>]*\/>|<a:pPr\b[^>]*>[\s\S]*?<\/a:pPr>/g, (pPr, at) => {
+      const keep = first && at === 0;
+      first = false;
+      return keep ? pPr : '';
+    });
+    return `<a:p>${body}</a:p>`;
+  });
+}
+
+/** Tidy the paragraphs, and add transitions and "skip slide" to the generated XML. */
 async function postProcess(buffer, deck) {
   const zip = await JSZip.loadAsync(buffer);
   for (const [i, slide] of deck.slides.entries()) {
     const path = `ppt/slides/slide${i + 1}.xml`;
     const file = zip.file(path);
     if (!file) continue;
-    let xml = await file.async('string');
+    let xml = fixParagraphs(await file.async('string'));
     const t = slide.transition;
     if (t && TRANSITION_XML[t.type]) {
       const d = t.duration ?? 0.6;
@@ -369,6 +451,7 @@ async function postProcess(buffer, deck) {
     if (slide.hidden) xml = xml.replace(/<p:sld(\s)/, '<p:sld show="0"$1');
     zip.file(path, xml);
   }
+  await embedFonts(zip, deck);
   return zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', compression: 'DEFLATE' });
 }
 
