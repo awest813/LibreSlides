@@ -67,11 +67,14 @@ function cellMargins(cell) {
   return m.t >= 1 ? list : list.map((v) => v / IN);
 }
 
+/** A fill colour for pptxgenjs, see-through as much as the colour itself ("rgba(…)") and `opacity` make it. */
 function fillOpts(fill, theme, opacity = 1) {
-  const hex = toHex(resolveColor(fill, theme, 'transparent'));
+  const css = resolveColor(fill, theme, 'transparent');
+  const hex = toHex(css);
   if (!hex) return { type: 'none' };
   const f = { color: hex };
-  if (opacity < 1) f.transparency = Math.round((1 - opacity) * 100);
+  const alpha = (cssColor(css)?.alpha ?? 1) * opacity;
+  if (alpha < 1) f.transparency = Math.round((1 - alpha) * 100);
   return f;
 }
 

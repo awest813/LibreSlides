@@ -15,7 +15,7 @@ import { readEmbeddedFonts } from './pptx-fonts.js';
 import { readComments } from './pptx-comments.js';
 import { readSections } from './pptx-sections.js';
 import { readDiagram } from './pptx-diagram.js';
-import { EMU_PER_PT, kids, kid, path, desc, attr, rid, SCHEME_ALIAS, colorOf, alphaOf, blend, Package, addMediaTo } from './ooxml.js';
+import { EMU_PER_PT, kids, kid, path, desc, attr, rid, SCHEME_ALIAS, colorOf, alphaOf, Package, addMediaTo } from './ooxml.js';
 
 /**
  * PowerPoint (.pptx) reader. Brings in what LibreSlides can edit: text boxes
@@ -1036,9 +1036,10 @@ async function readSlide(pkg, slidePath, deckCtx, deck) {
         const text = txBody ? textBody(txBody, lctx, { chain, defaults }) : { html: '', base: defaults };
         const hasText = !!txBody?.textContent.trim();
         const { base } = text;
-        // A see-through fill: shown through the element's opacity when there's no text to fade with it.
-        const fadeAll = alpha < 1 && !hasText && fill !== 'none' && (!stroke || !stroke.width);
-        if (alpha < 1 && !fadeAll && fill && fill !== 'none') fill = blend(fill, bgColor, alpha);
+        // A see-through fill keeps its transparency: the element's opacity when there's nothing else
+        // to fade with it (as LibreSlides writes see-through shapes), else the fill's own.
+        const fadeAll = alpha < 1 && !hasText && fill !== 'none' && !gradient && !pattern && !picture && (!stroke || !stroke.width);
+        if (alpha < 1 && !fadeAll && fill && fill !== 'none') fill = withOpacity(fill, alpha);
         const plainBox = !paths && prst === 'rect' && fill === 'none' && !stroke;
         const el = {
           id: uid(), type: plainBox ? 'text' : 'shape', x: box.x, y: box.y, w: box.w, h: box.h, rot: box.rot, flipH: box.flipH || undefined, flipV: box.flipV || undefined,
