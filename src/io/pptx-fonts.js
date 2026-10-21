@@ -176,7 +176,8 @@ export async function embedFonts(zip, deck, { enabled = embedFontsSetting(), loa
  * Read the fonts embedded in a presentation into deck.fonts as font data
  * URLs. Fonts LibreSlides bundles anyway are skipped, and so is anything that
  * isn't a readable font. PowerPoint's own compressed (MicroType Express)
- * fonts can't be unpacked yet: text in them shows in a stand-in font.
+ * fonts are unpacked into TrueType; text in a font that can't be read shows
+ * in a stand-in font.
  */
 export async function readEmbeddedFonts({ pkg, pres, presRels, deck }) {
   for (const entry of desc(pres, 'embeddedFont')) {
@@ -194,7 +195,7 @@ export async function readEmbeddedFonts({ pkg, pres, presRels, deck }) {
         if (!Object.hasOwn(deck.fonts, family)) deck.fonts[family] = {};
         deck.fonts[family][face] = `data:${mime};base64,${toBase64(data)}`;
       } catch (err) {
-        if (err.code === 'mtx') warnOnce(`mtx/${family}`, `The embedded font “${family}” is compressed in a way LibreSlides can’t read yet (MicroType Express); its text shows in a similar font.`);
+        if (err.code === 'mtx') warnOnce(`mtx/${family}`, `The embedded font “${family}” couldn’t be unpacked (MicroType Express); its text shows in a similar font.`, err);
         else console.warn(`Couldn’t read the embedded font “${family}” (${face})`, err);
       }
     }

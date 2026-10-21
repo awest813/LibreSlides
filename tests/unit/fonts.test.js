@@ -78,7 +78,7 @@ describe('Embedded OpenType', () => {
     expect(decodeFontData(eot).mime).toBe('font/ttf');
   });
 
-  it('undoes XOR obfuscation and refuses compressed fonts', async () => {
+  it('undoes XOR obfuscation and refuses compressed data it can’t unpack', async () => {
     const font = await ttf('oswald-latin-400-normal');
     const eot = wrapEot(font);
     const v = new DataView(eot.buffer);
@@ -198,7 +198,7 @@ describe('Reading embedded fonts', () => {
     expect(sanitizeDeck(back).fonts['House Serif'].italic).toBe(dataUrl);
   });
 
-  it('reads obfuscated and plain TrueType parts, and skips compressed or broken ones', async () => {
+  it('reads obfuscated and plain TrueType parts, and skips broken ones, compressed or not', async () => {
     const font = await ttf('roboto-slab-latin-700-normal');
     const zip = await exportZip(deckWith(textBox('<p>x</p>')));
     const eot = wrapEot(font);
