@@ -292,13 +292,15 @@ export class EditorScreen {
   }
 
   snapshot() {
-    return JSON.stringify({ slides: this.deck.slides, themeId: this.deck.themeId, size: this.deck.size, slideId: this.slide?.id, selection: this.selection });
+    return JSON.stringify({ slides: this.deck.slides, themeId: this.deck.themeId, importedTheme: this.deck.importedTheme ?? null, size: this.deck.size, slideId: this.slide?.id, selection: this.selection });
   }
 
   restore(snap) {
     const s = JSON.parse(snap);
     this.deck.slides = s.slides;
     this.deck.themeId = s.themeId;
+    if (s.importedTheme) this.deck.importedTheme = s.importedTheme;
+    else delete this.deck.importedTheme;
     this.deck.size = s.size;
     let i = this.deck.slides.findIndex((x) => x.id === s.slideId);
     if (i < 0) i = Math.min(this.slideIndex, this.deck.slides.length - 1);
@@ -639,7 +641,11 @@ export class EditorScreen {
   }
 
   setTheme(id) {
-    this.change(() => { this.deck.themeId = id; }, { structure: true });
+    this.change(() => {
+      this.deck.themeId = id;
+      // The theme a PowerPoint file came with gives way to the one chosen (see pptx-export.js).
+      delete this.deck.importedTheme;
+    }, { structure: true });
   }
 
   setSize(size) {
@@ -949,8 +955,9 @@ export class EditorScreen {
       if (e.type === 'line' || e.type === 'image') return;
       e[prop] = value;
       if (prop === 'fill') {
-        // A colour picked for the fill replaces a gradient or picture.
+        // A colour picked for the fill replaces a gradient, pattern or picture.
         delete e.gradient;
+        delete e.pattern;
         delete e.fillImage;
       }
     });
@@ -966,6 +973,7 @@ export class EditorScreen {
       }
       e.gradient = JSON.parse(JSON.stringify(gradient));
       e.fill = gradient.stops[0].color;
+      delete e.pattern;
       delete e.fillImage;
     });
   }
@@ -980,6 +988,7 @@ export class EditorScreen {
       this.updateSelected((e) => {
         if (e.type !== 'shape' && e.type !== 'text') return;
         e.fillImage = { media };
+        delete e.pattern;
         if (!e.fill || e.fill === 'none') e.fill = '#ffffff';
       });
     } catch (err) {

@@ -3,7 +3,7 @@ import JSZip from 'jszip';
 import { slideSize, boxOf, htmlToText, ANIM_KINDS, motionPath, FIELD, fieldText } from '../model/deck.js';
 import { cellBorder, cellMargin } from '../model/tables.js';
 import { isPlainWarp } from '../model/warps.js';
-import { themeById, resolveColor, backgroundBaseColor } from '../model/themes.js';
+import { themeById, resolveColor, backgroundBaseColor, backgroundGradient } from '../model/themes.js';
 import { textStyle, themeDecor } from '../render/render.js';
 import { safeFileName } from '../ui/dom.js';
 import { saveFile } from './files.js';
@@ -15,6 +15,8 @@ import { writeComments } from './pptx-comments.js';
 import { writeSections } from './pptx-sections.js';
 import { exportsAsSmartArt, writeDiagram } from './pptx-diagram.js';
 import { xmlText, emu } from './ooxml.js';
+import { pictureSizePt } from './images.js';
+import { isPattern } from '../model/patterns.js';
 import { diagramAsShapes } from '../model/diagram-layout.js';
 
 /**
@@ -54,7 +56,11 @@ const DASH = { solid: 'solid', dash: 'dash', dot: 'sysDot', dashDot: 'dashDot', 
 
 function lineOpts(stroke, theme) {
   if (!stroke || !stroke.width || !stroke.color || stroke.color === 'none') return { type: 'none' };
-  return { color: toHex(resolveColor(stroke.color, theme)) || '000000', width: stroke.width, dashType: DASH[stroke.dash] || 'solid' };
+  const css = resolveColor(stroke.color, theme);
+  const line = { color: toHex(css) || '000000', width: stroke.width, dashType: DASH[stroke.dash] || 'solid' };
+  const alpha = cssColor(css)?.alpha ?? 1;
+  if (alpha < 1) line.transparency = Math.round((1 - alpha) * 100);
+  return line;
 }
 
 /**
@@ -67,11 +73,14 @@ function cellMargins(cell) {
   return m.t >= 1 ? list : list.map((v) => v / IN);
 }
 
+/** A fill colour for pptxgenjs, see-through as much as the colour itself ("rgba(…)") and `opacity` make it. */
 function fillOpts(fill, theme, opacity = 1) {
-  const hex = toHex(resolveColor(fill, theme, 'transparent'));
+  const css = resolveColor(fill, theme, 'transparent');
+  const hex = toHex(css);
   if (!hex) return { type: 'none' };
   const f = { color: hex };
-  if (opacity < 1) f.transparency = Math.round((1 - opacity) * 100);
+  const alpha = (cssColor(css)?.alpha ?? 1) * opacity;
+  if (alpha < 1) f.transparency = Math.round((1 - alpha) * 100);
   return f;
 }
 
@@ -534,8 +543,9 @@ async function addElement(pptx, s, el, deck, theme, marks) {
   const picture = el.fillImage && (await exportableImage(deck.media?.[el.fillImage.media], el.w, el.h, marks.pngs));
   if (picture) {
     if (opts.fill.type === 'none') opts.fill = { color: 'FFFFFF' };
-    marks.pictures.set(mark(), { data: picture, crop: el.fillImage.crop, opacity });
+    marks.pictures.set(mark(), { data: picture, crop: el.fillImage.crop, tile: el.fillImage.tile, opacity: opacity * (el.fillImage.opacity ?? 1) });
   } else if (el.gradient && opts.fill.type !== 'none') marks.gradients.set(mark(), gradFillXml(el.gradient, theme, opacity));
+  else if (el.pattern && opts.fill.type !== 'none') marks.gradients.set(mark(), pattFillXml(el.pattern, theme, opacity));
   let extras = [];
   if (shape === 'custom' && el.preset?.name) {
     // A PowerPoint preset goes back as that preset (pptxgenjs writes any preset name), with its adjust values.
@@ -655,9 +665,8 @@ export function fixParagraphs(slideXml) {
 
 /** A LibreSlides gradient (see model/deck.js) as DrawingML, faded by `opacity`. */
 export function gradFillXml(g, theme, opacity = 1) {
-  let stops = g.stops || [];
-  // PowerPoint runs path gradients from the edge (first stop) in to the centre.
-  if (g.type === 'radial') stops = stops.map((s) => ({ ...s, pos: 1 - s.pos })).reverse();
+  // (A path gradient's first stop is at its centre, as LibreSlides' radial ones are.)
+  const stops = g.stops || [];
   const gs = stops.map((s) => {
     const alpha = (s.opacity ?? 1) * opacity;
     const hex = toHex(resolveColor(s.color, theme)) || '000000';
@@ -665,12 +674,36 @@ export function gradFillXml(g, theme, opacity = 1) {
   }).join('');
   let dir;
   if (g.type === 'radial') {
-    const pct = (v) => Math.round(Math.max(0, Math.min(1, v)) * 100000);
+    // (Its centre may be outside the box.)
+    const pct = (v) => Math.round(Math.max(-2, Math.min(3, v)) * 100000);
     const cx = g.cx ?? 0.5;
     const cy = g.cy ?? 0.5;
     dir = `<a:path path="circle"><a:fillToRect l="${pct(cx)}" t="${pct(cy)}" r="${pct(1 - cx)}" b="${pct(1 - cy)}"/></a:path>`;
   } else dir = `<a:lin ang="${Math.round(((((g.angle ?? 180) - 90) % 360) + 360) % 360) * 60000}" scaled="0"/>`;
   return `<a:gradFill rotWithShape="1"><a:gsLst>${gs}</a:gsLst>${dir}</a:gradFill>`;
+}
+
+/** A pattern fill (see model/patterns.js) as DrawingML, faded by `opacity`. */
+export function pattFillXml(p, theme, opacity = 1) {
+  const color = (c, fallback) => {
+    const css = resolveColor(c, theme, fallback);
+    const alpha = (cssColor(css)?.alpha ?? 1) * opacity;
+    return `<a:srgbClr val="${toHex(css) || toHex(fallback)}">${alpha < 1 ? `<a:alpha val="${Math.round(alpha * 100000)}"/>` : ''}</a:srgbClr>`;
+  };
+  const preset = isPattern(p.preset) ? p.preset : 'pct50';
+  return `<a:pattFill prst="${preset}"><a:fgClr>${color(p.fg, '#000000')}</a:fgClr><a:bgClr>${color(p.bg, '#ffffff')}</a:bgClr></a:pattFill>`;
+}
+
+/**
+ * A tiled picture's a:tile (see themes.js backgroundCss): its scale from the
+ * picture's own size (`data`, as written), offset, alignment and flip.
+ */
+export function tileXml(tile, data) {
+  const size = pictureSizePt(data);
+  const pct = (v) => Math.max(1, Math.round(v * 100000));
+  const sx = size?.w ? pct(tile.w / size.w) : 100000;
+  const sy = size?.h ? pct(tile.h / size.h) : 100000;
+  return `<a:tile tx="${emu(tile.x || 0)}" ty="${emu(tile.y || 0)}" sx="${sx}" sy="${sy}" flip="${['x', 'y', 'xy'].includes(tile.flip) ? tile.flip : 'none'}" algn="${['t', 'tr', 'l', 'ctr', 'r', 'bl', 'b', 'br'].includes(tile.align) ? tile.align : 'tl'}"/>`;
 }
 
 /** Swap the solid fill of the shape called `name` for `fillXml`. */
@@ -729,6 +762,9 @@ export function applyGradients(xml, marks) {
     xml = xml.slice(0, at) + block + xml.slice(end);
   }
   if (marks.background) xml = xml.replace(/<p:bg>[\s\S]*?<\/p:bg>/, `<p:bg><p:bgPr>${marks.background}<a:effectLst/></p:bgPr></p:bg>`);
+  if (marks.backgroundTile) {
+    xml = xml.replace(/<p:bg>[\s\S]*?<\/p:bg>/, (bg) => bg.replace(/<a:srcRect\/>/, '').replace(/<a:stretch>[\s\S]*?<\/a:stretch>|<a:stretch\/>/, marks.backgroundTile));
+  }
   return xml;
 }
 
@@ -762,7 +798,7 @@ async function applyPictureFills(zip, slideNo, xml, marks) {
   let rels = await zip.file(relsPath).async('string');
   let types = await zip.file('[Content_Types].xml').async('string');
   let n = 0;
-  for (const [name, { data, crop, opacity }] of marks.pictures) {
+  for (const [name, { data, crop, tile, opacity }] of marks.pictures) {
     const m = /^data:image\/(png|jpeg|gif);base64,(.*)$/s.exec(data);
     if (!m) continue;
     const ext = m[1] === 'jpeg' ? 'jpg' : m[1];
@@ -773,7 +809,8 @@ async function applyPictureFills(zip, slideNo, xml, marks) {
     const pct = (v) => Math.round((v || 0) * 100000);
     const src = crop ? `<a:srcRect l="${pct(crop.l)}" t="${pct(crop.t)}" r="${pct(crop.r)}" b="${pct(crop.b)}"/>` : '';
     const alpha = opacity < 1 ? `<a:alphaModFix amt="${pct(opacity)}"/>` : '';
-    xml = replaceShapeFill(xml, name, `<a:blipFill rotWithShape="1"><a:blip r:embed="${id}">${alpha}</a:blip>${src}<a:stretch><a:fillRect/></a:stretch></a:blipFill>`);
+    const fit = tile ? tileXml(tile, data) : '<a:stretch><a:fillRect/></a:stretch>';
+    xml = replaceShapeFill(xml, name, `<a:blipFill rotWithShape="1"><a:blip r:embed="${id}">${alpha}</a:blip>${tile ? '' : src}${fit}</a:blipFill>`);
   }
   zip.file(relsPath, rels);
   zip.file('[Content_Types].xml', types);
@@ -984,6 +1021,49 @@ export async function tidyPackage(zip) {
 }
 
 /**
+ * The deck's theme as PowerPoint's (see model/deck.js importedTheme): the
+ * one the deck came with from PowerPoint, else its LibreSlides theme's
+ * colours (text and background as tx1 and bg1, the title as tx2, a dark
+ * theme's swapped by the colour map) and fonts.
+ */
+export function pptxTheme(deck) {
+  if (deck.importedTheme?.colors) return deck.importedTheme;
+  const t = themeById(deck.themeId);
+  const c = (v, fallback) => `#${toHex(resolveColor(v, t, fallback)) || toHex(fallback)}`.toLowerCase();
+  const bg = c(backgroundBaseColor(t.background), '#ffffff');
+  const bg2 = t.background.type === 'gradient' ? c(t.background.to, bg) : bg;
+  const [text, title] = [c(t.colors.text, '#000000'), c(t.colors.title, '#000000')];
+  const accents = Object.fromEntries([1, 2, 3, 4, 5, 6].map((n) => [`accent${n}`, c(t.colors[`accent${n}`], '#4472c4')]));
+  const base = t.dark ? { dk1: bg, lt1: text, dk2: bg2, lt2: title } : { dk1: text, lt1: bg, dk2: title, lt2: bg2 };
+  return {
+    name: t.name, dark: !!t.dark, fonts: { major: t.fonts.title, minor: t.fonts.body },
+    colors: { ...base, ...accents, hlink: accents.accent1, folHlink: accents.accent5 },
+  };
+}
+
+const THEME_COLORS = ['dk1', 'lt1', 'dk2', 'lt2', 'accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6', 'hlink', 'folHlink'];
+
+/** Write the deck's theme (see pptxTheme) into the package: its colour scheme, and a dark one's colour map. */
+async function applyTheme(zip, deck) {
+  const theme = pptxTheme(deck);
+  const themePath = 'ppt/theme/theme1.xml';
+  const file = zip.file(themePath);
+  if (!file) return;
+  const name = xmlText(theme.name || 'LibreSlides');
+  const scheme = `<a:clrScheme name="${name}">${THEME_COLORS.map((n) => `<a:${n}><a:srgbClr val="${toHex(theme.colors[n]) || '000000'}"/></a:${n}>`).join('')}</a:clrScheme>`;
+  const xml = (await file.async('string'))
+    .replace(/<a:clrScheme\b[\s\S]*?<\/a:clrScheme>/, scheme)
+    .replace(/(<a:theme\b[^>]*?\sname=")[^"]*"/, `$1${name}"`);
+  zip.file(themePath, xml);
+  if (!theme.dark) return;
+  // Light text on a dark background: background 1 is dark 1, text 1 is light 1.
+  for (const f of zip.file(/^ppt\/slideMasters\/[^/]+\.xml$/)) {
+    const master = await f.async('string');
+    zip.file(f.name, master.replace(/<p:clrMap\b[^>]*\/>/, '<p:clrMap bg1="dk1" tx1="lt1" bg2="dk2" tx2="lt2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/>'));
+  }
+}
+
+/**
  * Finish the package pptxgenjs wrote: media and charts, then each slide's
  * XML (paragraphs, the shapes' marks, transitions, "skip slide", groups and
  * animations), comments, sections, fonts, and last tidyPackage.
@@ -1014,6 +1094,7 @@ async function postProcess(buffer, deck, allMarks) {
     xml = insertTiming(xml, timingXml(timelineOf(xml, allMarks[i].timeline)));
     zip.file(path, xml);
   }
+  await applyTheme(zip, deck);
   await writeComments(zip, deck);
   await writeSections(zip, deck);
   await embedFonts(zip, deck);
@@ -1030,7 +1111,8 @@ export async function buildPptx(deck) {
   pptx.layout = 'LIBRESLIDES';
   pptx.title = deck.title;
   pptx.company = 'LibreSlides';
-  pptx.theme = { headFontFace: theme.fonts.title, bodyFontFace: theme.fonts.body };
+  const { fonts } = pptxTheme(deck);
+  pptx.theme = { headFontFace: fontFace(fonts.major), bodyFontFace: fontFace(fonts.minor) };
 
   // What each slide needs fixing in the XML pptxgenjs writes (see postProcess).
   const allMarks = [];
@@ -1052,12 +1134,14 @@ export async function buildPptx(deck) {
     allMarks.push(marks);
     const bg = slide.background || theme.background;
     if (bg.type === 'image' && deck.media?.[bg.media]) {
-      const data = await exportableImage(deck.media[bg.media], w, h, pngs);
+      const data = await exportableImage(deck.media[bg.media], bg.tile?.w || w, bg.tile?.h || h, pngs);
       if (data) s.background = { data: dataForPptx(data) };
-    } else if (bg.type === 'gradient') {
-      // Written as a solid colour, then made a real gradient afterwards.
-      s.background = { color: toHex(resolveColor(bg.from, theme)) || 'FFFFFF' };
-      marks.background = gradFillXml({ type: 'linear', angle: bg.angle, stops: [{ pos: 0, color: bg.from }, { pos: 1, color: bg.to }] }, theme);
+      // Tiled: its stretch made a tiling afterwards.
+      if (data && bg.tile) marks.backgroundTile = tileXml(bg.tile, data);
+    } else if (bg.type === 'gradient' || bg.type === 'pattern') {
+      // Written as a solid colour, then made a real gradient or pattern afterwards.
+      s.background = { color: toHex(resolveColor(backgroundBaseColor(bg), theme)) || 'FFFFFF' };
+      marks.background = bg.type === 'pattern' ? pattFillXml(bg.pattern, theme) : gradFillXml(backgroundGradient(bg), theme);
     } else {
       s.background = { color: toHex(resolveColor(bg.color, theme, backgroundBaseColor(theme.background))) || 'FFFFFF' };
     }

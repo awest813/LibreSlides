@@ -1,4 +1,5 @@
-import { themeById, resolveColor, backgroundCss } from '../model/themes.js';
+import { themeById, resolveColor, backgroundCss, tileAlign } from '../model/themes.js';
+import { patternPath, PATTERN_SIZE } from '../model/patterns.js';
 import { slideSize, isTitleLayout, PLACEHOLDER_HINTS, canHoldText, FIELD, fieldText } from '../model/deck.js';
 import { shapePath, customPath, textInset } from '../model/shapes.js';
 import { cellBorder, cellMargin } from '../model/tables.js';
@@ -234,14 +235,52 @@ export function pictureFilters(adjust) {
   return out;
 }
 
-/** A picture stretched over a shape (keeping only the part its crop leaves), as an SVG paint. */
+/**
+ * A picture over a shape, as an SVG paint: stretched (keeping only the part
+ * its crop leaves), or tiled (see themes.js backgroundCss), mirrored every
+ * other tile when the tiling flips.
+ */
 function picturePaint(svg, el, url) {
   const id = `ls-pic-${++gradientCount}`;
-  const { l = 0, t = 0, r = 0, b = 0 } = el.fillImage.crop || {};
-  const iw = el.w / Math.max(0.01, 1 - l - r);
-  const ih = el.h / Math.max(0.01, 1 - t - b);
-  const pattern = svgEl('pattern', { id, patternUnits: 'userSpaceOnUse', width: el.w, height: el.h });
-  pattern.append(svgEl('image', { href: url, x: -l * iw, y: -t * ih, width: iw, height: ih, preserveAspectRatio: 'none' }));
+  const fi = el.fillImage;
+  const look = fi.opacity != null && fi.opacity < 1 ? { opacity: fi.opacity } : {};
+  const tile = fi.tile;
+  let pattern;
+  if (tile?.w > 0 && tile?.h > 0) {
+    const a = tileAlign(tile.align);
+    const [nx, ny] = [/x/.test(tile.flip || '') ? 2 : 1, /y/.test(tile.flip || '') ? 2 : 1];
+    pattern = svgEl('pattern', {
+      id, patternUnits: 'userSpaceOnUse', width: tile.w * nx, height: tile.h * ny,
+      x: a.x * (el.w - tile.w) + (tile.x || 0), y: a.y * (el.h - tile.h) + (tile.y || 0),
+    });
+    for (let i = 0; i < nx; i++) {
+      for (let j = 0; j < ny; j++) {
+        const img = svgEl('image', { href: url, width: tile.w, height: tile.h, preserveAspectRatio: 'none', ...look });
+        if (i || j) img.setAttribute('transform', `translate(${i * 2 * tile.w} ${j * 2 * tile.h}) scale(${i ? -1 : 1} ${j ? -1 : 1})`);
+        pattern.append(img);
+      }
+    }
+  } else {
+    const { l = 0, t = 0, r = 0, b = 0 } = fi.crop || {};
+    const iw = el.w / Math.max(0.01, 1 - l - r);
+    const ih = el.h / Math.max(0.01, 1 - t - b);
+    pattern = svgEl('pattern', { id, patternUnits: 'userSpaceOnUse', width: el.w, height: el.h });
+    pattern.append(svgEl('image', { href: url, x: -l * iw, y: -t * ih, width: iw, height: ih, preserveAspectRatio: 'none', ...look }));
+  }
+  const defs = svgEl('defs');
+  defs.append(pattern);
+  svg.append(defs);
+  return `url(#${id})`;
+}
+
+/** A pattern fill (see model/patterns.js) as an SVG paint. */
+function patternPaint(svg, p, theme) {
+  const id = `ls-patt-${++gradientCount}`;
+  const pattern = svgEl('pattern', { id, patternUnits: 'userSpaceOnUse', width: PATTERN_SIZE, height: PATTERN_SIZE });
+  pattern.append(
+    svgEl('rect', { width: PATTERN_SIZE, height: PATTERN_SIZE, fill: resolveColor(p.bg, theme, '#ffffff') }),
+    svgEl('path', { d: patternPath(p.preset), fill: resolveColor(p.fg, theme, '#000000'), 'shape-rendering': 'crispEdges' }),
+  );
   const defs = svgEl('defs');
   defs.append(pattern);
   svg.append(defs);
@@ -308,7 +347,8 @@ export function renderElement(el, ctx) {
     const picture = el.fillImage && ctx.deck?.media?.[el.fillImage.media];
     const fill = picture ? picturePaint(svg, el, mediaUrl(ctx.deck, el.fillImage.media))
       : el.gradient && el.fill !== 'none' ? gradientPaint(svg, el.gradient, el.w, el.h, theme)
-        : resolveColor(el.fill, theme, 'transparent');
+        : el.pattern && el.fill !== 'none' ? patternPaint(svg, el.pattern, theme)
+          : resolveColor(el.fill, theme, 'transparent');
     const stroke = strokeAttrs(el.stroke, theme);
     if (el.type === 'shape' && el.shape === 'custom' && Array.isArray(el.paths)) {
       for (const p of el.paths) {

@@ -8,6 +8,7 @@ import {
 import { normalizeLevels, MAX_LEVEL } from '../model/diagram-outline.js';
 import { FONT_FACES } from '../model/fonts.js';
 import { cleanWarp } from '../model/warps.js';
+import { isPattern } from '../model/patterns.js';
 
 /**
  * Text in slides is HTML. Anything that comes from outside (opened files,
@@ -125,6 +126,75 @@ function cleanNumbers(el) {
   } else if (el.style != null) delete el.style;
 }
 
+/** A gradient (see model/deck.js): a known type, finite numbers, 2–10 stops of safe colours; null for anything else. */
+function cleanGradient(g) {
+  const stops = isObject(g) && Array.isArray(g.stops) ? g.stops.filter(isObject).slice(0, 10).map((s) => {
+    const stop = { pos: Number.isFinite(s.pos) ? clamp(s.pos, 0, 1) : 0, color: safeColor(s.color) };
+    if (Number.isFinite(s.opacity) && s.opacity < 1) stop.opacity = Math.max(0, s.opacity);
+    return stop;
+  }).filter((s) => s.color) : [];
+  if (stops.length < 2) return null;
+  const out = { type: g.type === 'radial' ? 'radial' : 'linear', stops };
+  // A radial gradient's centre may be outside the box (PowerPoint's can).
+  if (out.type === 'radial') Object.assign(out, { cx: Number.isFinite(g.cx) ? clamp(g.cx, -2, 3) : 0.5, cy: Number.isFinite(g.cy) ? clamp(g.cy, -2, 3) : 0.5 });
+  else out.angle = Number.isFinite(g.angle) ? g.angle : 180;
+  return out;
+}
+
+/** A pattern fill (see model/patterns.js): a known pattern in safe colours, or null. */
+function cleanPattern(p) {
+  if (!isObject(p) || !isPattern(p.preset)) return null;
+  return { preset: p.preset, fg: safeColor(p.fg) || '#000000', bg: safeColor(p.bg) || '#ffffff' };
+}
+
+/** A picture's tiling (see themes.js backgroundCss): finite sizes and offsets, a known alignment and flip; null for anything else. */
+function cleanTile(t) {
+  if (!isObject(t) || !(Number.isFinite(t.w) && t.w >= 0.5 && Number.isFinite(t.h) && t.h >= 0.5)) return null;
+  const out = { w: Math.min(REACH, t.w), h: Math.min(REACH, t.h), x: Number.isFinite(t.x) ? clamp(t.x, -REACH, REACH) : 0, y: Number.isFinite(t.y) ? clamp(t.y, -REACH, REACH) : 0 };
+  out.align = ['tl', 't', 'tr', 'l', 'ctr', 'r', 'bl', 'b', 'br'].includes(t.align) ? t.align : 'tl';
+  if (['x', 'y', 'xy'].includes(t.flip)) out.flip = t.flip;
+  return out;
+}
+
+/** A slide background (see themes.js backgroundCss) with only safe colours, numbers and parts; null for anything else. */
+function cleanBackground(bg) {
+  if (!isObject(bg)) return null;
+  if (bg.type === 'pattern') {
+    const pattern = cleanPattern(bg.pattern);
+    return pattern ? { type: 'pattern', pattern } : null;
+  }
+  for (const key of ['color', 'from', 'to']) if (bg[key] != null) bg[key] = safeColor(bg[key]) || '#ffffff';
+  // The angle goes into CSS as is, so it must be a number.
+  if (bg.angle != null) bg.angle = Number.isFinite(+bg.angle) ? +bg.angle : 180;
+  if (bg.gradient != null) {
+    bg.gradient = cleanGradient(bg.gradient);
+    if (!bg.gradient) delete bg.gradient;
+  }
+  if (bg.tile != null) {
+    bg.tile = cleanTile(bg.tile);
+    if (!bg.tile) delete bg.tile;
+  }
+  return bg;
+}
+
+/** The theme a deck had in PowerPoint (see model/deck.js): its twelve colours and two fonts, or null. */
+const THEME_COLOR_NAMES = ['dk1', 'lt1', 'dk2', 'lt2', 'accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6', 'hlink', 'folHlink'];
+export function cleanImportedTheme(t) {
+  if (!isObject(t) || !isObject(t.colors)) return null;
+  const colors = {};
+  for (const name of THEME_COLOR_NAMES) {
+    if (typeof t.colors[name] !== 'string' || !/^#[0-9a-f]{6}$/i.test(t.colors[name])) return null;
+    colors[name] = t.colors[name].toLowerCase();
+  }
+  const fonts = isObject(t.fonts) ? t.fonts : {};
+  return {
+    name: plainLine(t.name, 100),
+    colors,
+    dark: t.dark === true,
+    fonts: { major: safeFontFamily(fonts.major) || 'Calibri', minor: safeFontFamily(fonts.minor) || 'Calibri' },
+  };
+}
+
 /** Clean an element from an untrusted source (file, backup, clipboard) in place. */
 export function sanitizeElement(el) {
   cleanNumbers(el);
@@ -173,19 +243,12 @@ export function sanitizeElement(el) {
     }
   }
   if (el.gradient != null) {
-    // A gradient: a known type, finite numbers, 2–10 stops of safe colours.
-    const g = el.gradient;
-    const stops = isObject(g) && Array.isArray(g.stops) ? g.stops.filter(isObject).slice(0, 10).map((s) => {
-      const stop = { pos: fraction(s.pos), color: safeColor(s.color) };
-      if (Number.isFinite(s.opacity) && s.opacity < 1) stop.opacity = Math.max(0, s.opacity);
-      return stop;
-    }).filter((s) => s.color) : [];
-    if (stops.length < 2) delete el.gradient;
-    else {
-      el.gradient = { type: g.type === 'radial' ? 'radial' : 'linear', stops };
-      if (el.gradient.type === 'radial') Object.assign(el.gradient, { cx: Number.isFinite(g.cx) ? fraction(g.cx) : 0.5, cy: Number.isFinite(g.cy) ? fraction(g.cy) : 0.5 });
-      else el.gradient.angle = Number.isFinite(g.angle) ? g.angle : 180;
-    }
+    el.gradient = cleanGradient(el.gradient);
+    if (!el.gradient) delete el.gradient;
+  }
+  if (el.pattern != null) {
+    el.pattern = cleanPattern(el.pattern);
+    if (!el.pattern) delete el.pattern;
   }
   if (el.adjust != null) {
     const a = el.adjust;
@@ -466,12 +529,7 @@ export function sanitizeDeck(deck) {
     if (!s.comments?.length) delete s.comments;
     if (s.section != null) s.section = sectionName(s.section);
     if (!s.section) delete s.section;
-    const bg = s.background;
-    if (isObject(bg)) {
-      for (const key of ['color', 'from', 'to']) if (bg[key] != null) bg[key] = safeColor(bg[key]) || '#ffffff';
-      // The angle goes into CSS as is, so it must be a number.
-      if (bg.angle != null) bg.angle = Number.isFinite(+bg.angle) ? +bg.angle : 180;
-    } else s.background = null;
+    s.background = cleanBackground(s.background);
   }
   for (const [id, data] of Object.entries(deck.media || {})) {
     if (isMediaData(data)) continue; // videos and sounds only ever play through <video> and <audio>
@@ -496,9 +554,11 @@ export function sanitizeDeck(deck) {
       if (el.fillImage == null) continue;
       if (!isObject(el.fillImage) || !deck.media?.[el.fillImage.media]) delete el.fillImage;
       else {
-        const { crop } = el.fillImage;
+        const { crop, tile, opacity } = el.fillImage;
         el.fillImage = { media: el.fillImage.media };
         if (isObject(crop)) el.fillImage.crop = Object.fromEntries(['l', 't', 'r', 'b'].map((k) => [k, fraction(crop[k])]));
+        if (cleanTile(tile)) el.fillImage.tile = cleanTile(tile);
+        if (Number.isFinite(opacity) && opacity < 1) el.fillImage.opacity = Math.max(0, opacity);
       }
     }
     return out;
@@ -521,6 +581,10 @@ export function sanitizeDeck(deck) {
     if (s.background?.type === 'image' && !deck.media?.[s.background.media]) s.background = null;
   }
   sanitizeFonts(deck);
+  if (deck.importedTheme != null) {
+    deck.importedTheme = cleanImportedTheme(deck.importedTheme);
+    if (!deck.importedTheme) delete deck.importedTheme;
+  }
   return deck;
 }
 

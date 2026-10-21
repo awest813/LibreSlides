@@ -231,7 +231,7 @@ describe('PowerPoint pictures and shapes', () => {
   it('shows the graphics of the master and layout, unless the slide hides them', async () => {
     const box = newTextBox(10, 10);
     box.text = '<p>Hello</p>';
-    // A footer bar on the master, filled with the text colour lightened 75%.
+    // A footer bar on the master, filled with the text colour (the theme's, #374151) lightened 75%.
     const bar = '<p:sp><p:nvSpPr><p:cNvPr id="99" name="Bar"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="6350000"/><a:ext cx="12192000" cy="508000"/></a:xfrm>'
       + '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:schemeClr val="tx1"><a:tint val="75000"/></a:schemeClr></a:solidFill></p:spPr></p:sp>';
     const addBar = async (zip) => {
@@ -240,7 +240,7 @@ describe('PowerPoint pictures and shapes', () => {
     };
     const shown = (await roundTrip(deckWith(box), addBar)).slides[0].elements;
     const footer = shown.find((e) => e.type === 'shape');
-    expect(footer).toMatchObject({ fill: '#898989', x: 0, y: 500, w: 960, h: 40 });
+    expect(footer).toMatchObject({ fill: '#909397', x: 0, y: 500, w: 960, h: 40 });
     expect(shown.indexOf(footer)).toBeLessThan(shown.findIndex((e) => e.text === '<p>Hello</p>'));
 
     const hidden = (await roundTrip(deckWith(box), async (zip) => {

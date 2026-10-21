@@ -1,4 +1,4 @@
-import { kids, kid, desc, attr, rid, addMediaTo, xmlText, emu, guid } from './ooxml.js';
+import { kids, kid, desc, attr, rid, addMediaTo, xmlText, emu, guid, xml as parseXml, SCHEME_ALIAS } from './ooxml.js';
 import { normalizeLevels } from '../model/diagram-outline.js';
 import { xmlDataUrl, xmlOfDataUrl, DIAGRAM_PARTS } from '../model/deck.js';
 import { diagramChildren } from '../model/diagram-layout.js';
@@ -100,6 +100,32 @@ export function readOutline(data, limit = 500) {
 }
 
 /**
+ * A SmartArt part with its theme colours (a:schemeClr) written out as the
+ * colours they are in `scheme` ("RRGGBB" by name, see pptx-import.js), so
+ * it looks the same in a presentation with another theme. Placeholder
+ * colours (phClr), which the style fills in, stay.
+ */
+export function fixSchemeColors(text, scheme) {
+  if (!scheme || !/schemeClr/.test(text)) return text;
+  const doc = parseXml(text);
+  if (!doc?.documentElement || doc.getElementsByTagName('parsererror').length) return text;
+  let changed = false;
+  for (const c of desc(doc, 'schemeClr')) {
+    const val = attr(c, 'val');
+    const hex = scheme[val] || scheme[SCHEME_ALIAS[val]];
+    if (val === 'phClr' || !/^[0-9a-f]{6}$/i.test(hex || '')) continue;
+    const rgb = doc.createElementNS(c.namespaceURI, c.prefix ? `${c.prefix}:srgbClr` : 'srgbClr');
+    rgb.setAttribute('val', hex.toUpperCase());
+    while (c.firstChild) rgb.append(c.firstChild);
+    c.replaceWith(rgb);
+    changed = true;
+  }
+  if (!changed) return text;
+  const head = /^﻿?\s*(<\?xml[^>]*\?>\s*)/.exec(text)?.[1] || '';
+  return head + new XMLSerializer().serializeToString(doc).replace(/^<\?xml[^>]*\?>\s*/, '');
+}
+
+/**
  * A SmartArt graphic frame's diagram (see model/deck.js), without
  * PowerPoint's drawing, which the slide reader brings in as shapes: null
  * when it has no data. `drawingPath` is the drawing part, if there is one.
@@ -138,8 +164,10 @@ export async function readDiagram({ pkg, node, rels, scheme, font, deck }) {
   const source = { look: { layout: diagram.layout, colors: diagram.colors, style: diagram.style } };
   let keep = !!deck;
   for (const [key, p] of Object.entries({ ...paths, drawing: drawingPath })) {
-    const xml = p && (await pkg.text(p));
+    let xml = p && (await pkg.text(p));
     if (!xml || !deck) continue;
+    // Its colours as they are here, whatever theme the presentation it goes back into has.
+    if (key === 'data' || key === 'drawing') xml = fixSchemeColors(xml, scheme);
     source[key] = addMediaTo(deck, xmlDataUrl(xml));
     // Pictures the part refers to travel with it; parts that refer to anything else can't.
     for (const [id, r] of Object.entries(await pkg.rels(p))) {
@@ -176,6 +204,9 @@ export function exportsAsSmartArt(el, media = null) {
 /** A colour as PowerPoint's RRGGBB (theme colours resolved), or null for none. */
 function hexOf(color, theme) {
   const c = resolveColor(color, theme, null);
+  // (A see-through colour as the colour it is.)
+  const rgb = /^rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/i.exec(c || '');
+  if (rgb) return rgb.slice(1, 4).map((v) => Math.min(255, +v).toString(16).padStart(2, '0')).join('').toUpperCase();
   const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(c || '');
   if (!m) return null;
   return (m[1].length === 3 ? m[1].replace(/./g, '$&$&') : m[1]).toUpperCase();
