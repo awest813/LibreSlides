@@ -148,7 +148,7 @@ export function guid() {
  * bomb, and reading stops as soon as the data passes the limit, whatever
  * sizes the zip claims.
  */
-export const PART_LIMITS = { xml: 64 * 1024 * 1024, part: 512 * 1024 * 1024, total: 2 * 1024 * 1024 * 1024 };
+export const PART_LIMITS = { xml: 64 * 1024 * 1024, part: 256 * 1024 * 1024, total: 1024 * 1024 * 1024 };
 
 const tooBig = () => Object.assign(new Error('This file is too large to open, or it’s damaged.'), { code: 'too-big' });
 
