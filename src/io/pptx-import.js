@@ -971,7 +971,8 @@ async function readSlide(pkg, slidePath, ctx, deck) {
           if (+attr(tc, 'rowSpan') > 1) cell.rowSpan = +attr(tc, 'rowSpan');
           if (isTrue(attr(tc, 'hMerge')) || isTrue(attr(tc, 'vMerge'))) cell.merged = true;
           const anchor = attr(tcPr, 'anchor');
-          if (anchor === 'ctr' || anchor === 'b' || anchor === 't') cell.valign = { ctr: 'middle', b: 'bottom', t: 'top' }[anchor];
+          // PowerPoint puts cell text at the top unless told otherwise; LibreSlides' tables default to the middle.
+          cell.valign = { ctr: 'middle', b: 'bottom' }[anchor] || 'top';
           // Its borders: its own, else the table style's (sorted out against the table's border below).
           const own = { t: 'lnT', r: 'lnR', b: 'lnB', l: 'lnL' };
           cell.borders = Object.fromEntries(SIDES.map((side) => [side, borderOf(kid(tcPr, own[side]), ctx) || part.borders?.[side]]).filter(([, v]) => v));

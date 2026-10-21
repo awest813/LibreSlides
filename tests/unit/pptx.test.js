@@ -317,6 +317,18 @@ describe('PowerPoint pictures in shapes and SmartArt', () => {
   });
 });
 
+describe('PowerPoint tables', () => {
+  it('puts cell text at the top when PowerPoint doesn’t say where, and keeps LibreSlides’ middle', async () => {
+    const table = newTable(2, 2, 100, 300, 400, 80);
+    expect((await roundTrip(deckWith(table))).slides[0].elements[0].cells[0][0].valign).toBe('middle');
+    const back = await roundTrip(deckWith(table), async (zip) => {
+      const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+      zip.file('ppt/slides/slide1.xml', xml.replace(/ anchor="ctr"/g, ''));
+    });
+    expect(back.slides[0].elements[0].cells.flat().map((c) => c.valign)).toEqual(['top', 'top', 'top', 'top']);
+  });
+});
+
 describe('PowerPoint links', () => {
   it('keeps links to web pages and other slides, in text and on objects', async () => {
     const deck = deckWith();
