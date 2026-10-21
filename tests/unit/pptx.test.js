@@ -356,6 +356,58 @@ describe('PowerPoint links', () => {
   });
 });
 
+describe('PowerPoint sections', () => {
+  const blank = (id) => ({ id, layout: 'blank', background: null, elements: [], notes: '', transition: { type: 'none', duration: 0.6 }, hidden: false });
+  const deckOf = (n) => {
+    const deck = deckWith();
+    for (let i = 2; i <= n; i++) deck.slides.push(blank(`s${i}`));
+    return deck;
+  };
+
+  it('writes the sections into presentation.xml and reads them back', async () => {
+    const deck = deckOf(5);
+    deck.slides[1].section = 'Intro & "why"';
+    deck.slides[3].section = 'Details';
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deck)));
+    const pres = await zip.file('ppt/presentation.xml').async('string');
+    // The extension list is p:presentation's last child, holding every slide by its id.
+    expect(pres).toMatch(/<p:extLst><p:ext uri="\{521415D9-36F7-43E2-AB2F-B90AF26B5E84\}"><p14:sectionLst xmlns:p14="http:\/\/schemas.microsoft.com\/office\/powerpoint\/2010\/main">.*<\/p:extLst><\/p:presentation>$/);
+    const doc = new DOMParser().parseFromString(pres, 'application/xml');
+    const ids = [...doc.getElementsByTagNameNS('*', 'sldIdLst')[0].children].map((e) => e.getAttribute('id'));
+    const sections = [...doc.getElementsByTagNameNS('*', 'section')].map((sec) => ({
+      name: sec.getAttribute('name'), id: sec.getAttribute('id'), slides: [...sec.getElementsByTagNameNS('*', 'sldId')].map((e) => e.getAttribute('id')),
+    }));
+    expect(sections.map((x) => x.name)).toEqual(['Default Section', 'Intro & "why"', 'Details']);
+    expect(sections.map((x) => x.slides)).toEqual([ids.slice(0, 1), ids.slice(1, 3), ids.slice(3)]);
+    for (const x of sections) expect(x.id).toMatch(/^\{[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\}$/);
+
+    const back = await importPptx(await zip.generateAsync({ type: 'arraybuffer' }));
+    expect(back.slides.map((s) => s.section)).toEqual([undefined, 'Intro & "why"', undefined, 'Details', undefined]);
+  });
+
+  it('writes no sections for a deck without any', async () => {
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deckOf(2))));
+    expect(await zip.file('ppt/presentation.xml').async('string')).not.toContain('sectionLst');
+  });
+
+  it('reads sections from PowerPoint, leaving out empty ones', async () => {
+    const back = await roundTrip(deckOf(4), async (zip) => {
+      const pres = await zip.file('ppt/presentation.xml').async('string');
+      const ids = [...pres.matchAll(/<p:sldId id="(\d+)"/g)].map((m) => m[1]);
+      const sec = (name, list) => `<p14:section name="${name}" id="{00000000-0000-0000-0000-00000000000${name.length}}"><p14:sldIdLst>${list.map((id) => `<p14:sldId id="${id}"/>`).join('')}</p14:sldIdLst></p14:section>`;
+      const ext = `<p:extLst><p:ext uri="{521415D9-36F7-43E2-AB2F-B90AF26B5E84}"><p14:sectionLst xmlns:p14="http://schemas.microsoft.com/office/powerpoint/2010/main">${sec('Intro', ids.slice(0, 2))}${sec('Empty', [])}${sec('End', ids.slice(2))}</p14:sectionLst></p:ext></p:extLst>`;
+      zip.file('ppt/presentation.xml', pres.replace('</p:presentation>', `${ext}</p:presentation>`));
+    });
+    expect(back.slides.map((s) => s.section)).toEqual(['Intro', undefined, 'End', undefined]);
+  });
+
+  it('adds the sections to an existing extension list', async () => {
+    const { addPresentationExt } = await import('../../src/io/pptx-sections.js');
+    expect(addPresentationExt('<p:presentation><p:sldSz/><p:extLst><p:ext uri="a"/></p:extLst></p:presentation>', '<p:ext uri="b"/>'))
+      .toBe('<p:presentation><p:sldSz/><p:extLst><p:ext uri="a"/><p:ext uri="b"/></p:extLst></p:presentation>');
+  });
+});
+
 describe('PowerPoint placeholders', () => {
   it('writes titles, subtitles and body text as placeholders, empty ones too', async () => {
     const deck = newDeck(); // a title slide with an empty title and subtitle

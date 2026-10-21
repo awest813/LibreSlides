@@ -10,6 +10,7 @@ import { addMediaElement, finishMedia } from './pptx-media.js';
 import { embedFonts } from './pptx-fonts.js';
 import { timingXml, insertTiming } from './pptx-timing.js';
 import { writeComments } from './pptx-comments.js';
+import { writeSections } from './pptx-sections.js';
 
 /**
  * PowerPoint export with pptxgenjs. Slides become real PowerPoint text boxes,
@@ -829,6 +830,7 @@ async function postProcess(buffer, deck, allMarks) {
     zip.file(path, xml);
   }
   await writeComments(zip, deck);
+  await writeSections(zip, deck);
   await embedFonts(zip, deck);
   return zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', compression: 'DEFLATE' });
 }

@@ -51,4 +51,10 @@ describe('untrusted presentations', () => {
     const ok = await importFile(lslides({ app: 'LibreSlides', format: 1, deck }));
     expect(ok.title).toBe('T');
   });
+
+  it('keeps section names as plain text of sensible length', () => {
+    const deck = sanitizeDeck({ slides: [{ section: '  Intro\n<b>x</b> ' }, { section: 7 }, { section: '   ' }, { section: 'x'.repeat(1000) }] });
+    expect(deck.slides.map((s) => s.section?.length ?? s.section)).toEqual([14, undefined, undefined, 255]);
+    expect(deck.slides[0].section).toBe('Intro <b>x</b>');
+  });
 });

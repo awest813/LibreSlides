@@ -10,6 +10,7 @@ import { readAnimations } from './pptx-timing.js';
 import { readMedia } from './pptx-media.js';
 import { readEmbeddedFonts } from './pptx-fonts.js';
 import { readComments } from './pptx-comments.js';
+import { readSections } from './pptx-sections.js';
 import { EMU_PER_PT, kids, kid, path, desc, attr, rid, SCHEME_ALIAS, colorOf, alphaOf, blend, Package, addMediaTo } from './ooxml.js';
 
 /**
@@ -1087,17 +1088,20 @@ export async function importPptx(buffer, fallbackTitle = 'Presentation') {
 
   const ids = desc(desc(pres, 'sldIdLst')[0], 'sldId');
   const slidePaths = []; // in step with deck.slides
+  const sldIds = []; // likewise
   for (const s of ids) {
     const rel = presRels[rid(s, 'id')];
     if (!rel) continue;
     try {
       deck.slides.push(await readSlide(pkg, rel.path, ctx, deck));
       slidePaths.push(rel.path);
+      sldIds.push(attr(s, 'id'));
     } catch (err) {
       console.warn('Skipped a slide that could not be read', err);
     }
   }
   if (!deck.slides.length) throw Object.assign(new Error('No slides could be read from this file.'), { code: 'bad-file' });
+  readSections(pres, deck.slides, sldIds);
   // Links to particular slides, now that the slides have ids.
   const idOfPath = new Map(slidePaths.map((p, i) => [p, deck.slides[i]?.id]));
   const resolve = (href) => href.replace(/^#slide-path:(.*)$/, (m, p) => (idOfPath.get(p) ? `#slide:${idOfPath.get(p)}` : ''));

@@ -147,6 +147,8 @@ export class Toolbar {
         { label: 'Move slide up', icon: 'up', disabled: app.slideIndex === 0, run: () => app.moveSlides(-1) },
         { label: 'Move slide down', icon: 'down', disabled: app.slideIndex === app.deck.slides.length - 1, run: () => app.moveSlides(1) },
         'separator',
+        ...app.filmstrip.sectionItems(),
+        'separator',
         { label: 'Change background…', icon: 'image', run: () => app.openPanel('design') },
         { label: 'Apply layout…', icon: 'layout', run: () => this.layoutMenu(this.menuButtons.Slide) },
         { label: 'Transition…', icon: 'animate', run: () => app.openPanel('transition') },

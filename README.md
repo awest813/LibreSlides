@@ -14,7 +14,7 @@ LibreSlides gives you a slide list, a canvas with drag/resize/rotate handles and
 
 | Area | What you get |
 |---|---|
-| **Slides** | Slide list with thumbnails, multi-select, drag-to-reorder, duplicate, skip, cut/copy/paste; 8 layouts (Title, Title and body, Section, Two columns, Title only, Big number, Quote, Blank); "Apply layout" keeps your text |
+| **Slides** | Slide list with thumbnails, multi-select, drag-to-reorder, duplicate, skip, cut/copy/paste; named sections that fold away, as in PowerPoint; 8 layouts (Title, Title and body, Section, Two columns, Title only, Big number, Quote, Blank); "Apply layout" keeps your text |
 | **Canvas** | Select, move, resize and rotate with handles; marquee and Shift-click selection; smart guides that snap to the slide and other objects (hold Alt to move freely); arrow-key nudging; zoom (fit, 50–200 %, Ctrl + wheel) |
 | **Objects** | Text boxes that grow as you type, 24 shapes (with text inside), lines and arrows, pictures (insert, paste, drag & drop, replace, crop-to-fill, rounded corners, flip, alt text), tables (insert rows/columns, header row, banded rows) |
 | **Text** | Fonts (six bundled for offline use plus common system fonts), size, bold/italic/underline/strikethrough, colour, highlight, alignment, vertical alignment, line and paragraph spacing, bulleted and numbered lists with indent levels, clear formatting. Formatting applies to selected text while typing, or to whole boxes when they're selected |
@@ -22,7 +22,7 @@ LibreSlides gives you a slide list, a canvas with drag/resize/rotate handles and
 | **Arrange** | Bring forward/backward, to front/back, align and distribute, rotate and flip, lock position, exact size/position/rotation in Format options |
 | **Motion** | 6 slide transitions (fade, slide, push, cover, zoom, flip) and 8 entrance animations (appear, fade, fly in, zoom, wipe, spin) on click, with or after the previous one; preview in the editor |
 | **Present** | Full-screen slideshow with keyboard, click and on-screen controls; black/white screen, jump to slide, speaker notes overlay. **Presenter view** opens the audience in a second window (drag it to the projector) and shows the current and next slide, notes and a timer here |
-| **Files** | Open **PowerPoint** `.pptx` and **LibreSlides** `.lslides` files from your device (text and formatting, shapes, pictures, lines, tables, backgrounds, notes, transitions, skipped slides, embedded fonts saved by LibreOffice or LibreSlides; positions inherited from layouts/masters are resolved). In Chrome and Edge a presentation opened from a file stays linked to it: **Save** (Ctrl+S) writes back to the same file in its format, **Save as** (Ctrl+Shift+S) saves to a new file and keeps saving there. A title-bar indicator shows unsaved changes, and LibreSlides asks before closing with changes not yet saved to the file and warns if another app changed it. Other browsers download the file. PowerPoint files carry the bundled fonts they use (*File › Embed fonts in PowerPoint files*), so they look the same where those fonts aren't installed. You can also download a copy as `.pptx`, **PDF** (vector, via the print dialog) or `.lslides`, and drop files on the window to open them |
+| **Files** | Open **PowerPoint** `.pptx` and **LibreSlides** `.lslides` files from your device (text and formatting, shapes, pictures, lines, tables, backgrounds, notes, transitions, skipped slides, sections, embedded fonts saved by LibreOffice or LibreSlides; positions inherited from layouts/masters are resolved). In Chrome and Edge a presentation opened from a file stays linked to it: **Save** (Ctrl+S) writes back to the same file in its format, **Save as** (Ctrl+Shift+S) saves to a new file and keeps saving there. A title-bar indicator shows unsaved changes, and LibreSlides asks before closing with changes not yet saved to the file and warns if another app changed it. Other browsers download the file. PowerPoint files carry the bundled fonts they use (*File › Embed fonts in PowerPoint files*), so they look the same where those fonts aren't installed. You can also download a copy as `.pptx`, **PDF** (vector, via the print dialog) or `.lslides`, and drop files on the window to open them |
 | **Storage** | Autosaved to IndexedDB, with a list of presentations (search, rename, copy, delete), backup/restore of everything, undo/redo, and protection against two tabs overwriting each other |
 | **App** | Installable PWA (Install button on the start screen, or Help › Install) that works fully offline after the first visit, offers new versions with an *Update* button, has a "New presentation" shortcut on its icon, and registers as a handler for `.pptx` and `.lslides` files ("Open with LibreSlides") |
 
@@ -88,6 +88,7 @@ src/
   io/
     pptx-export.js         PowerPoint writer (pptxgenjs, plus transitions/skipped slides)
     pptx-import.js         PowerPoint reader
+    pptx-sections.js       Slide sections in .pptx files
     file-access.js         Opening, saving back to and saving as files on the device
     files.js, print.js, images.js, sanitize.js
   storage/db.js            IndexedDB

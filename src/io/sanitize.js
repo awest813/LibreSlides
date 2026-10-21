@@ -253,6 +253,10 @@ export function sanitizeComments(list) {
   });
 }
 
+/** A section name (plain text on one line, of sensible length), or '' for anything else. */
+export const SECTION_NAME_MAX = 255;
+export const sectionName = (v) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, SECTION_NAME_MAX).trim() : '');
+
 /** Clean every piece of HTML, colour and picture in a deck from an untrusted source. */
 export function sanitizeDeck(deck) {
   // Damaged or hand-edited files: keep only what has the expected shape.
@@ -265,6 +269,8 @@ export function sanitizeDeck(deck) {
     for (const el of s.elements) sanitizeElement(el);
     if (s.comments != null) s.comments = sanitizeComments(s.comments);
     if (!s.comments?.length) delete s.comments;
+    if (s.section != null) s.section = sectionName(s.section);
+    if (!s.section) delete s.section;
     const bg = s.background;
     if (isObject(bg)) {
       for (const key of ['color', 'from', 'to']) if (bg[key] != null) bg[key] = safeColor(bg[key]) || '#ffffff';
