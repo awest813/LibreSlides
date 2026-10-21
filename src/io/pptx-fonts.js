@@ -1,6 +1,6 @@
 import { BUNDLED_FONTS, FONT_FACES, embedFontsSetting } from '../model/fonts.js';
 import { themeById } from '../model/themes.js';
-import { desc, kid, attr, rid } from './ooxml.js';
+import { desc, kid, attr, rid, xmlText } from './ooxml.js';
 import { safeFontFamily } from './sanitize.js';
 import { BUNDLED_FACES } from './bundled-fonts.js';
 import { woffToSfnt, wrapEot, fontInfo, decodeFontData, toBase64, dataUrlBytes } from './font-data.js';
@@ -21,7 +21,6 @@ const FONT_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relation
 const FONT_TYPE = 'application/x-fontdata';
 const MAX_FONT_BYTES = 12 * 1024 * 1024;
 
-const escXml = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const warned = new Set();
 const warnOnce = (key, ...args) => {
   if (warned.has(key)) return;
@@ -99,7 +98,7 @@ function fontElement(family, sfnt) {
     const pf = pitchFamily(panose);
     if (pf != null) extra += ` pitchFamily="${pf}"`;
   } catch { /* the name is enough */ }
-  return `<p:font typeface="${escXml(family)}"${extra} charset="0"/>`;
+  return `<p:font typeface="${xmlText(family)}"${extra} charset="0"/>`;
 }
 
 /**
@@ -185,11 +184,10 @@ export async function readEmbeddedFonts({ pkg, pres, presRels, deck }) {
     if (!family || BUNDLED_FONTS.includes(family)) continue;
     for (const face of FACES) {
       const rel = presRels[rid(kid(entry, face), 'id')];
-      const file = rel && !rel.external ? pkg.zip.file(rel.path) : null;
-      if (!file) continue;
+      if (!rel || rel.external) continue;
       try {
-        const bytes = await file.async('uint8array');
-        if (bytes.length > MAX_FONT_BYTES) throw new Error('The font file is too large');
+        const bytes = await pkg.bytes(rel.path, MAX_FONT_BYTES);
+        if (!bytes) continue;
         const { data, mime } = decodeFontData(bytes);
         deck.fonts ||= {};
         if (!Object.hasOwn(deck.fonts, family)) deck.fonts[family] = {};

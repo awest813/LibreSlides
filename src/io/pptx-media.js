@@ -19,15 +19,14 @@ import { MEDIA_TYPES, MEDIA_CONTENT_TYPES, dataType } from './media-files.js';
 const EXT_TYPE = { mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', ogv: 'video/ogg', ogg: 'audio/ogg', oga: 'audio/ogg', mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav' };
 
 /** The media file a relationship points at, as a data URL; null if it's elsewhere or can't play. */
-async function mediaData(pkg, target, kind) {
+function mediaData(pkg, target, kind) {
   if (!target || target.external) return null;
-  const f = pkg.zip.file(target.path);
   let type = EXT_TYPE[(target.path.split('.').pop() || '').toLowerCase()];
-  if (!f || !type) return null;
+  if (!type) return null;
   // An .mp4 that PowerPoint calls a sound is a sound (and an .ogg it calls a video, a video).
   if (kind === 'audio' && type === 'video/mp4') type = 'audio/mp4';
   if (kind === 'video' && type === 'audio/ogg') type = 'video/ogg';
-  return `data:${type};base64,${await f.async('base64')}`;
+  return pkg.dataUrl(target.path, type);
 }
 
 /** Whether the slide's timeline plays a shape as the slide appears, and loops it. */
