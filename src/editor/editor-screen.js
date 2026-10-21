@@ -25,6 +25,7 @@ import { Filmstrip } from './filmstrip.js';
 import { Toolbar } from './toolbar.js';
 import { SidePanel } from './sidepanel.js';
 import { History } from './history.js';
+import { startComment } from './comments.js';
 import { stripInline, exec, execFontSize, caretFormat, highlightAll } from './richtext.js';
 import { VERSION, BUILD, diagnostics } from '../diagnostics.js';
 
@@ -1336,6 +1337,9 @@ export class EditorScreen {
 
   closePanel() { this.panel.close(); }
 
+  /** Insert › Comment (Ctrl+Alt+M): the Comments tab, ready to type. */
+  insertComment() { startComment(this); }
+
   toggleNotes() {
     this.view.notes = !this.view.notes;
     this.notesPane.hidden = !this.view.notes;
@@ -1408,6 +1412,8 @@ export class EditorScreen {
     if (mod && k === 'enter') return run(() => this.present({ fromStart: e.shiftKey }));
     if (mod && k === 's') return run(() => this.saveToFile({ as: e.shiftKey }));
     if (mod && k === 'p') return run(() => this.printDeck());
+    // By key position, as Alt changes the character typed on a Mac.
+    if (mod && e.altKey && e.code === 'KeyM') return run(() => this.insertComment());
     if (mod && k === 'm') return run(() => this.addSlide());
     if (mod && k === '/') return run(() => this.showShortcuts());
     if (mod && (k === '=' || k === '+')) return run(() => this.zoomBy(1.25));
@@ -1718,6 +1724,7 @@ export class EditorScreen {
     const rows = [
       ['Present from this slide / from the beginning', 'Mod-Enter', 'F5'],
       ['New slide', 'Mod-M'],
+      ['New comment', 'Mod-Alt-M'],
       ['Duplicate', 'Mod-D'],
       ['Group / Ungroup', 'Mod-G', 'Mod-Shift-G'],
       ['Undo / Redo', 'Mod-Z', 'Mod-Y'],

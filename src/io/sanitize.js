@@ -2,7 +2,7 @@ import DOMPurify from 'dompurify';
 import { PATH_ARGS } from '../model/shapes.js';
 import { normalizeTable } from '../model/tables.js';
 import { isMediaData } from './media-files.js';
-import { CHART_KINDS } from '../model/deck.js';
+import { CHART_KINDS, uid } from '../model/deck.js';
 import { FONT_FACES } from '../model/fonts.js';
 
 /**
@@ -198,6 +198,33 @@ export function sanitizeChart(chart) {
   return out;
 }
 
+/**
+ * Slide comments from an untrusted source: plain objects with plain-text
+ * strings of sensible length, finite positions and a capped number of
+ * comments and replies. Anything else is dropped.
+ */
+const COMMENT_LIMITS = { comments: 2000, replies: 500, text: 10000, author: 100, initials: 10, date: 40, id: 64 };
+const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+
+function commentEntry(c) {
+  const out = { id: str(c.id, COMMENT_LIMITS.id) || uid(), author: str(c.author, COMMENT_LIMITS.author), text: str(c.text, COMMENT_LIMITS.text) };
+  if (str(c.initials, COMMENT_LIMITS.initials)) out.initials = str(c.initials, COMMENT_LIMITS.initials);
+  // Dates stay ISO strings; one that can't be read is left out.
+  if (typeof c.date === 'string' && c.date.length <= COMMENT_LIMITS.date && !Number.isNaN(Date.parse(c.date))) out.date = c.date;
+  return out;
+}
+
+export function sanitizeComments(list) {
+  return (Array.isArray(list) ? list : []).filter(isObject).slice(0, COMMENT_LIMITS.comments).map((c) => {
+    const out = commentEntry(c);
+    if (Number.isFinite(c.x) && Number.isFinite(c.y)) Object.assign(out, { x: c.x, y: c.y });
+    if (c.resolved === true) out.resolved = true;
+    const replies = (Array.isArray(c.replies) ? c.replies : []).filter(isObject).slice(0, COMMENT_LIMITS.replies).map(commentEntry);
+    if (replies.length) out.replies = replies;
+    return out;
+  });
+}
+
 /** Clean every piece of HTML, colour and picture in a deck from an untrusted source. */
 export function sanitizeDeck(deck) {
   // Damaged or hand-edited files: keep only what has the expected shape.
@@ -208,6 +235,8 @@ export function sanitizeDeck(deck) {
     s.notes = typeof s.notes === 'string' ? s.notes : '';
     s.elements = (Array.isArray(s.elements) ? s.elements : []).filter(isObject);
     for (const el of s.elements) sanitizeElement(el);
+    if (s.comments != null) s.comments = sanitizeComments(s.comments);
+    if (!s.comments?.length) delete s.comments;
     const bg = s.background;
     if (isObject(bg)) {
       for (const key of ['color', 'from', 'to']) if (bg[key] != null) bg[key] = safeColor(bg[key]) || '#ffffff';

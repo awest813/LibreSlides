@@ -2,6 +2,7 @@ import { h, showPopover, menu } from '../ui/dom.js';
 import { icon } from '../ui/icons.js';
 import { renderThumb } from '../render/render.js';
 import { LAYOUTS, slideTitle } from '../model/deck.js';
+import { openComments } from './comments.js';
 
 const THUMB_W = 168;
 
@@ -44,13 +45,16 @@ export class Filmstrip {
     const { deck } = this.app;
     const thumb = renderThumb(slide, deck, THUMB_W);
     const title = slideTitle(slide);
+    const comments = openComments(slide);
+    const commentsLabel = `${comments} open comment${comments === 1 ? '' : 's'}`;
     const li = h('li', {
       class: `film-item${slide.hidden ? ' is-hidden' : ''}`, role: 'option', tabindex: '-1', draggable: 'true',
-      'aria-label': `Slide ${i + 1}${title ? `: ${title}` : ''}${slide.hidden ? ' (skipped)' : ''}`,
+      'aria-label': `Slide ${i + 1}${title ? `: ${title}` : ''}${slide.hidden ? ' (skipped)' : ''}${comments ? `, ${commentsLabel}` : ''}`,
       dataset: { id: slide.id },
     },
     h('span', { class: 'film-num' }, String(i + 1), slide.hidden ? h('span', { class: 'film-hidden', html: icon('eyeOff') }) : null),
-    h('div', { class: 'film-thumb' }, thumb));
+    h('div', { class: 'film-thumb' }, thumb),
+    comments ? h('span', { class: 'film-comments', title: commentsLabel, html: icon('comment') }, String(comments)) : null);
     let pending = false;
     li.addEventListener('pointerdown', (e) => {
       const selected = this.app.slideSelection.has(slide.id);

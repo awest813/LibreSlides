@@ -9,6 +9,7 @@ import { addChart } from './pptx-chart.js';
 import { addMediaElement, finishMedia } from './pptx-media.js';
 import { embedFonts } from './pptx-fonts.js';
 import { timingXml, insertTiming } from './pptx-timing.js';
+import { writeComments } from './pptx-comments.js';
 
 /**
  * PowerPoint export with pptxgenjs. Slides become real PowerPoint text boxes,
@@ -676,6 +677,7 @@ async function postProcess(buffer, deck, allMarks) {
     xml = insertTiming(xml, timingXml(timelineOf(xml, allMarks[i].timeline)));
     zip.file(path, xml);
   }
+  await writeComments(zip, deck);
   await embedFonts(zip, deck);
   return zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', compression: 'DEFLATE' });
 }

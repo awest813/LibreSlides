@@ -6,9 +6,10 @@ import { SIZES, slideSize, LAYOUTS, TRANSITIONS, ANIMATIONS, CHART_KINDS, newSli
 import { SHAPES } from '../model/shapes.js';
 import { renderThumb, textStyle } from '../render/render.js';
 import { seriesColor, pointColor } from '../render/chart.js';
+import { commentsPanel } from './comments.js';
 
-const TITLES = { design: 'Design', transition: 'Transition', animate: 'Animate', format: 'Format options' };
-const TAB_LABELS = { design: 'Design', transition: 'Transition', animate: 'Animate', format: 'Format' };
+const TITLES = { design: 'Design', transition: 'Transition', animate: 'Animate', format: 'Format options', comments: 'Comments' };
+const TAB_LABELS = { design: 'Design', transition: 'Transition', animate: 'Animate', format: 'Format', comments: 'Comments' };
 
 const field = (label, control, hint = null) => h('label', { class: 'pf' }, h('span', { class: 'pf-label' }, label), control, hint ? h('small', { class: 'pf-hint' }, hint) : null);
 const section = (title, ...children) => h('section', { class: 'panel-section' }, h('h3', {}, title), ...children);
@@ -48,8 +49,8 @@ function colorButton(label, value, theme, onPick, opts = {}) {
 }
 
 /**
- * The right-hand panel: themes and backgrounds, transitions, animations and
- * the detailed format options for the selection.
+ * The right-hand panel: themes and backgrounds, transitions, animations,
+ * the detailed format options for the selection and the slide's comments.
  */
 /** Set or clear one of a picture's colour adjustments. */
 function setAdjust(e, key, value) {
@@ -98,6 +99,7 @@ export class SidePanel {
     this.app = app;
     this.current = null;
     this.key = '';
+    this.activeComment = null; // the comment thread highlighted here and on the slide
     this.title = h('h2', {});
     this.body = h('div', { class: 'panel-body' });
     this.tabs = h('div', { class: 'panel-tabs', role: 'tablist' }, ...Object.entries(TAB_LABELS).map(([id, name]) => {
@@ -139,6 +141,11 @@ export class SidePanel {
       t.setAttribute('aria-selected', String(t.dataset.tab === this.current));
       t.classList.toggle('is-active', t.dataset.tab === this.current);
     }
+    // The tabs scroll sideways when the panel is narrow: keep the open one in view.
+    const tab = this.tabs.querySelector('.is-active')?.getBoundingClientRect();
+    const strip = this.tabs.getBoundingClientRect();
+    if (tab && tab.right > strip.right) this.tabs.scrollLeft += tab.right - strip.right;
+    else if (tab && tab.left < strip.left) this.tabs.scrollLeft -= strip.left - tab.left;
     // Keyboard focus stays on the same control across the rebuild.
     const controls = () => [...this.body.querySelectorAll('button, input, select, textarea')];
     const focusAt = controls().indexOf(document.activeElement);
@@ -263,6 +270,10 @@ export class SidePanel {
     if (animated.length) out.push(h('button', { type: 'button', class: 'btn btn-primary', html: `${icon('play')}<span>Preview</span>`, onclick: () => app.previewAnimations() }));
     return out;
   }
+
+  // ---------------------------------------------------------------- comments
+
+  comments() { return commentsPanel(this.app); }
 
   // ---------------------------------------------------------------- format options
 
