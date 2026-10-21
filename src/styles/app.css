@@ -334,8 +334,10 @@ dialog.dialog { z-index: 3600; }
   .template-row, .deck-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
   .template-thumb { width: 100%; height: auto; aspect-ratio: 16 / 9; }
   .start-inner { padding: 16px; }
-  .doc-toolbar { flex: 1; justify-content: flex-end; }
-  .doc-filter { width: auto; flex: 1; }
+  /* The search box gets a row of its own under the heading, with the ⋯ menu beside it. */
+  .start-section-title { flex-wrap: wrap; gap: 8px; }
+  .doc-toolbar { flex: 1 1 100%; min-width: 0; justify-content: flex-end; }
+  .doc-filter { width: auto; flex: 1; min-width: 0; }
 }
 
 /* ------------------------------------------------------------------ files & install */
