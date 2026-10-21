@@ -269,7 +269,7 @@ function textLayoutOf(bodyAttr, k) {
   const out = {};
   const ins = { l: bodyAttr('lIns'), t: bodyAttr('tIns'), r: bodyAttr('rIns'), b: bodyAttr('bIns') };
   if (Object.entries(ins).some(([side, v]) => v != null && +v !== DEFAULT_INSETS[side])) {
-    out.inset = Object.fromEntries(Object.entries(ins).map(([side, v]) => [side, Math.round(((v != null ? +v : DEFAULT_INSETS[side]) / 12700) * k * 10) / 10]));
+    out.inset = Object.fromEntries(Object.entries(ins).map(([side, v]) => [side, Math.round(((v != null ? +v : DEFAULT_INSETS[side]) / EMU_PER_PT) * k * 10) / 10]));
   }
   if (bodyAttr('wrap') === 'none') out.wrap = false;
   const vert = bodyAttr('vert');
@@ -278,7 +278,7 @@ function textLayoutOf(bodyAttr, k) {
   const cols = +bodyAttr('numCol') || 1;
   if (cols > 1) {
     out.columns = Math.min(16, cols);
-    if (bodyAttr('spcCol') != null) out.columnGap = Math.round((+bodyAttr('spcCol') / 12700) * k * 10) / 10;
+    if (bodyAttr('spcCol') != null) out.columnGap = Math.round((+bodyAttr('spcCol') / EMU_PER_PT) * k * 10) / 10;
   }
   return out;
 }
@@ -734,13 +734,13 @@ async function readSlide(pkg, slidePath, ctx, deck) {
     };
   };
 
+  // The elements each of the slide's shapes became (by shape id), for its animations.
+  const byShapeId = new Map();
   /**
    * Add the shapes of a shape tree. `part` is the slide, or the layout or
    * master whose graphics show on it (their placeholders are only templates
    * for the slide's own, so they're skipped).
    */
-  // The elements each of the slide's shapes became (by shape id), for its animations.
-  const byShapeId = new Map();
   const walk = async (container, group, part, depth = 0) => {
     const tctx = { ...ctx, rels: part.rels };
     let pending = null; // the shape just read, and where its elements start

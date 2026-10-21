@@ -8,6 +8,8 @@ import { toBase64 } from './font-data.js';
  * that's written. Shared by the PowerPoint reader, writer and their parts.
  */
 export const EMU_PER_PT = 12700;
+/** Points as whole EMU, as the XML wants them. */
+export const emu = (pt) => Math.round(pt * EMU_PER_PT);
 export const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', svg: 'image/svg+xml', bmp: 'image/bmp', webp: 'image/webp' };
 
 export const xml = (s) => new DOMParser().parseFromString(s, 'application/xml');
@@ -128,6 +130,15 @@ export const xmlText = (s) => String(s ?? '')
   .replace(/\r\n?/g, '\n')
   .replace(/[\ud800-\udbff][\udc00-\udfff]|[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff\ud800-\udfff]/g, (c) => (c.length === 2 ? c : ''))
   .replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
+
+/** A GUID as Office writes them: {8-4-4-4-12}, upper-case hex. */
+export function guid() {
+  const random = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 3) | 8).toString(16);
+  });
+  return `{${(globalThis.crypto?.randomUUID?.() || random()).toUpperCase()}}`;
+}
 
 // ------------------------------------------------------------------ reading the package
 

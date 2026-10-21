@@ -14,14 +14,17 @@ import { timingXml, insertTiming } from './pptx-timing.js';
 import { writeComments } from './pptx-comments.js';
 import { writeSections } from './pptx-sections.js';
 import { exportsAsSmartArt, writeDiagram } from './pptx-diagram.js';
-import { xmlText } from './ooxml.js';
+import { xmlText, emu } from './ooxml.js';
 import { diagramAsShapes } from '../model/diagram-layout.js';
 
 /**
  * PowerPoint export with pptxgenjs. Slides become real PowerPoint text boxes,
- * shapes, pictures and tables (editable in PowerPoint, Keynote, Google Slides
- * and LibreOffice). Transitions and skipped slides are added to the XML
- * afterwards, since pptxgenjs doesn't write them.
+ * shapes, pictures, tables, charts and media (editable in PowerPoint,
+ * Keynote, Google Slides and LibreOffice). What pptxgenjs can't write
+ * (gradients, groups, placeholders, text effects and warps, transitions,
+ * animations, comments, sections, SmartArt, fonts…) is added to its XML
+ * afterwards: shapes that need it are given names ("LibreSlides shape N") to
+ * be found by, and postProcess finishes each part.
  */
 const IN = 72; // points per inch
 
@@ -223,7 +226,6 @@ function toRunOptions(s) {
   return o;
 }
 
-const emu = (pt) => Math.round(pt * 12700);
 const clrXml = ({ color, alpha }) => (alpha < 1 ? `<a:srgbClr val="${color}"><a:alpha val="${Math.round(alpha * 100000)}"/></a:srgbClr>` : `<a:srgbClr val="${color}"/>`);
 
 /** A run's a:rPr with its extras (see EXTRAS_LANG) written in. */
@@ -361,14 +363,7 @@ export function htmlToRuns(html, base = {}, links = null) {
 
 // ------------------------------------------------------------------ pictures
 
-const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
-  const r = new FileReader();
-  r.onload = () => resolve(r.result);
-  r.onerror = () => reject(r.error);
-  r.readAsDataURL(blob);
-});
-
-/** PowerPoint can't read SVG reliably, so vector pictures are exported as PNG. */
+/** A picture drawn into a PNG at about the size it's shown (sharper, up to 2,000 pixels across). */
 async function rasterize(dataUrl, w, h) {
   const img = new Image();
   img.src = dataUrl;
@@ -381,23 +376,18 @@ async function rasterize(dataUrl, w, h) {
   return canvas.toDataURL('image/png');
 }
 
-async function exportableImage(dataUrl, w = 400, h = 300) {
+/**
+ * A picture as PowerPoint can show it: SVG (which it can't read reliably),
+ * WebP, AVIF and BMP are drawn into PNGs, each once per export and size.
+ */
+function exportableImage(dataUrl, w = 400, h = 300, cache = null) {
   if (!dataUrl) return null;
-  if (/^data:image\/svg/i.test(dataUrl) || !/;base64,/.test(dataUrl)) {
-    try {
-      return await rasterize(dataUrl, w, h);
-    } catch {
-      return null;
-    }
-  }
-  if (/^data:image\/(webp|avif|bmp)/i.test(dataUrl)) {
-    try {
-      return await blobToDataUrl(await (await fetch(await rasterize(dataUrl, w, h))).blob());
-    } catch {
-      return null;
-    }
-  }
-  return dataUrl;
+  if (!/^data:image\/(svg|webp|avif|bmp)/i.test(dataUrl) && /;base64,/.test(dataUrl)) return dataUrl;
+  const key = `${Math.round(w)}x${Math.round(h)} ${dataUrl}`;
+  if (cache?.has(key)) return cache.get(key);
+  const png = rasterize(dataUrl, w, h).catch(() => null);
+  cache?.set(key, png);
+  return png;
 }
 
 const dataForPptx = (url) => url.replace(/^data:/, '');
@@ -443,7 +433,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
   const common = { ...g, rotate: el.rot || 0, flipH: !!el.flipH, flipV: !!el.flipV, shadow, objectName, hyperlink };
 
   if (el.type === 'image') {
-    const data = await exportableImage(deck.media?.[el.media], el.w, el.h);
+    const data = await exportableImage(deck.media?.[el.media], el.w, el.h, marks.pngs);
     if (!data) return;
     const opts = { ...common, data: dataForPptx(data), altText: el.alt || '' };
     const crop = (!el.fit || el.fit === 'fill') && el.crop;
@@ -540,7 +530,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
   };
   // What pptxgenjs can't write is fixed in its XML afterwards (see postProcess), found by the shape's name.
   const mark = () => (opts.objectName ||= `LibreSlides shape ${++marks.count}`);
-  const picture = el.fillImage && (await exportableImage(deck.media?.[el.fillImage.media], el.w, el.h));
+  const picture = el.fillImage && (await exportableImage(deck.media?.[el.fillImage.media], el.w, el.h, marks.pngs));
   if (picture) {
     if (opts.fill.type === 'none') opts.fill = { color: 'FFFFFF' };
     marks.pictures.set(mark(), { data: picture, crop: el.fillImage.crop, opacity });
@@ -696,7 +686,11 @@ export function warpXml(warp) {
   return `<a:prstTxWarp prst="${warp.preset}">${gds ? `<a:avLst>${gds}</a:avLst>` : '<a:avLst/>'}</a:prstTxWarp>`;
 }
 
-/** Turn the solid fills of the shapes named for gradients (and a gradient background) into real gradients. */
+/**
+ * What pptxgenjs can't write into a shape's own XML, for the shapes named
+ * in `marks`: text columns, gradient fills (and a gradient background),
+ * preset shapes' adjust values and text warps.
+ */
 export function applyGradients(xml, marks) {
   if (!marks) return xml;
   // Text in columns.
@@ -704,7 +698,7 @@ export function applyGradients(xml, marks) {
     const at = xml.indexOf(`name="${name}"`);
     const end = xml.indexOf('</p:sp>', at);
     if (at < 0 || end < 0) continue;
-    const block = xml.slice(at, end).replace('<a:bodyPr', `<a:bodyPr numCol="${Math.round(n)}"${gap != null ? ` spcCol="${Math.round(gap * 12700)}"` : ''}`);
+    const block = xml.slice(at, end).replace('<a:bodyPr', `<a:bodyPr numCol="${Math.round(n)}"${gap != null ? ` spcCol="${emu(gap)}"` : ''}`);
     xml = xml.slice(0, at) + block + xml.slice(end);
   }
   for (const [name, grad] of marks.gradients) xml = replaceShapeFill(xml, name, grad);
@@ -819,7 +813,6 @@ export function applyGroups(xml, members) {
     }
     if (blocks.length < 2) continue;
     blocks.sort((a, b) => a.start - b.start);
-    const emu = (v) => Math.round(v * 12700);
     const boxes = list.map((m) => m.box);
     const x = Math.min(...boxes.map((b) => b.x));
     const y = Math.min(...boxes.map((b) => b.y));
@@ -961,7 +954,11 @@ export async function tidyPackage(zip) {
   }
 }
 
-/** Tidy the paragraphs, and add transitions and "skip slide" to the generated XML. */
+/**
+ * Finish the package pptxgenjs wrote: media and charts, then each slide's
+ * XML (paragraphs, the shapes' marks, transitions, "skip slide", groups and
+ * animations), comments, sections, fonts, and last tidyPackage.
+ */
 async function postProcess(buffer, deck, allMarks) {
   const zip = await JSZip.loadAsync(buffer);
   await finishMedia(zip, deck);
@@ -1005,8 +1002,9 @@ export async function buildPptx(deck) {
   pptx.company = 'LibreSlides';
   pptx.theme = { headFontFace: theme.fonts.title, bodyFontFace: theme.fonts.body };
 
-  // What each slide needs fixing in the XML pptxgenjs writes (see applyGradients).
+  // What each slide needs fixing in the XML pptxgenjs writes (see postProcess).
   const allMarks = [];
+  const pngs = new Map(); // pictures drawn into PNGs (see exportableImage)
   for (const slide of deck.slides) {
     const s = pptx.addSlide();
     // Links as pptxgenjs takes them: a web address, or a slide by number.
@@ -1017,14 +1015,14 @@ export async function buildPptx(deck) {
       const n = { next: index + 2, prev: index, first: 1, last: deck.slides.length }[to] ?? deck.slides.findIndex((x) => x.id === to) + 1;
       return to && n >= 1 && n <= deck.slides.length ? { slide: n } : null;
     };
-    const marks = { number: allMarks.length + 1, links, count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), warps: new Map(), pictureLooks: new Map(), placeholders: new Map(), tableDashes: new Map(), diagrams: new Map(), timeline: [], groups: [], background: null };
+    const marks = { number: allMarks.length + 1, links, pngs, count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), warps: new Map(), pictureLooks: new Map(), placeholders: new Map(), tableDashes: new Map(), diagrams: new Map(), timeline: [], groups: [], background: null };
     // Diagrams that don't go as SmartArt go as the shapes they're drawn with.
     const elements = slide.elements.flatMap((el) => (el.type === 'diagram' && !exportsAsSmartArt(el, deck.media) ? diagramAsShapes(el) : [el]));
     marks.groupSizes = elements.reduce((m, e) => (e.groupId ? m.set(e.groupId, (m.get(e.groupId) || 0) + 1) : m), new Map());
     allMarks.push(marks);
     const bg = slide.background || theme.background;
     if (bg.type === 'image' && deck.media?.[bg.media]) {
-      const data = await exportableImage(deck.media[bg.media], w, h);
+      const data = await exportableImage(deck.media[bg.media], w, h, pngs);
       if (data) s.background = { data: dataForPptx(data) };
     } else if (bg.type === 'gradient') {
       // Written as a solid colour, then made a real gradient afterwards.

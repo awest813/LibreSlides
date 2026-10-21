@@ -4,7 +4,7 @@
  * show (WebP, AVIF, BMP) are converted to PNG, so exported files open
  * everywhere.
  */
-const readAsDataUrl = (blob) => new Promise((resolve, reject) => {
+export const readAsDataUrl = (blob) => new Promise((resolve, reject) => {
   const r = new FileReader();
   r.onload = () => resolve(r.result);
   r.onerror = () => reject(r.error || new Error('Couldn’t read the file.'));

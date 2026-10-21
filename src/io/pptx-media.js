@@ -117,9 +117,10 @@ export async function addMediaElement(pptx, slide, el, deck, geom, objectName) {
 
 /**
  * Finish the media pptxgenjs wrote: sounds marked as audio (it writes every
- * file as a video), rotation, shape ids that are unique on the slide,
- * PowerPoint's content types. (Their timeline, for autoplay and looping, is
- * written with the slide's animations: see pptx-timing.js.)
+ * file as a video), rotation and PowerPoint's content types. (Shape ids are
+ * made unique for the whole slide afterwards, and the timeline, for
+ * autoplay and looping, is written with the slide's animations: see
+ * pptx-export.js and pptx-timing.js.)
  */
 export async function finishMedia(zip, deck) {
   let any = false;
@@ -129,18 +130,11 @@ export async function finishMedia(zip, deck) {
     if (!file) continue;
     any = true;
     let xml = await file.async('string');
-    const ids = (xml.match(/<p:cNvPr id="\d+"/g) || []).map((m) => +m.match(/\d+/)[0]);
-    let nextId = Math.max(0, ...ids) + 1;
     let k = 0;
     // The media pictures are in the same order as the elements they came from.
     xml = xml.replace(/<p:pic>(?:(?!<\/p:pic>)[\s\S])*?<a:videoFile[\s\S]*?<\/p:pic>/g, (pic) => {
       const el = els[k++];
       if (!el) return pic;
-      let id = +/<p:cNvPr id="(\d+)"/.exec(pic)[1];
-      if (ids.filter((n) => n === id).length > 1) {
-        id = nextId++;
-        pic = pic.replace(/<p:cNvPr id="\d+"/, `<p:cNvPr id="${id}"`);
-      }
       if (el.kind === 'audio') pic = pic.replace('<a:videoFile ', '<a:audioFile ');
       if (el.rot) pic = pic.replace(/<a:xfrm(?=[\s>])/, `<a:xfrm rot="${Math.round((((el.rot % 360) + 360) % 360) * 60000)}"`);
       return pic;

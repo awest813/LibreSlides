@@ -1,5 +1,5 @@
 import { slideSections, hasSections, DEFAULT_SECTION } from '../model/deck.js';
-import { desc, attr, xmlText } from './ooxml.js';
+import { desc, attr, xmlText, guid } from './ooxml.js';
 
 /**
  * Slide sections in .pptx files. PowerPoint 2010 and later list them in an
@@ -42,15 +42,6 @@ export function readSections(pres, slides, sldIds) {
 }
 
 // ------------------------------------------------------------------ writing
-
-/** A GUID as Office writes them: {8-4-4-4-12}, upper-case hex. */
-export function guid() {
-  const random = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    return (c === 'x' ? r : (r & 3) | 8).toString(16);
-  });
-  return `{${(globalThis.crypto?.randomUUID?.() || random()).toUpperCase()}}`;
-}
 
 /** Add a p:ext to presentation.xml's p:extLst (its last child), making the list if there's none. */
 export function addPresentationExt(presXml, ext) {

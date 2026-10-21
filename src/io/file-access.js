@@ -25,7 +25,7 @@ export const FILE_FORMATS = {
 
 /** What saving to a format can't keep, shown the first time a deck is saved that way. */
 export const FORMAT_NOTES = {
-  pptx: 'PowerPoint files keep slides, text, shapes, pictures, tables, notes and transitions, but not LibreSlides animations or theme switching.',
+  pptx: 'PowerPoint files keep slides, text, shapes, pictures, tables, charts, video, notes, comments, transitions and animations, but not theme switching.',
 };
 
 export const canSaveToFiles = () => typeof window !== 'undefined' && typeof window.showSaveFilePicker === 'function';
