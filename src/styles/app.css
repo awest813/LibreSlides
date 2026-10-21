@@ -449,3 +449,12 @@ dialog.dialog { z-index: 3600; }
 .chart-swatch { width: 18px; height: 18px; flex: none; border: 0; border-radius: 3px; padding: 0; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.2); cursor: pointer; }
 .chart-remove { width: 22px; height: 22px; flex: none; }
 .chart-remove .icon { width: 14px; height: 14px; }
+/* "More chart options": a section that folds away, its heading as the others' */
+.chart-more > summary { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); font-weight: 700; cursor: pointer; }
+.chart-more:not([open]) { gap: 0; }
+.chart-axis-scale { align-items: flex-end; flex-wrap: nowrap; }
+.chart-axis-scale > .pf { flex: 1; min-width: 0; }
+.chart-combo .pf-row { flex-wrap: nowrap; }
+.chart-combo-name { flex: 1; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chart-combo select { height: 28px; border: 1px solid var(--border-strong); border-radius: 4px; padding: 0 4px; background: var(--surface); color: inherit; font: inherit; font-size: 12px; }
+.chart-combo .pf-check { font-size: 12px; white-space: nowrap; }

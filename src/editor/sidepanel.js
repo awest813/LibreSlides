@@ -6,7 +6,8 @@ import { SIZES, slideSize, LAYOUTS, TRANSITIONS, ANIMATIONS, EMPHASES, EXITS, MO
 import { SHAPES } from '../model/shapes.js';
 import { BORDER_PRESETS, cellMargin } from '../model/tables.js';
 import { renderThumb, textStyle } from '../render/render.js';
-import { seriesColor, pointColor } from '../render/chart.js';
+import { seriesColor, pointColor, seriesKind, onSecondaryAxis, labelParts, scatterLines, showsMarkers, COMBO_KINDS } from '../render/chart.js';
+import { formatValue } from '../render/number-format.js';
 import { commentsPanel } from './comments.js';
 import { textEffectOf } from './richtext.js';
 
@@ -476,27 +477,34 @@ function chartSections(el, theme, upd) {
   const title = h('input', { type: 'text', placeholder: 'No title' });
   title.value = c.title || '';
   title.addEventListener('change', () => edit((ch) => { ch.title = title.value; }));
+  const lines = c.kind === 'line' || c.series.some((s, k) => seriesKind(c, k) === 'line');
   const options = h('div', { class: 'pf-stack' },
     field('Type', select(CHART_KINDS.map((k) => [k.id, k.name]), c.kind, (v) => edit((ch) => { ch.kind = v; }))),
-    ['column', 'bar', 'area'].includes(c.kind)
-      ? field('Grouping', select([['clustered', c.kind === 'area' ? 'Standard' : 'Clustered'], ['stacked', 'Stacked'], ['percent', '100% stacked']], c.grouping || 'clustered', (v) => edit((ch) => { ch.grouping = v; })))
+    ['column', 'bar', 'area', 'line'].includes(c.kind)
+      ? field('Grouping', select([['clustered', c.kind === 'area' || c.kind === 'line' ? 'Standard' : 'Clustered'], ['stacked', 'Stacked'], ['percent', '100% stacked']], c.grouping || 'clustered', (v) => edit((ch) => { ch.grouping = v; })))
       : null,
     field('Title', title),
     field('Legend', select([['right', 'Right'], ['bottom', 'Bottom'], ['top', 'Top'], ['left', 'Left'], ['none', 'None']], c.legend || 'none', (v) => edit((ch) => { ch.legend = v; }))),
     checkbox('Data labels', c.dataLabels, (v) => edit((ch) => { ch.dataLabels = v; })),
-    c.kind === 'line' ? checkbox('Markers', c.markers, (v) => edit((ch) => { ch.markers = v; })) : null,
+    pie && c.dataLabels ? field('Labels show', select(LABEL_CONTENTS, labelParts(c).join(), (v) => edit((ch) => {
+      ch.labelContent = v.split(',');
+      if (v === 'value') delete ch.labelContent;
+    }))) : null,
+    c.kind === 'scatter' ? checkbox('Lines', scatterLines(c), (v) => edit((ch) => { ch.lines = v || undefined; })) : null,
+    lines || c.kind === 'scatter' ? checkbox('Markers', showsMarkers(c), (v) => edit((ch) => { ch.markers = v; })) : null,
+    lines || scatterLines(c) ? checkbox('Smooth lines', c.smooth, (v) => edit((ch) => { ch.smooth = v || undefined; })) : null,
     field('Text size', numberInput(el.style?.size || 12, (v) => edit((ch, e) => { e.style = { ...e.style, size: v }; }), { min: 4, max: 72, suffix: 'pt' })),
     h('div', { class: 'pf-row' },
       colorButton('Text colour', el.style?.color || 'theme:text', theme, (v) => edit((ch, e) => { e.style = { ...e.style, color: v }; })),
       colorButton('Background', el.fill || 'none', theme, (v) => edit((ch, e) => { e.fill = v; }), { allowNone: true, noneLabel: 'No background' })),
   );
 
-  // The data: a row per category and a column per series (only the first for pies).
-  const series = pie ? c.series.slice(0, 1) : c.series;
+  // The data: a row per category and a column per series (only the first for pies; a ring each for doughnuts).
+  const series = c.kind === 'pie' ? c.series.slice(0, 1) : c.series;
   const head = h('tr', {}, h('th', {}, c.kind === 'scatter' ? 'X' : 'Category'), ...series.map((s, k) => h('th', {},
     cellInput(s.name, `Name of series ${k + 1}`, (v) => edit((ch) => { ch.series[k].name = v; })),
-    pie ? null : h('div', { class: 'chart-head' },
-      swatch(`Colour of ${s.name}`, seriesColor(c, k, theme), theme, (v) => edit((ch) => { ch.series[k].color = v; })),
+    c.kind === 'pie' ? null : h('div', { class: 'chart-head' },
+      pie ? null : swatch(`Colour of ${s.name}`, seriesColor(c, k, theme), theme, (v) => edit((ch) => { ch.series[k].color = v; })),
       c.series.length > 1 ? removeButton(`Remove ${s.name}`, () => edit((ch) => { ch.series.splice(k, 1); })) : null))),
   pie ? h('th', {}) : null, h('th', {}));
   const rows = c.categories.map((cat, i) => h('tr', {},
@@ -524,11 +532,97 @@ function chartSections(el, theme, upd) {
       ch.categories.push(ch.kind === 'scatter' ? String(ch.categories.length + 1) : `Category ${ch.categories.length + 1}`);
       for (const s of ch.series) while (s.values.length < ch.categories.length) s.values.push(null);
     }) }),
-    pie ? null : h('button', { type: 'button', class: 'btn', html: `${icon('plus')}<span>Series</span>`, onclick: () => edit((ch) => {
+    c.kind === 'pie' ? null : h('button', { type: 'button', class: 'btn', html: `${icon('plus')}<span>Series</span>`, onclick: () => edit((ch) => {
       ch.series.push({ name: `Series ${ch.series.length + 1}`, values: ch.categories.map(() => null) });
     }) }));
   return [
     section('Chart', options),
-    section('Chart data', grid, buttons, h('p', { class: 'pf-hint' }, pie ? 'Pie and doughnut charts show the first series.' : 'Leave a cell empty for no point.')),
+    chartMore(c, edit),
+    section('Chart data', grid, buttons, h('p', { class: 'pf-hint' }, c.kind === 'pie' ? 'Pie charts show the first series.' : c.kind === 'doughnut' ? 'Each series is a ring, the first innermost.' : 'Leave a cell empty for no point.')),
   ];
+}
+
+/** Number formats offered for a chart's values: Excel codes with an example of each. */
+const NUMBER_FORMATS = [['General', 'General'], ['#,##0', '1,234'], ['#,##0.0', '1,234.5'], ['#,##0.00', '1,234.56'], ['0%', '12%'], ['0.0%', '12.3%'], ['$#,##0', '$1,234'], ['#,##0 €', '1,234 €']];
+const LABEL_CONTENTS = [['value', 'Value'], ['percent', 'Percentage'], ['category', 'Category name'], ['category,percent', 'Category and percentage'], ['category,value', 'Category and value']];
+/** Where data labels can go, by kind of chart ('' is PowerPoint's automatic place). */
+const LABEL_PLACES = {
+  bar: [['', 'Automatic'], ['outEnd', 'Outside end'], ['inEnd', 'Inside end'], ['ctr', 'Centre'], ['inBase', 'Inside base']],
+  line: [['', 'Automatic'], ['t', 'Above'], ['b', 'Below'], ['l', 'Left'], ['r', 'Right'], ['ctr', 'Centre']],
+  pie: [['', 'Best fit'], ['outEnd', 'Outside end'], ['inEnd', 'Inside end'], ['ctr', 'Centre']],
+};
+
+// Whether "More chart options" is open, kept as the panel is redrawn after each change.
+let chartMoreOpen = false;
+
+/** An axis bound or unit: a number, or blank for automatic. */
+function autoNumber(value, label, onValue) {
+  const input = h('input', { type: 'number', step: 'any', placeholder: 'Auto', 'aria-label': label, value: Number.isFinite(value) ? String(value) : '' });
+  input.addEventListener('change', () => onValue(input.value.trim() === '' || !Number.isFinite(+input.value) ? undefined : +input.value));
+  return input;
+}
+
+/** Set (or clear, when blank) one setting of an axis, dropping the axis when it has none left. */
+function setAxis(ch, key, prop, value) {
+  const axis = { ...(ch[key] || {}), [prop]: value };
+  if (value === undefined || value === '') delete axis[prop];
+  if (Object.keys(axis).length) ch[key] = axis;
+  else delete ch[key];
+}
+
+/** The advanced chart options: number format, label placement, axes, bar spacing and combinations. */
+function chartMore(c, edit) {
+  const pie = c.kind === 'pie' || c.kind === 'doughnut';
+  const bars = c.kind === 'column' || c.kind === 'bar' || c.series.some((s, k) => seriesKind(c, k) === 'column');
+  const stacked = c.grouping === 'stacked' || c.grouping === 'percent';
+  const text = (value, label, onValue) => {
+    const input = h('input', { type: 'text', placeholder: 'None', 'aria-label': label });
+    input.value = value || '';
+    input.addEventListener('change', () => onValue(input.value.trim()));
+    return input;
+  };
+  const formats = NUMBER_FORMATS.some(([code]) => code === (c.numberFormat || 'General')) ? NUMBER_FORMATS : [...NUMBER_FORMATS, [c.numberFormat, `${formatValue(1234.5, c.numberFormat)} (from file)`]];
+  const places = c.kind === 'pie' ? LABEL_PLACES.pie
+    : c.kind === 'column' || c.kind === 'bar' ? LABEL_PLACES.bar.filter(([v]) => !stacked || v !== 'outEnd')
+      : c.kind === 'line' || c.kind === 'scatter' ? LABEL_PLACES.line : null;
+  const axisRow = (key) => h('div', { class: 'pf-row chart-axis-scale' },
+    ...[['min', 'Minimum'], ['max', 'Maximum'], ['unit', 'Major unit']].map(([prop, label]) => field(label, autoNumber(c[key]?.[prop], label, (v) => edit((ch) => setAxis(ch, key, prop, v))))));
+  const combo = COMBO_KINDS.includes(c.kind) && c.series.length > 1;
+  const secondary = c.series.some((s, k) => onSecondaryAxis(c, k));
+
+  const body = h('div', { class: 'pf-stack' },
+    field('Number format', select(formats, c.numberFormat || 'General', (v) => edit((ch) => {
+      if (v === 'General') delete ch.numberFormat;
+      else ch.numberFormat = v;
+      delete ch.labelFormat;
+    }))),
+    c.dataLabels && places ? field('Label position', select(places, places.some(([v]) => v === c.labelPosition) ? c.labelPosition : '', (v) => edit((ch) => {
+      if (v) ch.labelPosition = v;
+      else delete ch.labelPosition;
+    }))) : null,
+    pie ? null : field(c.kind === 'scatter' ? 'Y axis title' : 'Value axis title', text(c.valueAxis?.title, 'Value axis title', (v) => edit((ch) => setAxis(ch, 'valueAxis', 'title', v)))),
+    pie ? null : field(c.kind === 'scatter' ? 'X axis title' : 'Category axis title', text(c.categoryAxis?.title, 'Category axis title', (v) => edit((ch) => setAxis(ch, 'categoryAxis', 'title', v)))),
+    pie || c.grouping === 'percent' ? null : axisRow('valueAxis'),
+    pie ? null : checkbox('Gridlines', c.valueAxis?.gridlines !== false, (v) => edit((ch) => setAxis(ch, 'valueAxis', 'gridlines', v ? undefined : false))),
+    bars ? h('div', { class: 'pf-row chart-axis-scale' },
+      field('Gap width', numberInput(c.gapWidth ?? 150, (v) => edit((ch) => { ch.gapWidth = v; }), { min: 0, max: 500, suffix: '%' })),
+      stacked ? null : field('Overlap', numberInput(c.overlap ?? 0, (v) => edit((ch) => { ch.overlap = v; }), { min: -100, max: 100, suffix: '%' }))) : null,
+    c.kind === 'doughnut' ? field('Hole size', numberInput(c.holeSize ?? 50, (v) => edit((ch) => { ch.holeSize = v; }), { min: 10, max: 90, suffix: '%' })) : null,
+    // Combination charts: each series as columns, a line or an area, on either value axis.
+    combo ? h('div', { class: 'pf-stack chart-combo' }, h('span', { class: 'pf-label' }, 'Series'),
+      ...c.series.map((s, k) => h('div', { class: 'pf-row' },
+        h('span', { class: 'chart-combo-name' }, s.name || `Series ${k + 1}`),
+        select([['', 'Chart type'], ['column', 'Columns'], ['line', 'Line'], ['area', 'Area']], s.kind && s.kind !== c.kind ? s.kind : '', (v) => edit((ch) => {
+          if (v && v !== ch.kind) ch.series[k].kind = v;
+          else delete ch.series[k].kind;
+        })),
+        checkbox('Secondary axis', s.secondary, (v) => edit((ch) => {
+          if (v) ch.series[k].secondary = true;
+          else delete ch.series[k].secondary;
+        }))))) : null,
+    secondary ? field('Secondary axis title', text(c.secondaryAxis?.title, 'Secondary axis title', (v) => edit((ch) => setAxis(ch, 'secondaryAxis', 'title', v)))) : null,
+  );
+  const details = h('details', { class: 'panel-section chart-more', open: chartMoreOpen || null }, h('summary', {}, 'More chart options'), body);
+  details.addEventListener('toggle', () => { chartMoreOpen = details.open; });
+  return details;
 }

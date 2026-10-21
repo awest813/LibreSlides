@@ -6,7 +6,7 @@ import { themeById, resolveColor, backgroundBaseColor } from '../model/themes.js
 import { textStyle, themeDecor } from '../render/render.js';
 import { safeFileName } from '../ui/dom.js';
 import { saveFile } from './files.js';
-import { addChart } from './pptx-chart.js';
+import { addChart, finishCharts } from './pptx-chart.js';
 import { addMediaElement, finishMedia } from './pptx-media.js';
 import { embedFonts } from './pptx-fonts.js';
 import { timingXml, insertTiming } from './pptx-timing.js';
@@ -851,6 +851,7 @@ function timelineOf(xml, timeline) {
 async function postProcess(buffer, deck, allMarks) {
   const zip = await JSZip.loadAsync(buffer);
   await finishMedia(zip, deck);
+  await finishCharts(zip, deck);
   for (const [i, slide] of deck.slides.entries()) {
     const path = `ppt/slides/slide${i + 1}.xml`;
     const file = zip.file(path);
