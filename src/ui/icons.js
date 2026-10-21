@@ -9,7 +9,7 @@ import {
   AlignEndVertical, AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalDistributeCenter,
   AlignVerticalDistributeCenter, RotateCw, RotateCcw, FlipHorizontal2, FlipVertical2, StickyNote, Timer, Pause, Grid3x3, Magnet,
   PanelRight, ArrowUp, ArrowDown, ListCollapse, LayoutTemplate, Type, SquareDashed, MonitorPlay, Save,
-  TableCellsMerge, Clapperboard,
+  TableCellsMerge, Clapperboard, ChartColumn,
 } from 'lucide';
 
 const ICONS = {
@@ -32,7 +32,7 @@ const ICONS = {
   rotateCw: RotateCw, rotateCcw: RotateCcw, flipH: FlipHorizontal2, flipV: FlipVertical2, notes: StickyNote, timer: Timer,
   pause: Pause, grid: Grid3x3, snap: Magnet, panelRight: PanelRight, up: ArrowUp, down: ArrowDown, lineSpacing: ListCollapse,
   layout: LayoutTemplate, save: Save, textBox: Type, borderWeight: Minus, borderDash: SquareDashed, presenter: MonitorPlay,
-  media: Clapperboard,
+  media: Clapperboard, chart: ChartColumn,
 };
 
 const cache = new Map();

@@ -102,6 +102,7 @@ export class Toolbar {
         { label: 'Image…', icon: 'image', run: () => app.insertImage() },
         { label: 'Video or audio…', icon: 'media', run: () => app.insertMedia() },
         { label: 'Table…', icon: 'table', run: () => this.tableMenu(this.menuButtons.Insert) },
+        { label: 'Chart…', icon: 'chart', run: () => app.insertChart() },
         'separator',
         ...SHAPES.slice(0, 6).map((s) => ({ label: s.name, run: () => app.canvas.setTool({ type: 'shape', shape: s.id }) })),
         { label: 'More shapes…', icon: 'shapes', run: () => this.shapeMenu(this.shapeBtn) },
@@ -285,6 +286,7 @@ export class Toolbar {
     this.shapeBtn = tb('shapes', 'Shape', (b) => this.shapeMenu(b), { haspopup: true });
     this.lineBtn = tb('line', 'Line', (b) => this.lineMenu(b), { haspopup: true });
     this.tableBtn = tb('table', 'Table', (b) => this.tableMenu(b), { haspopup: true });
+    this.chartBtn = tb('chart', 'Insert chart', () => app.insertChart());
 
     // Slide (nothing selected)
     group('slide',
@@ -376,6 +378,9 @@ export class Toolbar {
         { label: 'Unmerge', run: () => app.tableOp('unmerge') },
       ])), { haspopup: true }));
 
+    // Charts
+    group('chart', tb('chart', 'Edit chart', () => app.openPanel('format'), { text: 'Edit chart' }));
+
     // Any selection
     group('element',
       tb('arrange', 'Arrange', (b) => showPopover(b, menu(this.arrangeItems(), { iconFn }), { label: 'Arrange' }), { haspopup: true }),
@@ -385,7 +390,7 @@ export class Toolbar {
     this.groups = groups;
     const bar = h('div', { class: 'toolbar', role: 'toolbar', 'aria-label': 'Formatting' },
       this.undoBtn, this.redoBtn, this.zoomBtn, sep(),
-      this.selectBtn, this.textBtn, this.imageBtn, this.shapeBtn, this.lineBtn, this.tableBtn, sep(),
+      this.selectBtn, this.textBtn, this.imageBtn, this.shapeBtn, this.lineBtn, this.tableBtn, this.chartBtn, sep(),
       ...Object.values(groups));
     // Arrow keys move between toolbar controls (one tab stop).
     bar.addEventListener('keydown', (e) => {
@@ -446,6 +451,7 @@ export class Toolbar {
     show('text', textTarget);
     show('image', els.length === 1 && els[0].type === 'image');
     show('table', els.length === 1 && els[0].type === 'table');
+    show('chart', els.length === 1 && els[0].type === 'chart');
     show('element', els.length > 0);
     this.undoBtn.disabled = !app.history.canUndo && !editing;
     this.redoBtn.disabled = !app.history.canRedo && !editing;
