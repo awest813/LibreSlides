@@ -512,6 +512,22 @@ describe('editor: fields and text effects', () => {
     ed.setTextEffect('none');
     expect(ed.slide.elements[0].text).toBe('<p>One <b>two</b></p><ul><li>three</li></ul>');
   });
+
+  it('makes paragraphs set in from PowerPoint a list and back, and lets the box\'s spacing replace theirs', () => {
+    const box = newTextBox(0, 0);
+    box.text = '<p style="margin-inline-start: 36px; text-indent: -18px; line-height: 1.5; color: red">One</p><p dir="rtl" style="margin-top: 12px">Two</p>';
+    const ed = openEditor(deckWith(box));
+    ed.setSelection([box.id]);
+    ed.toggleList('ul');
+    expect(ed.slide.elements[0].text).toBe('<ul><li style="line-height: 1.5; color: red">One</li><li style="margin-top: 12px">Two</li></ul>');
+    ed.slide.elements[0].text = '<ul><li style="--bu-color: #ff0000; color: red">One</li></ul>';
+    ed.toggleList('ul');
+    expect(ed.slide.elements[0].text).toBe('<p style="color: red">One</p>');
+    ed.slide.elements[0].text = '<p style="line-height: 30px; margin-top: 12px">One</p><ul style="margin-top: 4px"><li>Two</li></ul>';
+    ed.setTextProp('lineHeight', 1.5);
+    ed.setTextProp('spacing', 0.35);
+    expect(ed.slide.elements[0].text).toBe('<p>One</p><ul><li>Two</li></ul>');
+  });
 });
 
 describe('editor: sections', () => {

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
 import { buildPptx, htmlToRuns, toHex, fixParagraphs } from '../../src/io/pptx-export.js';
 import { importPptx } from '../../src/io/pptx-import.js';
+import { bulletGlyph } from '../../src/io/pptx-text.js';
 import { renderElement } from '../../src/render/render.js';
 import { themeById } from '../../src/model/themes.js';
 import { TEMPLATES } from '../../src/model/templates.js';
@@ -193,6 +194,142 @@ describe('PowerPoint text', () => {
     expect(el.style.bold).toBe(true);
     expect(el.text).toContain('plain');
     expect(el.text).toMatch(/font-weight: 400[^"]*font-style: normal[^"]*text-decoration: none">plain/);
+  });
+});
+
+describe('PowerPoint paragraphs, bullets and lists', () => {
+  /** Read a text box whose paragraphs are `paras` (DrawingML), with `bodyPr` and `lstStyle` of its own. */
+  async function readBody(paras, { bodyPr = '<a:bodyPr/>', lstStyle = '<a:lstStyle/>' } = {}) {
+    const box = newTextBox(10, 10, 400, 300);
+    box.text = '<p>x</p>';
+    const back = await roundTrip(deckWith(box), async (zip) => {
+      const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+      zip.file('ppt/slides/slide1.xml', xml.replace(/<p:txBody>[\s\S]*?<\/p:txBody>/, `<p:txBody>${bodyPr}${lstStyle}${paras}</p:txBody>`));
+    });
+    return back.slides[0].elements[0];
+  }
+  const run = (text, rPr = '<a:rPr lang="en-US" sz="2000"/>') => `<a:r>${rPr}<a:t>${text}</a:t></a:r>`;
+  const para = (pPr, text, rPr) => `<a:p>${pPr}${text == null ? '' : run(text, rPr)}</a:p>`;
+
+  it('shows symbol fonts\' bullets as the characters they look like, and writes them back in Wingdings', async () => {
+    expect(bulletGlyph('l', 'Wingdings')).toBe('●');
+    expect(bulletGlyph('\uf0a7', 'Wingdings')).toBe('▪');
+    expect(bulletGlyph('Ø', 'Wingdings')).toBe('➢');
+    expect(bulletGlyph('ü', 'Wingdings')).toBe('✓');
+    expect(bulletGlyph('\uf0b7', 'Symbol')).toBe('•');
+    expect(bulletGlyph('\uf075', 'Wingdings 3')).toBe('▶');
+    expect(bulletGlyph('✭', 'Wingdings')).toBe('✭'); // Unicode already
+    expect(bulletGlyph('–', 'Arial')).toBe('–');
+    expect(bulletGlyph('\uf0e9', 'Some Font')).toBe('•'); // a private character nothing can show
+    const el = await readBody(para('<a:pPr marL="342900" indent="-342900"><a:buFont typeface="Wingdings" pitchFamily="2" charset="2"/><a:buChar char="v"/></a:pPr>', 'Diamond')
+      + para('<a:pPr marL="342900" indent="-342900"><a:buFont typeface="Wingdings"/><a:buChar char="&#xF0D8;"/></a:pPr>', 'Arrow'));
+    expect(el.text).toContain("<ul style=\"list-style-type: '❖ '; padding-inline-start: 27px\">");
+    expect(el.text).toContain("<ul style=\"list-style-type: '➢ '; padding-inline-start: 27px\">");
+    const xml = await slideXml(deckWith(el));
+    expect(xml).toMatch(/<a:buFont typeface="Wingdings" pitchFamily="2" charset="2"\/><a:buChar char="v"\/>/);
+    expect(xml).toMatch(/<a:buFont typeface="Wingdings" pitchFamily="2" charset="2"\/><a:buChar char="Ø"\/>/);
+  });
+
+  it('gives bullets their own colour and size, else their paragraph\'s first run\'s, and writes them back', async () => {
+    const red = '<a:rPr lang="en-US" sz="2000"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></a:rPr>';
+    // The list style gives bullets a colour; the second paragraph's follow its text instead, the third's its red text.
+    const lstStyle = '<a:lstStyle><a:lvl1pPr marL="317500" indent="-317500"><a:buClr><a:srgbClr val="7030A0"/></a:buClr><a:buChar char="•"/></a:lvl1pPr></a:lstStyle>';
+    const el = await readBody(
+      para('<a:pPr><a:buSzPct val="75000"/></a:pPr>', 'Purple')
+      + para('<a:pPr><a:buClrTx/></a:pPr>', 'Black')
+      + para('<a:pPr><a:buClrTx/></a:pPr>', 'Red', red),
+      { lstStyle },
+    );
+    expect(el.style.color).toBe('#374151'); // the text colour of the theme the test deck was written with
+    expect(el.text).toBe('<ul><li style="--bu-color: #7030a0; --bu-size: 75%">Purple</li><li>Black</li><li style="color: #ff0000">Red</li></ul>');
+    const xml = await slideXml(deckWith(el));
+    expect(xml).toMatch(/<a:buClr><a:srgbClr val="7030A0"\/><\/a:buClr><a:buSzPct val="75000"\/><a:buChar/);
+    expect(xml.match(/<a:buClr>/g)).toHaveLength(1); // the others follow their text
+    const back = (await roundTrip(deckWith(el))).slides[0].elements[0];
+    expect(back.text).toBe(el.text);
+  });
+
+  it('starts a list at the level of its first paragraph, without empty items above it', async () => {
+    const el = await readBody([1, 1, 2].map((lvl) => para(`<a:pPr marL="${742950 + (lvl - 1) * 400050}" lvl="${lvl}" indent="-285750"><a:buChar char="•"/></a:pPr>`, `Level ${lvl}`)).join(''));
+    expect(el.text).toBe('<ul style="padding-inline-start: 58.5px"><li>Level 1</li><li>Level 1<ul style="list-style-type: disc; padding-inline-start: 31.5px"><li>Level 2</li></ul></li></ul>');
+    expect(el.text).not.toContain('<br>');
+    // Written back as far in as it's shown, and read back the same.
+    const xml = await slideXml(deckWith(el));
+    expect(xml).toMatch(/<a:pPr algn="l" marL="742950" indent="-317500">/);
+    expect((await roundTrip(deckWith(el))).slides[0].elements[0].text).toBe(el.text);
+  });
+
+  it('numbers lists as PowerPoint does: on past deeper paragraphs and empty ones, again after one at the same level', async () => {
+    const num = (lvl, type = 'arabicPeriod') => `<a:pPr marL="${342900 * (lvl + 1)}" lvl="${lvl}" indent="-342900"><a:buAutoNum type="${type}"/></a:pPr>`;
+    const el = await readBody([
+      para(num(0), 'One'), para(num(0), 'Two'),
+      para(num(1, 'alphaLcPeriod'), 'a'), para(num(1, 'alphaLcPeriod'), 'b'),
+      para('<a:pPr marL="685800" lvl="1" indent="0"><a:buNone/></a:pPr>', 'Plain'),
+      para(num(1, 'alphaLcPeriod'), 'a again'),
+      para(num(0), 'Three'), para(num(0)), para(num(0), 'Four'),
+    ].join(''));
+    expect(el.text).toBe('<ol style="padding-inline-start: 27px"><li>One</li><li>Two'
+      + '<ol style="list-style-type: lower-alpha; padding-inline-start: 27px"><li>a</li><li>b</li></ol><p style="margin-inline-start: 27px">Plain</p>'
+      + '<ol style="list-style-type: lower-alpha; padding-inline-start: 27px"><li>a again</li></ol></li><li>Three</li></ol>'
+      + '<p style="margin-inline-start: 27px; text-indent: -27px"><br></p><ol style="padding-inline-start: 27px" start="4"><li>Four</li></ol>');
+    // The plain paragraph is written at the level below, where it's shown.
+    const xml = await slideXml(deckWith(el));
+    expect(xml).toMatch(/<a:pPr algn="l" lvl="1" marL="685800" indent="0">(?:(?!<\/a:pPr>)[\s\S])*<a:buNone\/><\/a:pPr><a:r><a:rPr[^>]*>[\s\S]*?<a:t>Plain/);
+    expect(xml).toContain('<a:buAutoNum type="arabicPeriod" startAt="4"/>');
+    const back = (await roundTrip(deckWith(el))).slides[0].elements[0];
+    expect(htmlToText(back.text)).toBe(htmlToText(el.text));
+    expect(back.text).toContain('<p style="margin-inline-start: 27px">Plain</p>');
+    expect(back.text).toContain('start="4"');
+  });
+
+  it('keeps paragraphs\' margins, indents, direction, line spacing and the space between them', async () => {
+    const el = await readBody(
+      para('<a:pPr marL="457200" indent="228600"><a:lnSpc><a:spcPts val="3000"/></a:lnSpc></a:pPr>', 'Set in')
+      + para('<a:pPr algn="r" rtl="1"><a:spcBef><a:spcPts val="1200"/></a:spcBef></a:pPr>', 'مرحبا', '<a:rPr lang="ar-SA" sz="2000"><a:cs typeface="Arial"/></a:rPr>')
+      + para('<a:pPr><a:lnSpc><a:spcPct val="150000"/></a:lnSpc><a:spcBef><a:spcPts val="600"/></a:spcBef></a:pPr>', 'Airy')
+      + para('<a:pPr><a:spcBef><a:spcPts val="600"/></a:spcBef></a:pPr>', 'Last'),
+    );
+    expect(el.style).toMatchObject({ lineHeight: 1.2, spacing: 0.3 });
+    expect(el.text).toBe('<p style="text-align: left; line-height: 30px; margin-inline-start: 36px; text-indent: 18px">Set in</p>'
+      + '<p dir="rtl" style="text-align: right; margin-top: 12px"><span style="font-family: \'Inter\', \'Arial\', sans-serif">مرحبا</span></p>'
+      + '<p style="text-align: left; line-height: 1.8">Airy</p><p style="text-align: left">Last</p>');
+    const xml = await slideXml(deckWith(el));
+    expect(xml).toMatch(/<a:pPr[^>]* marL="457200" indent="228600"><a:lnSpc><a:spcPts val="3000"\/><\/a:lnSpc>/);
+    expect(xml).toMatch(/<a:pPr algn="r"[^>]* rtl="1">[\s\S]*?<a:spcBef><a:spcPts val="1200"\/><\/a:spcBef><a:spcAft><a:spcPts val="0"\/><\/a:spcAft>/);
+    expect(xml).toMatch(/<a:lnSpc><a:spcPct val="150000"\/><\/a:lnSpc><a:spcBef><a:spcPts val="600"\/>/);
+    const back = (await roundTrip(deckWith(el))).slides[0].elements[0];
+    expect(back.text).toBe(el.text);
+    expect(back.style).toMatchObject({ lineHeight: 1.2, spacing: 0.3 });
+  });
+
+  it('makes empty paragraphs as tall as their end mark\'s text, and keeps them so', async () => {
+    const el = await readBody(`${para('', 'Above')}<a:p><a:endParaRPr lang="en-US" sz="800"/></a:p>${para('', 'Below')}`);
+    expect(el.text).toBe('<p>Above</p><p style="font-size: 8px"><br></p><p>Below</p>');
+    expect(await slideXml(deckWith(el))).toMatch(/<a:p><a:pPr[^>]*>[\s\S]*?<\/a:pPr><a:endParaRPr sz="800" lang="en-US"/);
+    expect((await roundTrip(deckWith(el))).slides[0].elements[0].text).toBe(el.text);
+  });
+
+  it('shrinks line spacing and the space between paragraphs as PowerPoint shrank them', async () => {
+    const paras = para('<a:pPr><a:spcBef><a:spcPts val="1000"/></a:spcBef></a:pPr>', 'One') + para('<a:pPr><a:spcBef><a:spcPts val="1000"/></a:spcBef></a:pPr>', 'Two');
+    const plain = await readBody(paras);
+    const shrunk = await readBody(paras, { bodyPr: '<a:bodyPr><a:normAutofit fontScale="50000" lnSpcReduction="20000"/></a:bodyPr>' });
+    expect(plain.style).toMatchObject({ size: 20, lineHeight: 1.2, spacing: 0.5 });
+    expect(shrunk.style).toMatchObject({ size: 10, lineHeight: 0.96, spacing: 0.8 });
+  });
+
+  it('sets East Asian and complex-script text in their own fonts, and keeps them', async () => {
+    const rPr = '<a:rPr lang="ja-JP" sz="2000"><a:latin typeface="Calibri"/><a:ea typeface="MS Gothic"/><a:cs typeface="Arial"/></a:rPr>';
+    const el = await readBody(para('', 'Latin', rPr) + para('', '日本語のテキスト', rPr));
+    expect(el.style.font).toBe('Calibri');
+    expect(el.text).toBe('<p>Latin</p><p><span style="font-family: \'Calibri\', \'MS Gothic\', sans-serif">日本語のテキスト</span></p>');
+    const xml = await slideXml(deckWith(el));
+    expect(xml).toMatch(/<a:latin typeface="Calibri"[^>]*\/><a:ea typeface="MS Gothic"[^>]*\/>[\s\S]*?<a:t>日本語/);
+    expect((await roundTrip(deckWith(el))).slides[0].elements[0].text).toBe(el.text);
+  });
+
+  it('writes paragraphs inside list items and lists inside lists at the level they\'re shown', () => {
+    const runs = htmlToRuns('<ul><li>a<p>note</p></li><ul><li>b</li></ul></ul>', {}, null, { size: 20 });
+    expect(runs.map((r) => [r.text, r.options.indentLevel || 0, !!r.options.bullet])).toEqual([['a', 0, true], ['note', 1, false], ['b', 1, true]]);
   });
 });
 

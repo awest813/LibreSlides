@@ -30,7 +30,7 @@ import { History } from './history.js';
 import { startComment } from './comments.js';
 import { pickDiagramLayout, focusDiagramText } from './diagrams.js';
 import { diagramAsShapes } from '../model/diagram-layout.js';
-import { stripInline, exec, execFontSize, caretFormat, highlightAll, effectAll, TEXT_EFFECTS } from './richtext.js';
+import { stripInline, exec, execFontSize, caretFormat, highlightAll, effectAll, TEXT_EFFECTS, indentParagraph } from './richtext.js';
 import { showShortcuts, showAbout } from './help.js';
 
 const CLIP_TYPE = 'application/x-libreslides+json';
@@ -54,7 +54,12 @@ function toggleListHtml(html, kind) {
   }
   if (!lines.length) lines.push({ html: '<br>', style: null });
   const already = top.length && top.every((n) => n.tagName === kind.toUpperCase());
-  const attr = (s) => (s ? ` style="${s.replace(/"/g, '&quot;')}"` : '');
+  // A paragraph's margin and indent give way to the list's, and a bullet's colour and size go with the bullet.
+  const drop = already ? /^--bu-/ : /^(margin-inline-start|margin-left|text-indent)\s*:/;
+  const attr = (s) => {
+    const css = (s || '').split(';').map((d) => d.trim()).filter((d) => d && !drop.test(d)).join('; ');
+    return css ? ` style="${css.replace(/"/g, '&quot;')}"` : '';
+  };
   return already
     ? lines.map((l) => `<p${attr(l.style)}>${l.html}</p>`).join('')
     : `<${kind}>${lines.map((l) => `<li${attr(l.style)}>${l.html}</li>`).join('')}</${kind}>`;
@@ -1270,7 +1275,7 @@ export class EditorScreen {
   }
 
   indent(dir) {
-    if (this.canvas.editing) this.canvas.execText(() => exec(dir > 0 ? 'indent' : 'outdent'));
+    if (this.canvas.editing) this.canvas.execText(() => indentParagraph(dir) || exec(dir > 0 ? 'indent' : 'outdent'));
   }
 
   clearFormatting() {
