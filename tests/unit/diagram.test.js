@@ -344,7 +344,7 @@ describe('untrusted diagrams', () => {
     const [a, b, c, raw] = deck.slides[0].elements.map((e) => e.diagram.source);
     expect(a).toEqual({ data: 'd', layout: 'l', style: 's', colors: 'c', look: { layout: 'cycle', colors: 'accent1', style: 'flat' } });
     expect([b, c, raw]).toEqual([undefined, undefined, undefined]);
-  });
+  }, 30000); // encodes a 4 MB part
 
   it('drops a diagram’s SmartArt parts when the pictures they need are missing, and pictures missing from its drawing', () => {
     const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
