@@ -1,5 +1,6 @@
 import DOMPurify from 'dompurify';
 import { PATH_ARGS } from '../model/shapes.js';
+import { FONT_FACES } from '../model/fonts.js';
 
 /**
  * Text in slides is HTML. Anything that comes from outside (opened files,
@@ -121,5 +122,31 @@ export function sanitizeDeck(deck) {
     s.elements = (s.elements || []).filter((el) => el.type !== 'image' || deck.media?.[el.media]);
     if (s.background?.type === 'image' && !deck.media?.[s.background.media]) s.background = null;
   }
+  sanitizeFonts(deck);
   return deck;
+}
+
+// ------------------------------------------------------------------ embedded fonts
+
+/** A font family name with only letters, digits, spaces and hyphens (as element fonts are kept), or ''. */
+export const safeFontFamily = (name) => (typeof name === 'string' ? name.replace(/[^\p{L}\p{N}\s-]/gu, '').trim().slice(0, 64) : '');
+
+const FONT_DATA = /^data:font\/(ttf|otf|woff2?);base64,[a-z0-9+/]*={0,2}$/i;
+export const isFontData = (v) => typeof v === 'string' && v.length < 17e6 && FONT_DATA.test(v);
+
+/** deck.fonts ({ family: { regular|bold|italic|boldItalic: data URL } }): only font data under safe names. */
+function sanitizeFonts(deck) {
+  if (deck.fonts == null) return;
+  const fonts = {};
+  for (const [name, faces] of Object.entries(isObject(deck.fonts) ? deck.fonts : {})) {
+    const family = safeFontFamily(name);
+    if (!family || !isObject(faces)) continue;
+    for (const face of Object.keys(FONT_FACES)) {
+      if (!Object.hasOwn(faces, face) || !isFontData(faces[face])) continue;
+      if (!Object.hasOwn(fonts, family)) fonts[family] = {};
+      fonts[family][face] = faces[face];
+    }
+  }
+  if (Object.keys(fonts).length) deck.fonts = fonts;
+  else delete deck.fonts;
 }

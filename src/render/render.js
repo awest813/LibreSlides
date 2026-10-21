@@ -4,6 +4,7 @@ import { shapePath, customPath, textInset } from '../model/shapes.js';
 import { renderChart } from './chart.js';
 import { renderMedia } from './media.js';
 import { fontStack } from '../model/fonts.js';
+import { registerDeckFonts } from './deck-fonts.js';
 
 /**
  * Renders slides to DOM at 1px = 1pt. The same renderer draws the editor
@@ -271,6 +272,7 @@ export const themeDecor = (slide, deck) => {
  *   editing – show placeholder hints on empty placeholders
  */
 export function renderSlide(slide, deck, { editing = false } = {}) {
+  registerDeckFonts(deck);
   const theme = themeById(deck.themeId);
   const { w, h } = slideSize(deck);
   const root = document.createElement('div');
