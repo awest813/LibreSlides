@@ -74,7 +74,7 @@ export function textStyle(el, theme) {
   return {
     font: s.font || (isTitle ? theme.fonts.title : theme.fonts.body),
     size: s.size || 18,
-    color: s.color || (isTitle ? 'theme:title' : el.ph === 'subtitle' ? 'theme:text' : 'theme:text'),
+    color: s.color || (isTitle ? 'theme:title' : 'theme:text'),
     bold: s.bold ?? (isTitle ? !!theme.titleBold : false),
     italic: !!s.italic,
     underline: !!s.underline,
@@ -368,6 +368,8 @@ export function renderElement(el, ctx) {
     div.append(frame);
     if (clip && border) {
       const svg = svgEl('svg', { class: 'el-svg', overflow: 'visible', width: el.w, height: el.h });
+      // Flipped with the picture, as its outline is.
+      svg.style.transform = frame.style.transform;
       svg.append(svgEl('path', { d: clip, fill: 'none', ...strokeAttrs(el.stroke, theme) }));
       div.append(svg);
     }
