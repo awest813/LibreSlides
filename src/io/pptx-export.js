@@ -658,9 +658,8 @@ export function fixParagraphs(slideXml) {
 
 /** A LibreSlides gradient (see model/deck.js) as DrawingML, faded by `opacity`. */
 export function gradFillXml(g, theme, opacity = 1) {
-  let stops = g.stops || [];
-  // PowerPoint runs path gradients from the edge (first stop) in to the centre.
-  if (g.type === 'radial') stops = stops.map((s) => ({ ...s, pos: 1 - s.pos })).reverse();
+  // (A path gradient's first stop is at its centre, as LibreSlides' radial ones are.)
+  const stops = g.stops || [];
   const gs = stops.map((s) => {
     const alpha = (s.opacity ?? 1) * opacity;
     const hex = toHex(resolveColor(s.color, theme)) || '000000';
@@ -668,7 +667,8 @@ export function gradFillXml(g, theme, opacity = 1) {
   }).join('');
   let dir;
   if (g.type === 'radial') {
-    const pct = (v) => Math.round(Math.max(0, Math.min(1, v)) * 100000);
+    // (Its centre may be outside the box.)
+    const pct = (v) => Math.round(Math.max(-2, Math.min(3, v)) * 100000);
     const cx = g.cx ?? 0.5;
     const cy = g.cy ?? 0.5;
     dir = `<a:path path="circle"><a:fillToRect l="${pct(cx)}" t="${pct(cy)}" r="${pct(1 - cx)}" b="${pct(1 - cy)}"/></a:path>`;

@@ -446,9 +446,8 @@ function fillFrom(f, scheme) {
     const r = kid(shade, 'fillToRect');
     const side = (n) => (+attr(r, n) || 0) / 100000;
     Object.assign(gradient, { type: 'radial', cx: Math.round(((side('l') + 1 - side('r')) / 2) * 100) / 100, cy: Math.round(((side('t') + 1 - side('b')) / 2) * 100) / 100 });
+    // (Its first stop is at the centre, as LibreSlides' are.)
     delete gradient.angle;
-    // PowerPoint runs path gradients from the centre (the last stop) out to the edge (the first).
-    gradient.stops = stops.map((s) => ({ ...s, pos: 1 - s.pos })).reverse();
   } else if (lin) gradient.angle = Math.round((+attr(lin, 'ang') / 60000 + 90) % 360);
   return { color: stops[0].color, alpha: 1, gradient: stops.length > 1 ? gradient : undefined };
 }
