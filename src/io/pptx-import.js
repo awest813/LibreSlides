@@ -427,7 +427,9 @@ function fillFrom(f, scheme) {
     return color ? { color, alpha: alphaOf(f) } : undefined;
   }
   if (f.localName === 'pattFill') {
-    // A pattern (see model/patterns.js), its foreground colour standing in for it.
+    // A pattern (see model/patterns.js), its foreground colour standing in for it;
+    // one that says neither which nor in what colour shows nothing (as LibreOffice has it).
+    if (!attr(f, 'prst') && !kid(f, 'fgClr')) return { color: 'none', alpha: 1 };
     const fg = colorOf(kid(f, 'fgClr'), scheme) || '#000000';
     const bg = colorOf(kid(f, 'bgClr'), scheme) || '#ffffff';
     const preset = attr(f, 'prst');
