@@ -2,6 +2,10 @@ import JSZip from 'jszip';
 import { uid, newDeck, SIZES } from '../model/deck.js';
 import { SHAPES } from '../model/shapes.js';
 import { isDarkColor } from '../model/themes.js';
+import { readChart } from './pptx-chart.js';
+import { readMedia } from './pptx-media.js';
+import { readEmbeddedFonts } from './pptx-fonts.js';
+import { EMU_PER_PT, kids, kid, path, desc, attr, rid, SCHEME_ALIAS, colorOf, alphaOf, blend, Package, addMediaTo } from './ooxml.js';
 
 /**
  * PowerPoint (.pptx) reader. Brings in what LibreSlides can edit: text boxes
@@ -11,149 +15,7 @@ import { isDarkColor } from '../model/themes.js';
  * masters are resolved onto each slide. Charts, SmartArt and video aren't
  * supported and are left out.
  */
-const EMU_PER_PT = 12700;
 const SHAPE_IDS = new Set(SHAPES.map((s) => s.id));
-const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', svg: 'image/svg+xml', bmp: 'image/bmp', webp: 'image/webp' };
-
-const xml = (s) => new DOMParser().parseFromString(s, 'application/xml');
-/** Child elements by local name (namespace prefixes vary between producers). */
-const kids = (el, name) => (el ? [...el.children].filter((c) => c.localName === name) : []);
-const kid = (el, name) => kids(el, name)[0] || null;
-const path = (el, ...names) => names.reduce((e, n) => kid(e, n), el);
-const desc = (el, name) => (el ? [...el.getElementsByTagNameNS('*', name)] : []);
-const attr = (el, name) => el?.getAttribute(name) ?? null;
-const rid = (el, name) => el?.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', name) || el?.getAttribute(`r:${name}`) || null;
-
-function resolvePath(base, target) {
-  if (target.startsWith('/')) return target.slice(1);
-  const parts = base.split('/').slice(0, -1);
-  for (const seg of target.split('/')) {
-    if (seg === '..') parts.pop();
-    else if (seg !== '.') parts.push(seg);
-  }
-  return parts.join('/');
-}
-
-const relsPath = (p) => p.replace(/([^/]+)$/, '_rels/$1.rels');
-
-// ------------------------------------------------------------------ colours
-
-function hexToHsl(hex) {
-  const n = parseInt(hex, 16);
-  const r = ((n >> 16) & 255) / 255;
-  const g = ((n >> 8) & 255) / 255;
-  const b = (n & 255) / 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const l = (max + min) / 2;
-  if (max === min) return [0, 0, l];
-  const d = max - min;
-  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-  const hh = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
-  return [hh / 6, s, l];
-}
-
-function hslToHex([hh, s, l]) {
-  const f = (n) => {
-    const k = (n + hh * 12) % 12;
-    const a = s * Math.min(l, 1 - l);
-    return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))));
-  };
-  return [f(0), f(8), f(4)].map((v) => v.toString(16).padStart(2, '0')).join('');
-}
-
-// Tint and shade work on linear (not gamma-encoded) RGB, which is why
-// PowerPoint's "tx1 tint 75%" subtitle grey is #898989 rather than #404040.
-const toLinear = (c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
-const fromLinear = (c) => (c <= 0.0031308 ? c * 12.92 : 1.055 * c ** (1 / 2.4) - 0.055);
-function mapLinear(hex, fn) {
-  const n = parseInt(hex, 16);
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
-    .map((v) => Math.round(255 * Math.max(0, Math.min(1, fromLinear(fn(toLinear(v / 255)))))).toString(16).padStart(2, '0'))
-    .join('');
-}
-
-const SCHEME_ALIAS = { tx1: 'dk1', bg1: 'lt1', tx2: 'dk2', bg2: 'lt2' };
-
-/** The colour of an element holding a colour choice (srgbClr, schemeClr…), as "#rrggbb". */
-function colorOf(holder, scheme) {
-  if (!holder) return null;
-  const c = [...holder.children].find((e) => /Clr$/.test(e.localName));
-  if (!c) return null;
-  let hex = null;
-  if (c.localName === 'srgbClr') hex = attr(c, 'val');
-  else if (c.localName === 'schemeClr') {
-    const v = attr(c, 'val');
-    hex = scheme[v] || scheme[SCHEME_ALIAS[v]] || null;
-  } else if (c.localName === 'sysClr') hex = attr(c, 'lastClr') || (attr(c, 'val') === 'window' ? 'FFFFFF' : '000000');
-  else if (c.localName === 'prstClr') hex = { black: '000000', white: 'FFFFFF', red: 'FF0000', blue: '0000FF', green: '00FF00' }[attr(c, 'val')] || '000000';
-  if (!hex || !/^[0-9a-f]{6}$/i.test(hex)) return null;
-  // Modifiers apply in document order.
-  for (const m of c.children) {
-    const v = +attr(m, 'val') / 100000;
-    if (!Number.isFinite(v)) continue;
-    if (m.localName === 'tint') hex = mapLinear(hex, (x) => x * v + (1 - v));
-    else if (m.localName === 'shade') hex = mapLinear(hex, (x) => x * v);
-    else if (m.localName === 'lumMod' || m.localName === 'lumOff') {
-      const hsl = hexToHsl(hex);
-      hsl[2] = Math.max(0, Math.min(1, m.localName === 'lumMod' ? hsl[2] * v : hsl[2] + v));
-      hex = hslToHex(hsl);
-    }
-  }
-  return `#${hex.toLowerCase()}`;
-}
-
-const alphaOf = (holder) => {
-  const c = holder && [...holder.children].find((e) => /Clr$/.test(e.localName));
-  const a = kid(c, 'alpha');
-  return a ? Math.max(0, Math.min(1, +attr(a, 'val') / 100000)) : 1;
-};
-
-/** `color` seen at `alpha` over `under` (both "#rrggbb"). */
-function blend(color, under, alpha) {
-  const p = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
-  const [a, b] = [p(color), p(under)];
-  return `#${a.map((v, i) => Math.round(v * alpha + b[i] * (1 - alpha)).toString(16).padStart(2, '0')).join('')}`;
-}
-
-// ------------------------------------------------------------------ reading the package
-
-class Package {
-  constructor(zip) {
-    this.zip = zip;
-    this.cache = new Map();
-  }
-
-  async text(p) {
-    const f = this.zip.file(p);
-    return f ? f.async('string') : null;
-  }
-
-  async doc(p) {
-    if (!this.cache.has(p)) this.cache.set(p, this.text(p).then((t) => (t ? xml(t) : null)));
-    return this.cache.get(p);
-  }
-
-  /** rId → { target path, type } for a part. */
-  async rels(p) {
-    const d = await this.doc(relsPath(p));
-    const map = {};
-    for (const r of desc(d, 'Relationship')) {
-      const target = attr(r, 'Target');
-      map[attr(r, 'Id')] = { path: attr(r, 'TargetMode') === 'External' ? target : resolvePath(p, target), type: (attr(r, 'Type') || '').split('/').pop(), external: attr(r, 'TargetMode') === 'External' };
-    }
-    return map;
-  }
-
-  async dataUrl(p) {
-    const f = this.zip.file(p);
-    if (!f) return null;
-    const ext = (p.split('.').pop() || '').toLowerCase();
-    const mime = MIME[ext];
-    if (!mime) return null; // EMF/WMF and other formats browsers can't draw
-    return `data:${mime};base64,${await f.async('base64')}`;
-  }
-}
 
 // ------------------------------------------------------------------ text
 
@@ -690,6 +552,11 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         if (!hasText && (plainBox || (paths && fill === 'none' && !stroke))) continue; // nothing to show
         slide.elements.push(el);
       } else if (name === 'pic') {
+        const media = await readMedia({ pkg, node, rels: part.rels, box: place(xfrmOf(kid(node, 'spPr'))), ctx: tctx, deck });
+        if (media) {
+          slide.elements.push(media);
+          continue;
+        }
         const blipFill = kid(node, 'blipFill');
         const blip = desc(node, 'blip')[0];
         const target = part.rels[rid(blip, 'embed')];
@@ -717,6 +584,12 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         const line = lineElement(node, place(xfrmOf(kid(node, 'spPr'))));
         if (line) slide.elements.push(line);
       } else if (name === 'graphicFrame') {
+        const uri = attr(desc(node, 'graphicData')[0], 'uri') || '';
+        if (/\/chart$/.test(uri)) {
+          const chart = await readChart({ pkg, node, rels: part.rels, box: place(xfrmOf(node)), ctx: tctx, deck });
+          if (chart) slide.elements.push(chart);
+          continue;
+        }
         const tbl = desc(node, 'tbl')[0];
         const b = place(xfrmOf(node)); // a graphic frame's <p:xfrm> sits directly inside it
         if (!tbl || !b) continue;
@@ -792,13 +665,6 @@ async function readSlide(pkg, slidePath, ctx, deck) {
   return slide;
 }
 
-function addMediaTo(deck, data) {
-  for (const [id, d] of Object.entries(deck.media)) if (d === data) return id;
-  const id = `m${uid()}`;
-  deck.media[id] = data;
-  return id;
-}
-
 /** Read a .pptx (ArrayBuffer) into a deck. */
 export async function importPptx(buffer, fallbackTitle = 'Presentation') {
   let zip;
@@ -848,6 +714,7 @@ export async function importPptx(buffer, fallbackTitle = 'Presentation') {
   const titleEl = core && desc(core, 'title')[0];
   const deck = newDeck({ title: titleEl?.textContent?.trim() || fallbackTitle, size, slides: [] });
   const ctx = { k, ox, oy, scheme, fonts, txStyles, defaultTextStyle, fontScale: 1 };
+  await readEmbeddedFonts({ pkg, pres, presRels, deck });
 
   const ids = desc(desc(pres, 'sldIdLst')[0], 'sldId');
   for (const s of ids) {

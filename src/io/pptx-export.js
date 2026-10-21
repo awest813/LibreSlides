@@ -5,6 +5,9 @@ import { themeById, resolveColor, backgroundBaseColor } from '../model/themes.js
 import { textStyle, themeDecor } from '../render/render.js';
 import { safeFileName } from '../ui/dom.js';
 import { saveFile } from './files.js';
+import { addChart } from './pptx-chart.js';
+import { addMediaElement } from './pptx-media.js';
+import { embedFonts } from './pptx-fonts.js';
 
 /**
  * PowerPoint export with pptxgenjs. Slides become real PowerPoint text boxes,
@@ -295,6 +298,15 @@ async function addElement(pptx, s, el, deck, theme) {
     return;
   }
 
+  if (el.type === 'chart') {
+    addChart(pptx, s, el, theme, g);
+    return;
+  }
+  if (el.type === 'media') {
+    await addMediaElement(pptx, s, el, deck, g);
+    return;
+  }
+
   if (el.type === 'table') {
     const t = textStyle({ ...el, type: 'text' }, theme);
     const base = { fontFace: t.font, fontSize: t.size, color: toHex(resolveColor(t.color, theme)) || '000000' };
@@ -439,6 +451,7 @@ async function postProcess(buffer, deck) {
     if (slide.hidden) xml = xml.replace(/<p:sld(\s)/, '<p:sld show="0"$1');
     zip.file(path, xml);
   }
+  await embedFonts(zip, deck);
   return zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', compression: 'DEFLATE' });
 }
 

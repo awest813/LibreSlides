@@ -1,6 +1,8 @@
 import { themeById, resolveColor, backgroundCss } from '../model/themes.js';
 import { slideSize, isTitleLayout, PLACEHOLDER_HINTS, canHoldText } from '../model/deck.js';
 import { shapePath, customPath, textInset } from '../model/shapes.js';
+import { renderChart } from './chart.js';
+import { renderMedia } from './media.js';
 import { fontStack } from '../model/fonts.js';
 
 /**
@@ -204,6 +206,8 @@ export function renderElement(el, ctx) {
   }
 
   if (el.type === 'table') div.append(renderTable(el, ctx));
+  if (el.type === 'chart') div.append(renderChart(el, ctx));
+  if (el.type === 'media') div.append(renderMedia(el, ctx));
   return div;
 }
 
