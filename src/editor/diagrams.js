@@ -6,6 +6,7 @@ import { themeById, backgroundCss } from '../model/themes.js';
 import { outlineText, parseOutline, lineAt, addNode, removeNode, promote, demote, moveUp, moveDown } from '../model/diagram-outline.js';
 import { renderElement } from '../render/render.js';
 import { exportsAsSmartArt } from '../io/pptx-diagram.js';
+import { field, select } from './fields.js';
 
 /**
  * Diagrams in the editor: the layout picker (Insert › Diagram…) and the
@@ -37,11 +38,8 @@ export async function pickDiagramLayout(deck) {
   return chosen;
 }
 
-const select = (label, options, value, onValue) => {
-  const s = h('select', {}, ...options.map((o) => h('option', { value: o.id, selected: o.id === value || null }, o.name)));
-  s.addEventListener('change', () => onValue(s.value));
-  return h('label', { class: 'pf' }, h('span', { class: 'pf-label' }, label), s);
-};
+/** A labelled list of the layouts, colours or styles ({ id, name }). */
+const choice = (label, options, value, onValue) => field(label, select(options.map((o) => [o.id, o.name]), value, onValue));
 
 /** The caret at the end of line `line` of a text area. */
 function caretToLine(area, line) {
@@ -119,10 +117,10 @@ export function diagramSection(panel, el) {
   ].filter(Boolean).join(' ');
   return h('section', { class: 'panel-section diagram-section' }, h('h3', {}, 'Diagram'),
     h('div', { class: 'pf-stack' },
-      select('Layout', DIAGRAM_LAYOUTS, d.layout, (v) => app.editDiagram((g) => { g.layout = v; })),
-      select('Colours', DIAGRAM_COLORS, d.colors, (v) => app.editDiagram((g) => { g.colors = v; })),
-      select('Style', DIAGRAM_STYLES, d.style, (v) => app.editDiagram((g) => { g.style = v; })),
-      h('label', { class: 'pf' }, h('span', { class: 'pf-label' }, 'Text'), outline),
+      choice('Layout', DIAGRAM_LAYOUTS, d.layout, (v) => app.editDiagram((g) => { g.layout = v; })),
+      choice('Colours', DIAGRAM_COLORS, d.colors, (v) => app.editDiagram((g) => { g.colors = v; })),
+      choice('Style', DIAGRAM_STYLES, d.style, (v) => app.editDiagram((g) => { g.style = v; })),
+      field('Text', outline),
       tools,
       h('small', { class: 'pf-hint' }, 'A line for each shape. Tab and Shift+Tab move a line in and out, under the shape before it.'),
       h('button', { type: 'button', class: 'btn', onclick: () => app.convertDiagramToShapes() }, 'Convert to shapes'),

@@ -1,10 +1,11 @@
 import { h, showPopover, menu, closePopover, shortcutLabel, rovingFocus } from '../ui/dom.js';
 import { icon } from '../ui/icons.js';
 import { openColorPicker } from '../ui/color-picker.js';
-import { FONTS, FONT_SIZES, fontStack, embedFontsSetting, setEmbedFontsSetting } from '../model/fonts.js';
+import { FONTS, fontStack, embedFontsSetting, setEmbedFontsSetting } from '../model/fonts.js';
 import { SHAPES, shapePath } from '../model/shapes.js';
 import { LAYOUTS, canHoldText } from '../model/deck.js';
 import { resolveColor } from '../model/themes.js';
+import { DASH_STYLES } from './fields.js';
 
 const iconFn = (n) => icon(n);
 const keep = (e) => e.preventDefault(); // keep focus (and the text selection) where it is
@@ -472,8 +473,7 @@ export class Toolbar {
   dashMenu(anchor) {
     const app = this.app;
     const current = app.firstSelected()?.stroke?.dash || 'solid';
-    showPopover(anchor, menu([['solid', 'Solid'], ['dash', 'Dash'], ['dot', 'Dot'], ['dashDot', 'Dash-dot'], ['longDash', 'Long dash']]
-      .map(([id, name]) => ({ label: name, checked: current === id, run: () => app.setStroke({ dash: id }) }))), { label: 'Dash' });
+    showPopover(anchor, menu(DASH_STYLES.map(([id, name]) => ({ label: name, checked: current === id, run: () => app.setStroke({ dash: id }) }))), { label: 'Dash' });
   }
 
   fontMenu(anchor) {

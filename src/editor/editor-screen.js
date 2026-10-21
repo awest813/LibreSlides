@@ -1,4 +1,4 @@
-import { h, toast, debounce, showPopover, menu, setFocusFallback, isPopoverOpen, pickFileInput, closePopover, shortcutLabel, downloadBlob } from '../ui/dom.js';
+import { h, toast, debounce, showPopover, menu, setFocusFallback, isPopoverOpen, pickFileInput, closePopover, shortcutLabel, downloadBlob, escapeHtml } from '../ui/dom.js';
 import { icon, LOGO_SVG } from '../ui/icons.js';
 import { openDialog, promptDialog, confirmDialog } from '../ui/dialog.js';
 import {
@@ -209,6 +209,7 @@ export class EditorScreen {
     if (save) await this.flush();
     this.saveSoon.cancel();
     this.thumbSoon.cancel();
+    cancelAnimationFrame(this.uiFrame);
     this.canvas.destroy();
     this.unsubscribe?.();
     this.presentation?.exit?.();
@@ -847,7 +848,9 @@ export class EditorScreen {
   pasteText(text) {
     const { w, h: H } = this.size;
     const lines = text.replace(/\r\n?/g, '\n').split('\n');
-    const el = { ...newTextBoxAt(w, H), text: sanitizeHtml(lines.map((l) => `<p>${escapeText(l) || '<br>'}</p>`).join('')) };
+    // A box across the middle of the slide.
+    const el = newTextBox(Math.round(w * 0.15), Math.round(H * 0.4), Math.round(w * 0.7), 60);
+    el.text = sanitizeHtml(lines.map((l) => `<p>${escapeHtml(l) || '<br>'}</p>`).join(''));
     this.addElements([el]);
     requestAnimationFrame(() => this.canvas.autoGrow(el));
   }
@@ -2098,13 +2101,4 @@ export class EditorScreen {
       },
     });
   }
-}
-
-function escapeText(s) {
-  return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-}
-
-/** A text box in the middle of the slide, for pasted text. */
-function newTextBoxAt(w, H) {
-  return { id: uid(), type: 'text', x: Math.round(w * 0.15), y: Math.round(H * 0.4), w: Math.round(w * 0.7), h: 60, rot: 0, text: '', fill: 'none', stroke: null, style: { size: 18 } };
 }
