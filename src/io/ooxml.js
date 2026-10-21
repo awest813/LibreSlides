@@ -24,6 +24,52 @@ export const desc = (el, name) => (el ? [...el.getElementsByTagNameNS('*', name)
 export const attr = (el, name) => el?.getAttribute(name) ?? null;
 export const rid = (el, name) => el?.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', name) || el?.getAttribute(`r:${name}`) || null;
 
+// ------------------------------------------------------------------ markup compatibility
+
+/**
+ * Namespaces LibreSlides reads well enough to take an mc:Choice that needs
+ * them: PowerPoint 2010 and 2013's additions (transitions, media) and Office
+ * 2010's chart style. Others (VML, chartex, a14's equations…) are left to
+ * the mc:Fallback, which is usually a picture of what the choice shows.
+ */
+const UNDERSTOOD = new Set([
+  'http://schemas.openxmlformats.org/presentationml/2006/main',
+  'http://schemas.openxmlformats.org/drawingml/2006/main',
+  'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+  'http://schemas.microsoft.com/office/powerpoint/2010/main',
+  'http://schemas.microsoft.com/office/powerpoint/2012/main',
+  'http://schemas.microsoft.com/office/drawing/2007/8/2/chart',
+]);
+const UNDERSTOOD_PREFIXES = new Set(['p', 'a', 'r', 'p14', 'p15', 'c14']);
+
+/**
+ * The branch of an mc:AlternateContent to read: the first mc:Choice whose
+ * Requires namespaces are all understood, else the mc:Fallback (null when
+ * there's neither).
+ */
+export function chooseAlternate(ac) {
+  for (const choice of kids(ac, 'Choice')) {
+    const prefixes = (attr(choice, 'Requires') || '').trim().split(/\s+/).filter(Boolean);
+    const ok = prefixes.length > 0 && prefixes.every((p) => {
+      const uri = choice.lookupNamespaceURI?.(p);
+      return uri ? UNDERSTOOD.has(uri) : UNDERSTOOD_PREFIXES.has(p);
+    });
+    if (ok) return choice;
+  }
+  return kid(ac, 'Fallback');
+}
+
+/** The child elements of `el`, with each mc:AlternateContent replaced by the children of the branch it takes. */
+export function contentOf(el, depth = 0) {
+  const out = [];
+  for (const c of el?.children || []) {
+    if (c.localName === 'AlternateContent') {
+      if (depth < 8) out.push(...contentOf(chooseAlternate(c), depth + 1));
+    } else out.push(c);
+  }
+  return out;
+}
+
 export function resolvePath(base, target) {
   if (target.startsWith('/')) return target.slice(1);
   const parts = base.split('/').slice(0, -1);

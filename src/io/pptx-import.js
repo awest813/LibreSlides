@@ -13,7 +13,8 @@ import { readEmbeddedFonts } from './pptx-fonts.js';
 import { readComments } from './pptx-comments.js';
 import { readSections } from './pptx-sections.js';
 import { readDiagram } from './pptx-diagram.js';
-import { EMU_PER_PT, kids, kid, path, desc, attr, rid, SCHEME_ALIAS, colorOf, alphaOf, blend, Package, addMediaTo } from './ooxml.js';
+import { EMU_PER_PT, kids, kid, path, desc, attr, rid, SCHEME_ALIAS, colorOf, alphaOf, blend, Package, addMediaTo, contentOf } from './ooxml.js';
+import { oleObjectOf, olePreview } from './pptx-ole.js';
 
 /**
  * PowerPoint (.pptx) reader. Brings in what LibreSlides can edit: text boxes
@@ -734,6 +735,47 @@ async function readSlide(pkg, slidePath, ctx, deck) {
     };
   };
 
+  /**
+   * A picture (p:pic) in `box` (placed on the slide), with its crop, clip,
+   * transparency and colour adjustments; `data` stands in for its own picture
+   * (an OLE object's preview from its VML drawing). Null without a picture or box.
+   */
+  const pictureElement = async (node, box, rels, data = null) => {
+    const blipFill = kid(node, 'blipFill');
+    const blip = desc(blipFill, 'blip')[0];
+    if (!data) {
+      const target = rels[rid(blip, 'embed')];
+      data = target && !target.external ? await pkg.dataUrl(target.path) : null;
+    }
+    if (!data || !box) return null;
+    const spPr = kid(node, 'spPr');
+    const descr = attr(kid(nvOf(node), 'cNvPr'), 'descr');
+    const amt = attr(kid(blip, 'alphaModFix'), 'amt');
+    const el = {
+      id: uid(), type: 'image', media: addMediaTo(deck, data), x: box.x, y: box.y, w: box.w, h: box.h, rot: box.rot,
+      flipH: box.flipH || undefined, flipV: box.flipV || undefined, alt: descr || '', fit: 'fill',
+      stroke: lineOf(kid(spPr, 'ln'), ctx.scheme, k) || { color: 'none', width: 2, dash: 'solid' },
+    };
+    const crop = cropOf(blipFill);
+    if (crop) el.crop = crop;
+    if (amt != null && +amt < 100000) el.opacity = Math.max(0, Math.round(+amt / 1000) / 100);
+    if (spPr && shadowOf(spPr, styleRefs(node, ctx))) el.shadow = true;
+    // Cropped to a shape, and colour adjustments.
+    const clipName = attr(kid(spPr, 'prstGeom'), 'prst');
+    if ((clipName && clipName !== 'rect') || kid(spPr, 'custGeom')) {
+      const outline = outlineOf(spPr, xfrmOf(spPr));
+      if (outline) el.clip = { shape: 'custom', paths: outline.paths, ...(outline.preset && { preset: outline.preset }) };
+      else if (SHAPE_IDS.has(clipName)) el.clip = { shape: clipName };
+    }
+    const adjust = {};
+    if (kid(blip, 'grayscl')) adjust.grayscale = true;
+    const lum = kid(blip, 'lum');
+    if (+attr(lum, 'bright')) adjust.brightness = Math.max(-1, Math.min(1, +attr(lum, 'bright') / 100000));
+    if (+attr(lum, 'contrast')) adjust.contrast = Math.max(-1, Math.min(1, +attr(lum, 'contrast') / 100000));
+    if (Object.keys(adjust).length) el.adjust = adjust;
+    return el;
+  };
+
   // The elements each of the slide's shapes became (by shape id), for its animations.
   const byShapeId = new Map();
   /**
@@ -751,7 +793,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
       // A click on the shape follows its link.
       if (pending.link) for (const el of made) el.link ||= pending.link;
     };
-    for (const node of container.children) {
+    for (const node of contentOf(container)) {
       settle();
       const cNvPr = kid(nvOf(node), 'cNvPr');
       pending = { id: attr(cNvPr, 'id'), from: slide.elements.length, link: linkOf(kid(cNvPr, 'hlinkClick'), part.rels) };
@@ -920,44 +962,14 @@ async function readSlide(pkg, slidePath, ctx, deck) {
           slide.elements.push(media);
           continue;
         }
-        const blipFill = kid(node, 'blipFill');
-        const blip = desc(node, 'blip')[0];
-        const target = part.rels[rid(blip, 'embed')];
-        const data = target && !target.external ? await pkg.dataUrl(target.path) : null;
         const ph = phOf(node);
         let box = xfrmOf(kid(node, 'spPr'));
         if (!box && ph) {
           const inherited = findPh(layoutPh, ph) || findPh(masterPh, ph);
           box = inherited && xfrmOf(kid(inherited.sp, 'spPr'));
         }
-        box = place(box);
-        if (!data || !box) continue;
-        const descr = attr(cNvPr, 'descr');
-        const amt = attr(kid(blip, 'alphaModFix'), 'amt');
-        const el = {
-          id: uid(), type: 'image', media: addMediaTo(deck, data), x: box.x, y: box.y, w: box.w, h: box.h, rot: box.rot,
-          flipH: box.flipH || undefined, flipV: box.flipV || undefined, alt: descr || '', fit: 'fill',
-          stroke: lineOf(kid(kid(node, 'spPr'), 'ln'), ctx.scheme, k) || { color: 'none', width: 2, dash: 'solid' },
-        };
-        const crop = cropOf(blipFill);
-        if (crop) el.crop = crop;
-        if (amt != null && +amt < 100000) el.opacity = Math.max(0, Math.round(+amt / 1000) / 100);
-        if (shadowOf(kid(node, 'spPr'), styleRefs(node, ctx))) el.shadow = true;
-        // Cropped to a shape, and colour adjustments.
-        const picPr = kid(node, 'spPr');
-        const clipName = attr(kid(picPr, 'prstGeom'), 'prst');
-        if ((clipName && clipName !== 'rect') || kid(picPr, 'custGeom')) {
-          const outline = outlineOf(picPr, xfrmOf(picPr));
-          if (outline) el.clip = { shape: 'custom', paths: outline.paths, ...(outline.preset && { preset: outline.preset }) };
-          else if (SHAPE_IDS.has(clipName)) el.clip = { shape: clipName };
-        }
-        const adjust = {};
-        if (kid(blip, 'grayscl')) adjust.grayscale = true;
-        const lum = kid(blip, 'lum');
-        if (+attr(lum, 'bright')) adjust.brightness = Math.max(-1, Math.min(1, +attr(lum, 'bright') / 100000));
-        if (+attr(lum, 'contrast')) adjust.contrast = Math.max(-1, Math.min(1, +attr(lum, 'contrast') / 100000));
-        if (Object.keys(adjust).length) el.adjust = adjust;
-        slide.elements.push(el);
+        const el = await pictureElement(node, place(box), part.rels);
+        if (el) slide.elements.push(el);
       } else if (name === 'cxnSp') {
         const spPr = kid(node, 'spPr');
         const b = place(xfrmOf(spPr));
@@ -981,6 +993,19 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         if (/\/diagram$/.test(uri)) {
           // (Not inside another diagram's drawing, which could lead back to itself.)
           if (!part.inner) await readSmartArt(node, group, part, depth);
+          continue;
+        }
+        const ole = oleObjectOf(desc(node, 'graphicData')[0]);
+        if (ole) {
+          // An embedded object: the picture of it PowerPoint shows, in the frame's box.
+          const preview = await olePreview(pkg, ole, part.rels);
+          const box = place(xfrmOf(node));
+          const data = preview?.path ? await pkg.dataUrl(preview.path) : null;
+          const el = preview && (await pictureElement(preview.pic || node, box, part.rels, data));
+          if (el) {
+            el.alt ||= attr(cNvPr, 'descr') || '';
+            slide.elements.push(el);
+          }
           continue;
         }
         const tbl = desc(node, 'tbl')[0];
