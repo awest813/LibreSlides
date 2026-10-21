@@ -6,10 +6,29 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  * of SIZES, or a size of its own ("WxH" in points: see customSize); font
  * sizes are in points too, so a slide renders at 1px = 1pt and is scaled.
  *
- * deck    { id, title, themeId, size, slides[], media{id: dataUrl}, createdAt, updatedAt }
- * slide   { id, layout, background|null, elements[], notes, transition{type, duration}, hidden }
- * element { id, type: text|shape|image|line|table|chart|media|diagram, x, y, w, h, rot, opacity, … }
- * media   { id, type: 'media', kind: 'video'|'audio', media, poster?, x, y, w, h, rot, autoplay?, loop? }
+ * deck    { id, title, themeId, size, slides[], media{id: dataUrl}, createdAt, updatedAt,
+ *           rev (bumped by each save, see storage/db.js), fonts? (embedded, see fonts.js FONT_FACES),
+ *           file? { handle, name, format, lastModified, dirty } (the file on this device it saves to) }
+ * slide   { id, layout (LAYOUTS), background|null ({ type: solid|gradient|image, … }, see
+ *           themes.js backgroundCss; null: the theme's), elements[] (back to front), notes (plain
+ *           text), transition { type (TRANSITIONS), duration (s) }, hidden, hideDecor?, section?, comments? }
+ * element { id, type: text|shape|image|line|table|chart|media|diagram, x, y, w, h (the unrotated
+ *           box), rot (degrees clockwise about its centre), opacity? (0–1), flipH?, flipV?, shadow?,
+ *           groupId?, locked?, lockRatio?, link? ("https://…", "mailto:…" or "#slide:<id>|first|last|next|prev"),
+ *           anim?, emphasis?, exit?, motion? (see ANIM_KINDS), … }
+ *   Lines have no box: { x1, y1, x2, y2, stroke, arrowStart, arrowEnd (false, true or triangle|arrow|
+ *   stealth|diamond|oval) } (see lineBox). Strokes are { color, width (pt), dash: solid|dash|dot|
+ *   dashDot|longDash }. Colours are "#rrggbb", "rgba(…)", "theme:<key>" or "none" (see themes.js).
+ *   text, shape { text (HTML), ph? (title|subtitle|body: a layout's placeholder), bullets?, fill, stroke,
+ *           style { font, size (pt), color, bold, italic, underline, strike, align, valign, lineHeight,
+ *             spacing (between paragraphs, em), inset? { l, t, r, b } (pt), wrap? (false: no wrapping),
+ *             vertical? (vert|vert270|eaVert), columns?, columnGap? (pt), warp? (see below) } }
+ *   shape  { shape (SHAPES id, or 'custom' with paths, see shapes.js), paths?, preset? { name, adj? }
+ *           (the PowerPoint preset it was opened as), textRect? { l, t, r, b } (where its text goes,
+ *           fractions of the box), arrowStart?, arrowEnd? (open freeforms: connectors) }
+ *   image  { media, alt?, fit? (fill|cover|contain), crop? { l, t, r, b } (fractions cut off), radius?,
+ *           stroke, adjust?, clip? (see below) }
+ *   media  { kind: 'video'|'audio', media, poster?, autoplay?, loop?, stroke? }
  *
  * A diagram (PowerPoint's SmartArt) keeps its text as an outline and is
  * drawn from it by diagram-layout.js, so it re-lays itself out as it's edited:
@@ -54,18 +73,20 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  * contrast? }` (-1 to 1), and be cropped to a shape, `clip: { shape, paths?,
  * preset? }` as shape elements have (an oval, a PowerPoint preset…).
  *
- * Elements can have an entrance (`anim`), an emphasis and an exit animation
- * (see ANIM_KINDS).
+ * Elements can have an entrance (`anim`), an emphasis and an exit animation,
+ * and a motion path (see ANIM_KINDS and MOTIONS).
  *
  * Elements sharing a `groupId` are a group: selected, moved and saved
- * together, next to each other in the stacking order.
+ * together, next to each other in the stacking order (see gatherGroups).
  *
  * Shapes and text boxes may also have a gradient fill, `gradient: { type:
  * 'linear'|'radial', angle (CSS degrees: 90 runs left to right) | cx, cy
  * (centre, fractions of the box), stops: [{ pos 0–1, color, opacity? }] }`,
  * with `fill` holding its first colour, or a picture fill, `fillImage:
- * { media, crop? }`. Tables are cells[row][col] of { text, fill?, valign?,
- * rowSpan?, colSpan?, merged?, borders?, margin? } (see tables.js). A cell's
+ * { media, crop? }`. Tables are { cells, colWidths, rowHeights? (fractions of
+ * the box), header? (first row in the table's `fill`), banded?, fill, stroke,
+ * style }, cells[row][col] being { text, fill?, valign?, rowSpan?, colSpan?,
+ * merged?, borders?, margin? } (see tables.js). A cell's
  * `borders: { t?, r?, b?, l? }` are strokes { color, width, dash } (colour
  * 'none': no border) for its sides, the table's `stroke` standing in for a
  * side it doesn't set; `margin: { t, r, b, l }` is the space around its text
@@ -73,9 +94,10 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  *
  * Pictures, videos and sounds live in deck.media (as data URLs) and are
  * referenced by id, so undo snapshots of the slides stay small however many
- * a deck has. So do the SmartArt parts diagrams from PowerPoint keep. A video or sound element points at its file (`media`) and at
- * the picture shown until it plays (`poster`, optional). It plays when the
- * slide appears if `autoplay`, otherwise when its control is clicked.
+ * a deck has. So do the SmartArt parts that diagrams from PowerPoint keep. A
+ * video or sound element points at its file (`media`) and at the picture
+ * shown until it plays (`poster`, optional). It plays when the slide appears
+ * if `autoplay`, otherwise when its control is clicked.
  *
  * Text may hold fields PowerPoint fills in as the slideshow runs: the
  * slide's number or today's date, `<span data-field="slidenum|datetime…">`
@@ -209,11 +231,6 @@ export const MOTIONS = [
 /** A motion animation's path (see MOTIONS). */
 export const motionPath = (m) => (m?.effect === 'custom' ? m.path : MOTIONS.find((x) => x.id === m?.effect)?.path) || [[0, 0]];
 
-/**
- * An element's animations: `anim` (its entrance), `emphasis`, `exit` and
- * `motion` (a path, with `path` for a custom one), each { effect, duration,
- * start: click|with|after, order }, sharing one playing order on the slide.
- */
 /** PowerPoint's field types LibreSlides fills in: the slide number, and the date in one of its 13 formats. */
 export const FIELD = /^(slidenum|datetime(1[0-3]|[1-9])?)$/;
 
@@ -226,13 +243,23 @@ const DATE_FORMATS = [
   { hour: 'numeric', minute: '2-digit', hour12: true }, { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true },
 ];
 
+const dateFormatters = [];
+
 /** What a field shows on slide number `n` (from 1). */
 export function fieldText(type, n, date = new Date()) {
   if (type === 'slidenum') return String(n);
   const i = Math.max(1, +type.slice(8) || 1) - 1;
-  return new Intl.DateTimeFormat(undefined, DATE_FORMATS[i]).format(date);
+  // Made once each: every slide drawn (every thumbnail) fills its fields.
+  dateFormatters[i] ||= new Intl.DateTimeFormat(undefined, DATE_FORMATS[i]);
+  return dateFormatters[i].format(date);
 }
 
+/**
+ * An element's animations: `anim` (its entrance, ANIMATIONS), `emphasis`
+ * (EMPHASES), `exit` (EXITS) and `motion` (a path, MOTIONS, with `path` for a
+ * custom one), each { effect, duration (s), start: click|with|after, order },
+ * sharing one playing order on the slide.
+ */
 export const ANIM_KINDS = ['anim', 'emphasis', 'exit', 'motion'];
 
 /** Every animation on a slide, in playing order: { el, kind, anim }. */
@@ -452,6 +479,24 @@ export function groupOf(slide, el) {
   if (!el?.groupId) return [el];
   const members = slide.elements.filter((e) => e.groupId === el.groupId);
   return members.length > 1 ? members : [el];
+}
+
+/**
+ * Elements in stacking order with each group's members next to each other,
+ * where its topmost member is (as grouping puts them). A group can come
+ * apart in a file from elsewhere, or an older version.
+ */
+export function gatherGroups(elements) {
+  const top = new Map(); // groupId → index of its topmost member
+  const members = new Map();
+  elements.forEach((e, i) => {
+    if (!e.groupId) return;
+    top.set(e.groupId, i);
+    if (!members.has(e.groupId)) members.set(e.groupId, []);
+    members.get(e.groupId).push(e);
+  });
+  if (!top.size) return elements;
+  return elements.flatMap((e, i) => (!e.groupId ? [e] : top.get(e.groupId) === i ? members.get(e.groupId) : []));
 }
 
 /** Give copied elements groups of their own, so they don't join the groups they were copied from. */
@@ -711,6 +756,7 @@ export function normalizeDeck(deck) {
     s.notes ||= '';
     s.transition ||= { type: 'none', duration: 0.6 };
     if (!s.section) delete s.section;
+    s.elements = gatherGroups(s.elements);
     for (const el of s.elements) {
       el.id ||= uid();
       el.rot ||= 0;

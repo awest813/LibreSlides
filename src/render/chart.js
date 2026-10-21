@@ -1,6 +1,7 @@
 import { resolveColor, isDarkColor } from '../model/themes.js';
 import { fontStack } from '../model/fonts.js';
 import { formatValue, isGeneral, isPercentFormat } from './number-format.js';
+import { svgEl } from './svg.js';
 
 /**
  * Charts, drawn as inline SVG filling the element's box at 1px = 1pt. Text
@@ -11,12 +12,6 @@ import { formatValue, isGeneral, isPercentFormat } from './number-format.js';
  * bar of a bar chart at the bottom and pies starting at twelve o'clock.
  */
 
-const SVG = 'http://www.w3.org/2000/svg';
-const svgEl = (tag, attrs = {}) => {
-  const el = document.createElementNS(SVG, tag);
-  for (const [k, v] of Object.entries(attrs)) if (v != null) el.setAttribute(k, v);
-  return el;
-};
 const r1 = (n) => Math.round(n * 10) / 10;
 
 // ------------------------------------------------------------------ colours

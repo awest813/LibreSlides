@@ -113,6 +113,37 @@ describe('text warps', () => {
     expect(renderElement(el, { theme: themeById('simple-light') }).querySelector('.el-warp')).toBeNull();
   });
 
+  it('draws itself again once a web font it was measured without has loaded', async () => {
+    // A bold Inter face the browser hasn't loaded yet, which loads when asked.
+    const face = { family: 'Inter', style: 'normal', weight: '700', status: 'unloaded' };
+    const loads = [];
+    document.fonts = { forEach: (fn) => [face].forEach(fn), load: (font) => { loads.push(font); face.status = 'loaded'; return Promise.resolve([face]); } };
+    try {
+      const el = newTextBox(10, 20, 400, 160);
+      el.text = '<p>Bold</p>';
+      el.style = { ...el.style, font: 'Inter', bold: true, warp: { preset: 'textWave1' } };
+      const node = renderElement(el, { theme: themeById('simple-light') });
+      document.body.append(node);
+      const first = node.querySelector('svg.el-warp');
+      await Promise.resolve();
+      await new Promise((r) => setTimeout(r));
+      expect(loads).toEqual(['700 18px "Inter", sans-serif']);
+      const second = node.querySelector('svg.el-warp');
+      expect(second).not.toBe(first);
+      expect([...second.querySelectorAll('text')].map((t) => t.textContent).join('')).toBe('Bold');
+      // Loaded now: nothing more to wait for.
+      renderElement(el, { theme: themeById('simple-light') });
+      expect(loads).toHaveLength(1);
+      node.remove();
+    } finally {
+      delete document.fonts;
+    }
+  });
+
+  it('keeps accented letters and emoji in one piece', () => {
+    expect(linesOf('<p>é 👍🏽!</p>')[0].map((c) => c.ch)).toEqual(['é', ' ', '👍🏽', '!']);
+  });
+
   it('reads CSS gradients for gradient-filled characters', () => {
     expect(gradientOfCss('linear-gradient(90deg, rgba(1, 2, 3, 0.5) 0%, #fff 100%)')).toEqual({ type: 'linear', angle: 90, stops: [{ pos: 0, color: 'rgba(1, 2, 3, 0.5)' }, { pos: 1, color: '#fff' }] });
     expect(gradientOfCss('radial-gradient(circle at 50% 25%, red 0%, blue 100%)')).toMatchObject({ type: 'radial', cx: 0.5, cy: 0.25 });

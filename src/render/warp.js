@@ -3,6 +3,7 @@ import { evaluateGeometry } from '../model/geometry.js';
 import { fontStack } from '../model/fonts.js';
 import { resolveColor } from '../model/themes.js';
 import { gradientPaint } from './render.js';
+import { svgEl } from './svg.js';
 
 /**
  * WordArt text warps (see model/warps.js), drawn as an SVG over the text box
@@ -21,19 +22,16 @@ import { gradientPaint } from './render.js';
  * hidden, and is shown instead while it's being edited (see app.css).
  */
 
-const SVG = 'http://www.w3.org/2000/svg';
-const svgEl = (tag, attrs = {}) => {
-  const el = document.createElementNS(SVG, tag);
-  for (const [k, v] of Object.entries(attrs)) if (v != null) el.setAttribute(k, v);
-  return el;
-};
-
 const DEFAULT_INSET = { l: 7.2, t: 3.6, r: 7.2, b: 3.6 }; // the text box's padding (app.css)
 const EMU = 12700; // geometry is worked out in EMUs, as the formulas expect
 
 // ------------------------------------------------------------------ text
 
 const BLOCKS = /^(P|DIV|LI|H\d|UL|OL)$/;
+
+// What reads as one character: an accented letter or an emoji sequence stays together.
+const segmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+const graphemes = (s) => (segmenter ? Array.from(segmenter.segment(s), (g) => g.segment) : [...s]);
 
 /** The look of a run of text: its box's style, then each enclosing tag's and inline style's. */
 function charStyle(node, s) {
@@ -89,7 +87,7 @@ export function textLines(body, base) {
     for (const n of node.childNodes) {
       if (n.nodeType === 3) {
         if (/^(UL|OL)$/.test(node.nodeName)) continue; // spacing between list items
-        for (const ch of n.data) {
+        for (const ch of graphemes(n.data)) {
           if (ch === '\n') breakLine(true);
           else if (ch !== '\u200b') lines.at(-1).push({ ch: ch === '\t' ? ' ' : ch, style });
         }
@@ -148,6 +146,50 @@ function measure(text, s) {
 
 // Text measured before a font arrived was measured in another.
 globalThis.document?.fonts?.addEventListener?.('loadingdone', () => measured.clear());
+
+/** Whether a web font face (a FontFace) is the one a style of text is drawn in. */
+function faceOf(face, s) {
+  if (face.family.replace(/^["']|["']$/g, '') !== s.font) return false;
+  if ((face.style === 'italic' || face.style === 'oblique') !== !!s.italic) return false;
+  const [lo, hi = lo] = String(face.weight).split(/\s+/).map((v) => (v === 'bold' ? 700 : v === 'normal' ? 400 : +v));
+  const weight = s.bold ? 700 : 400;
+  return weight >= lo && weight <= hi;
+}
+
+/**
+ * The fonts (CSS font shorthands, with the characters wanted) of some text
+ * that the browser hasn't loaded yet. The canvas measures with a fallback
+ * until a web font (the bundled ones, a deck's embedded ones) has loaded, and
+ * doesn't load it itself. (FontFaceSet.check() can't tell: Chrome says yes
+ * when the fallback is there.)
+ */
+function fontsToLoad(chars) {
+  const set = globalThis.document?.fonts;
+  if (typeof set?.load !== 'function' || typeof set.forEach !== 'function') return [];
+  const pending = [];
+  set.forEach((face) => { if (face.status !== 'loaded' && face.status !== 'error') pending.push(face); });
+  if (!pending.length) return [];
+  const text = new Map(); // font → [a style, its characters]
+  for (const { ch, style } of chars) {
+    const font = fontCss(style);
+    const seen = text.get(font);
+    if (seen) seen[1] += ch;
+    else text.set(font, [style, ch]);
+  }
+  const out = [];
+  for (const [font, [style, chs]] of text) if (pending.some((face) => faceOf(face, style))) out.push([font, chs]);
+  return out;
+}
+
+/** Draw a warp again once its fonts have loaded, in place of `svg`, so it's laid out with them. */
+function redrawWhenLoaded(svg, fonts, redraw) {
+  Promise.all(fonts.map(([font, chs]) => globalThis.document.fonts.load(font, chs))).then(() => {
+    if (!svg.isConnected) return; // drawn again since, or never shown
+    measured.clear();
+    const fresh = redraw();
+    if (fresh) svg.replaceWith(fresh);
+  }).catch(() => { /* the fallback font stays */ });
+}
 
 const advance = (ch, s) => measure(ch, s).width * s.size + (s.letterSpacing || 0);
 
@@ -315,11 +357,13 @@ function placeBetween(top, bottom, lines) {
     const band = 1 / lines.length;
     const vBase = v0 + band * (line.ascent / (line.ascent + line.descent));
     for (const c of line.chars) {
-      const [u0, u1, uc] = [c.x / line.width, (c.x + c.adv) / line.width, (c.x + c.adv / 2) / line.width];
+      // (A character with no advance, a lone combining mark, is given a sliver of one.)
+      const adv = Math.max(c.adv, 1e-3);
+      const [u0, u1, uc] = [c.x / line.width, (c.x + adv) / line.width, (c.x + adv / 2) / line.width];
       const o = at(uc, vBase);
       const [left, right, up] = [at(u0, vBase), at(u1, vBase), at(uc, v0)];
       // Across: the line's direction there, a character's advance long; down: from the line's top to its baseline.
-      const xa = [(right[0] - left[0]) / c.adv, (right[1] - left[1]) / c.adv];
+      const xa = [(right[0] - left[0]) / adv, (right[1] - left[1]) / adv];
       const ya = [(o[0] - up[0]) / line.ascent, (o[1] - up[1]) / line.ascent];
       out.push({ ...c, transform: `matrix(${r(xa[0], 1e4)} ${r(xa[1], 1e4)} ${r(ya[0], 1e4)} ${r(ya[1], 1e4)} ${r(o[0])} ${r(o[1])})` });
     }
@@ -403,7 +447,8 @@ let warpCount = 0;
  * The SVG drawing a box's text warped, for a box `bw` × `bh` with the text
  * box style `t` (render.js textStyle), or null when there's nothing to draw.
  */
-export function renderWarp(el, body, { t, theme, bw, bh }) {
+export function renderWarp(el, body, opts) {
+  const { t, theme, bw, bh } = opts;
   const warp = el.style?.warp;
   if (isPlainWarp(warp)) return null;
   const inset = el.style?.inset || DEFAULT_INSET;
@@ -414,6 +459,9 @@ export function renderWarp(el, body, { t, theme, bw, bh }) {
   if (!lines.length) return null;
   const chars = placeCharacters(warp, lines, { w, h, align: t.align, wrap: el.style?.wrap !== false });
   const svg = svgEl('svg', { class: 'el-warp', width: bw, height: bh, overflow: 'visible', 'aria-hidden': 'true' });
+  // Measured in a fallback font: laid out again when the real one has loaded (once).
+  const loading = opts.retry === false ? [] : fontsToLoad(lines.flat());
+  if (loading.length) redrawWhenLoaded(svg, loading, () => renderWarp(el, body, { ...opts, retry: false }));
   const defs = svgEl('defs');
   const area = svgEl('g', { transform: `translate(${inset.l} ${inset.t})` });
   svg.append(defs, area);

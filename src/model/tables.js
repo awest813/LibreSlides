@@ -174,12 +174,6 @@ export function unmergeCell(el, r, c) {
   return true;
 }
 
-/** Whether the block holding (r, c) spans more than one cell. */
-export const isMerged = (el, r, c) => {
-  const { cell } = anchorOf(el, r, c);
-  return (cell.rowSpan || 1) > 1 || (cell.colSpan || 1) > 1;
-};
-
 // ------------------------------------------------------------------ borders and margins
 
 /*

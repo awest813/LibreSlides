@@ -9,18 +9,12 @@ import { fontStack } from '../model/fonts.js';
 import { registerDeckFonts } from './deck-fonts.js';
 import { renderWarp } from './warp.js';
 import { isPlainWarp } from '../model/warps.js';
+import { svgEl } from './svg.js';
 
 /**
  * Renders slides to DOM at 1px = 1pt. The same renderer draws the editor
  * canvas, thumbnails, the slideshow and print, so they always match.
  */
-
-const SVG = 'http://www.w3.org/2000/svg';
-const svgEl = (tag, attrs = {}) => {
-  const el = document.createElementNS(SVG, tag);
-  for (const [k, v] of Object.entries(attrs)) if (v != null) el.setAttribute(k, v);
-  return el;
-};
 
 // ------------------------------------------------------------------ media
 
@@ -54,6 +48,16 @@ export function mediaUrl(deck, id) {
   return url;
 }
 
+/**
+ * Let go of the object URLs made for decks' pictures, videos and sounds
+ * (each holds its file in memory), once nothing shown uses them: when the
+ * app moves between the start screen and a presentation.
+ */
+export function releaseMediaUrls() {
+  for (const { data, url } of blobUrls.values()) if (url !== data) URL.revokeObjectURL(url);
+  blobUrls.clear();
+}
+
 // ------------------------------------------------------------------ text
 
 /** The effective text style of an element: its own settings over the theme's defaults. */
@@ -64,7 +68,7 @@ export function textStyle(el, theme) {
   return {
     font: s.font || (isTitle ? theme.fonts.title : theme.fonts.body),
     size: s.size || 18,
-    color: s.color || (isTitle ? 'theme:title' : el.ph === 'subtitle' ? 'theme:text' : 'theme:text'),
+    color: s.color || (isTitle ? 'theme:title' : 'theme:text'),
     bold: s.bold ?? (isTitle ? !!theme.titleBold : false),
     italic: !!s.italic,
     underline: !!s.underline,
@@ -358,6 +362,8 @@ export function renderElement(el, ctx) {
     div.append(frame);
     if (clip && border) {
       const svg = svgEl('svg', { class: 'el-svg', overflow: 'visible', width: el.w, height: el.h });
+      // Flipped with the picture, as its outline is.
+      svg.style.transform = frame.style.transform;
       svg.append(svgEl('path', { d: clip, fill: 'none', ...strokeAttrs(el.stroke, theme) }));
       div.append(svg);
     }
@@ -494,6 +500,9 @@ export function renderThumb(slide, deck, width) {
   frame.className = 'slide-thumb';
   frame.style.width = `${width}px`;
   frame.style.height = `${Math.round(h * scale)}px`;
+  // The browser lays out and paints a thumbnail only once it's on screen: a long
+  // filmstrip holds a whole slide's worth of DOM per slide.
+  frame.style.contentVisibility = 'auto';
   const s = renderSlide(slide, deck);
   s.style.transform = `scale(${scale})`;
   s.style.transformOrigin = '0 0';

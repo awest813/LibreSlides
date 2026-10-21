@@ -101,5 +101,3 @@ export const TEMPLATES = [
     ]),
   },
 ];
-
-export const templateById = (id) => TEMPLATES.find((t) => t.id === id);
