@@ -213,6 +213,9 @@ function route() {
 }
 
 window.addEventListener('libreslides:db-blocked', () => toast('Close other LibreSlides tabs to finish updating.', { timeout: 10000 }));
+window.addEventListener('libreslides:db-outdated', () => toast('LibreSlides was updated in another tab. Reload this tab to keep saving.', {
+  type: 'error', timeout: 60000, action: { label: 'Reload', run: () => location.reload() },
+}));
 
 syncThemeColor();
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', syncThemeColor);

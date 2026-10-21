@@ -5,6 +5,9 @@
   "description": "An offline-first presentation editor (like Google Slides or PowerPoint) that runs entirely in the browser as an installable static site.",
   "type": "module",
   "license": "MIT",
+  "engines": {
+    "node": ">=22.12"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
