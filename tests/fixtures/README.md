@@ -26,3 +26,21 @@ instructions – except for the composite glyph's instructions, which libeot
 gets wrong (it does so for PowerPoint's own files too). LibreSlides' decoder
 gives back the original's tables byte for byte, bar the head table's
 checkSumAdjustment.
+
+## pictures/
+
+Pictures in the formats LibreSlides converts when it opens a PowerPoint file
+(see `src/io/pictures.js`), used by `tests/unit/pictures.test.js`. All were
+made for these tests by `make-picture-fixtures.py` (needs Pillow, ImageMagick
+and LibreOffice), so they're part of LibreSlides under its MIT license:
+
+- `*.tif`: one 40 × 30 test picture (coloured quarters and a gradient that's
+  half see-through at the right) as TIFF in the ways the decoder handles:
+  LZW and Deflate with the horizontal predictor, PackBits (big-endian),
+  RGBA, 16-bit samples, bilevel, a 4-bit palette, tiles and planar
+  samples. `tiff-pixels.json` has some of each one's pixels as Pillow reads
+  them.
+- `drawing.emf`, `drawing.wmf`: an SVG drawing (a rectangle, an ellipse, a
+  curve, a triangle, the word "Metafile" and a small bitmap) saved as EMF and
+  WMF by LibreOffice. The WMF also carries an EMF copy in its comments, as
+  Office's do; the tests read it both ways.

@@ -1,4 +1,4 @@
-import { downloadBlob, safeFileName } from '../ui/dom.js';
+import { downloadBlob, safeFileName, toast } from '../ui/dom.js';
 import { normalizeDeck, pruneMedia, uid } from '../model/deck.js';
 import { sanitizeDeck } from './sanitize.js';
 
@@ -60,6 +60,7 @@ export async function importFile(file) {
   if (ext === 'pptx' || ext === 'potx' || ext === 'ppsx') {
     const { importPptx } = await import('./pptx-import.js');
     const deck = await importPptx(await file.arrayBuffer(), file.name.replace(/\.[^.]+$/, ''));
+    if (deck.importNotes?.includes('picture')) toast('Some pictures in this file couldn’t be read. They’re shown as placeholders.', { timeout: 6000 });
     return normalizeDeck(sanitizeDeck(deck));
   }
   if (ext === 'lslides' || ext === 'json') {

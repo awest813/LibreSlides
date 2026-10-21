@@ -1277,5 +1277,7 @@ async function readPresentation(pkg, fallbackTitle) {
   // Dark presentations get the dark theme, so new slides match (a picture background says nothing either way).
   const firstBg = deck.slides[0].background;
   if (firstBg && firstBg.type !== 'image' && isDarkColor(firstBg.color || firstBg.from)) deck.themeId = 'simple-dark';
+  // What couldn't be brought in as it was, for the person opening it (not saved with the deck).
+  if (pkg.notes.size) Object.defineProperty(deck, 'importNotes', { value: [...pkg.notes], configurable: true });
   return deck;
 }

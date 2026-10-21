@@ -12,6 +12,9 @@ export const EMU_PER_PT = 12700;
 export const emu = (pt) => Math.round(pt * EMU_PER_PT);
 export const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', svg: 'image/svg+xml', bmp: 'image/bmp', webp: 'image/webp' };
 
+/** Picture formats browsers can't show, converted when a file is read (see pictures.js). */
+const CONVERTED = new Set(['emf', 'wmf', 'tif', 'tiff', 'emz', 'wmz']);
+
 export const xml = (s) => new DOMParser().parseFromString(s, 'application/xml');
 /** Child elements by local name (namespace prefixes vary between producers). */
 export const kids = (el, name) => (el ? [...el.children].filter((c) => c.localName === name) : []);
@@ -246,6 +249,7 @@ export class Package {
     this.used = 0; // bytes unpacked so far
     this.cache = new Map();
     this.urls = new Map();
+    this.notes = new Set(); // what couldn't be brought in as it was ('picture')
   }
 
   /**
@@ -294,20 +298,36 @@ export class Package {
 
   /**
    * A part as a data URL, of type `mime` or else the one its extension says;
-   * null when there's no such part or browsers can't draw it (EMF, WMF…).
-   * Read once however often it's asked for (a master's logo, on every slide).
+   * null when there's no such part. Pictures browsers can't draw (TIFF, WMF,
+   * EMF) are converted (see pictures.js), and one that can't be read is a
+   * placeholder (noted in `notes`). Read once however often it's asked for
+   * (a master's logo, on every slide).
    */
   dataUrl(p, mime = MIME[(String(p).split('.').pop() || '').toLowerCase()]) {
-    if (!mime || !this.zip.file(p)) return Promise.resolve(null);
-    const key = `${mime} ${p}`;
+    if (!this.zip.file(p)) return Promise.resolve(null);
+    const ext = (String(p).split('.').pop() || '').toLowerCase();
+    if (!mime && !CONVERTED.has(ext)) return Promise.resolve(null);
+    const key = `${mime || 'convert'} ${p}`;
     if (!this.urls.has(key)) {
       // A picture or video too big to keep is left out, as long as the package as a whole isn't.
-      this.urls.set(key, this.bytes(p).then((b) => `data:${mime};base64,${toBase64(b)}`, (err) => {
+      this.urls.set(key, this.bytes(p).then((b) => (mime ? `data:${mime};base64,${toBase64(b)}` : this.converted(b)), (err) => {
         if (err.code === 'too-big' && !this.full) return null;
         throw err;
       }));
     }
     return this.urls.get(key);
+  }
+
+  /** A TIFF or metafile as PNG or SVG (the converters are loaded when first needed), else the placeholder. */
+  async converted(bytes) {
+    const { convertPicture, PICTURE_PLACEHOLDER } = await import('./pictures.js');
+    try {
+      return await convertPicture(bytes);
+    } catch (err) {
+      console.warn('Couldn’t read a picture', err);
+      this.notes.add('picture');
+      return PICTURE_PLACEHOLDER;
+    }
   }
 }
 
