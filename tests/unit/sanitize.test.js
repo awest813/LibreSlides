@@ -12,9 +12,11 @@ describe('untrusted presentations', () => {
     }
   });
 
-  it('keeps a paragraph\'s direction, and nothing else in its place', () => {
-    expect(sanitizeHtml('<ul dir="rtl"><li style="color: red">a</li></ul>')).toBe('<ul dir="rtl"><li style="color: red">a</li></ul>');
-    expect(sanitizeHtml('<p dir="sideways" style="margin-top: 4px">a</p>')).toBe('<p style="margin-top: 4px">a</p>');
+  it('keeps a bullet\'s colour and size and a paragraph\'s direction, and nothing else of the kind', () => {
+    expect(sanitizeHtml('<ul dir="rtl"><li style="--bu-color: #7030a0; --bu-size: 75%; color: red">a</li></ul>'))
+      .toBe('<ul dir="rtl"><li style="--bu-color: #7030a0; --bu-size: 75%; color: red">a</li></ul>');
+    expect(sanitizeHtml('<p dir="sideways" style="--bu-color: javascript; --x: 1; --bu-size: 1e9px; margin-top: 4px">a</p>')).toBe('<p style="margin-top: 4px">a</p>');
+    expect(sanitizeHtml('<p style="--anything: red">a</p>')).toBe('<p>a</p>');
   });
 
   it('only lets a number through as a gradient angle', () => {

@@ -25,6 +25,9 @@
 .el-text-body ul ul, .el-text-body ol ul { list-style-type: circle; }
 .el-text-body ul ul ul { list-style-type: square; }
 .el-text-body > * + *, .el-text-body li + li, .el-text-body li > ul, .el-text-body li > ol, .el-text-body li > p { margin-top: var(--para-gap, 0); }
+/* A bullet's own colour and size (from PowerPoint), else its list item's: each list item's alone, not passed down to lists inside it */
+.el-text-body li, .cell-body li { --bu-color: initial; --bu-size: initial; }
+.el-text-body li::marker, .cell-body li::marker { color: var(--bu-color); font-size: var(--bu-size); }
 .el-text-body a, .cell-body a { color: inherit; text-decoration: underline; }
 /* WordArt warps: the text drawn bent (render/warp.js) over the plain text, which shows instead while it's edited */
 .el-warp { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; writing-mode: horizontal-tb; white-space: pre; }

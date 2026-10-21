@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
 import { buildPptx, htmlToRuns, toHex, fixParagraphs } from '../../src/io/pptx-export.js';
 import { importPptx } from '../../src/io/pptx-import.js';
+import { bulletGlyph } from '../../src/io/pptx-text.js';
 import { renderElement } from '../../src/render/render.js';
 import { themeById } from '../../src/model/themes.js';
 import { TEMPLATES } from '../../src/model/templates.js';
@@ -210,7 +211,43 @@ describe('PowerPoint paragraphs, bullets and lists', () => {
   const run = (text, rPr = '<a:rPr lang="en-US" sz="2000"/>') => `<a:r>${rPr}<a:t>${text}</a:t></a:r>`;
   const para = (pPr, text, rPr) => `<a:p>${pPr}${text == null ? '' : run(text, rPr)}</a:p>`;
 
+  it('shows symbol fonts\' bullets as the characters they look like, and writes them back in Wingdings', async () => {
+    expect(bulletGlyph('l', 'Wingdings')).toBe('●');
+    expect(bulletGlyph('\uf0a7', 'Wingdings')).toBe('▪');
+    expect(bulletGlyph('Ø', 'Wingdings')).toBe('➢');
+    expect(bulletGlyph('ü', 'Wingdings')).toBe('✓');
+    expect(bulletGlyph('\uf0b7', 'Symbol')).toBe('•');
+    expect(bulletGlyph('\uf075', 'Wingdings 3')).toBe('▶');
+    expect(bulletGlyph('✭', 'Wingdings')).toBe('✭'); // Unicode already
+    expect(bulletGlyph('–', 'Arial')).toBe('–');
+    expect(bulletGlyph('\uf0e9', 'Some Font')).toBe('•'); // a private character nothing can show
+    const el = await readBody(para('<a:pPr marL="342900" indent="-342900"><a:buFont typeface="Wingdings" pitchFamily="2" charset="2"/><a:buChar char="v"/></a:pPr>', 'Diamond')
+      + para('<a:pPr marL="342900" indent="-342900"><a:buFont typeface="Wingdings"/><a:buChar char="&#xF0D8;"/></a:pPr>', 'Arrow'));
+    expect(el.text).toContain("<ul style=\"list-style-type: '❖ '; padding-inline-start: 27px\">");
+    expect(el.text).toContain("<ul style=\"list-style-type: '➢ '; padding-inline-start: 27px\">");
+    const xml = await slideXml(deckWith(el));
+    expect(xml).toMatch(/<a:buFont typeface="Wingdings" pitchFamily="2" charset="2"\/><a:buChar char="v"\/>/);
+    expect(xml).toMatch(/<a:buFont typeface="Wingdings" pitchFamily="2" charset="2"\/><a:buChar char="Ø"\/>/);
+  });
 
+  it('gives bullets their own colour and size, else their paragraph\'s first run\'s, and writes them back', async () => {
+    const red = '<a:rPr lang="en-US" sz="2000"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></a:rPr>';
+    // The list style gives bullets a colour; the second paragraph's follow its text instead, the third's its red text.
+    const lstStyle = '<a:lstStyle><a:lvl1pPr marL="317500" indent="-317500"><a:buClr><a:srgbClr val="7030A0"/></a:buClr><a:buChar char="•"/></a:lvl1pPr></a:lstStyle>';
+    const el = await readBody(
+      para('<a:pPr><a:buSzPct val="75000"/></a:pPr>', 'Purple')
+      + para('<a:pPr><a:buClrTx/></a:pPr>', 'Black')
+      + para('<a:pPr><a:buClrTx/></a:pPr>', 'Red', red),
+      { lstStyle },
+    );
+    expect(el.style.color).toBe('#000000');
+    expect(el.text).toBe('<ul><li style="--bu-color: #7030a0; --bu-size: 75%">Purple</li><li>Black</li><li style="color: #ff0000">Red</li></ul>');
+    const xml = await slideXml(deckWith(el));
+    expect(xml).toMatch(/<a:buClr><a:srgbClr val="7030A0"\/><\/a:buClr><a:buSzPct val="75000"\/><a:buChar/);
+    expect(xml.match(/<a:buClr>/g)).toHaveLength(1); // the others follow their text
+    const back = (await roundTrip(deckWith(el))).slides[0].elements[0];
+    expect(back.text).toBe(el.text);
+  });
 
   it('starts a list at the level of its first paragraph, without empty items above it', async () => {
     const el = await readBody([1, 1, 2].map((lvl) => para(`<a:pPr marL="${742950 + (lvl - 1) * 400050}" lvl="${lvl}" indent="-285750"><a:buChar char="•"/></a:pPr>`, `Level ${lvl}`)).join(''));

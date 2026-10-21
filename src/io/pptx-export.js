@@ -15,6 +15,7 @@ import { writeComments } from './pptx-comments.js';
 import { writeSections } from './pptx-sections.js';
 import { exportsAsSmartArt, writeDiagram } from './pptx-diagram.js';
 import { xmlText, emu } from './ooxml.js';
+import { symbolBullet } from './pptx-text.js';
 import { diagramAsShapes } from '../model/diagram-layout.js';
 
 /**
@@ -276,7 +277,8 @@ const NUMBER_STYLES = { 'lower-alpha': 'alphaLcPeriod', 'upper-alpha': 'alphaUcP
 
 /**
  * A list's bullet for pptxgenjs: numbered (with its style and first number),
- * or a bullet character of its own.
+ * or a bullet character of its own; with the character in Wingdings for a
+ * symbol that has one there (see symbolBullet).
  */
 function listBullet(list) {
   const type = list.style?.listStyleType || '';
@@ -289,7 +291,7 @@ function listBullet(list) {
   // A string bullet ('– '): its first character.
   const ch = /^["'](.)/u.exec(type)?.[1];
   if (!ch || ch.codePointAt(0) > 0xffff) return { bullet: true };
-  return { bullet: { characterCode: ch.codePointAt(0).toString(16).padStart(4, '0').toUpperCase() } };
+  return { bullet: { characterCode: ch.codePointAt(0).toString(16).padStart(4, '0').toUpperCase() }, symbol: symbolBullet(ch) };
 }
 
 /** A length in an inline style in points (1px is 1pt): px, pt, or em of `size`; null when unset or in other units. */
@@ -300,7 +302,7 @@ function lengthOf(css, prop, size) {
 
 /**
  * Paragraph settings pptxgenjs can't write (margins and indents, direction,
- * spacing set to none) travel in a tab
+ * the bullet's colour, size and font, spacing set to none) travel in a tab
  * stop's alignment as "x-ls-" and hex-coded JSON, and are written into the
  * paragraph's a:pPr afterwards (see paraWithExtras).
  */
@@ -399,7 +401,7 @@ export function htmlToRuns(html, base = {}, links = null, box = {}) {
     }
   };
   const visitList = (list, level, from) => {
-    const { bullet } = listBullet(list);
+    const { bullet, symbol } = listBullet(list);
     const listStart = from + insetOf(list);
     for (const item of list.children) {
       // A list straight inside a list (as browsers indent) is the next level down.
@@ -409,7 +411,7 @@ export function htmlToRuns(html, base = {}, links = null, box = {}) {
       const own = ownBlocks(item);
       // The bullet hangs where it's drawn: just before the text, at most a list's usual inset (1.25em) away.
       const hang = Math.min(textStart - from, 1.25 * sizeOf(item));
-      collect(item, { own, bullet, level, marL: textStart, indent: -hang, align: blockAlign(item) });
+      collect(item, { own, bullet, symbol, level, marL: textStart, indent: -hang, align: blockAlign(item) });
       visitBlocks(own, level + 1, textStart);
     }
   };
@@ -434,6 +436,16 @@ export function htmlToRuns(html, base = {}, links = null, box = {}) {
     if (marL || para.indent || para.bullet) Object.assign(extras, { marL, indent: Math.max(-marL, para.indent) });
     if (el.closest('[dir]')?.getAttribute('dir') === 'rtl') extras.rtl = true;
     if (ownGaps) Object.assign(extras, { spcBef: Math.round(gaps[i] * 10) / 10, spcAft: 0 });
+    if (para.bullet) {
+      // A bullet takes its paragraph's first run's colour and size, unless it has its own (see textBody in the reader).
+      const first = runs.find((r) => r.text)?.options || {};
+      const color = toHex(styleValue(css, '--bu-color') || '') || toHex(el.style?.color || '');
+      if (color && color !== (first.color || toHex(base.color || ''))) extras.buClr = color;
+      const scale = (parseFloat(styleValue(css, '--bu-size')) || 100) / 100;
+      const pct = (sizeOf(el) * scale) / (first.fontSize || sizeOf(el));
+      if (Math.abs(pct - 1) > 0.01) extras.buSzPct = Math.round(Math.max(0.25, Math.min(4, pct)) * 100000);
+      if (para.symbol) Object.assign(extras, { buFont: para.symbol.font, buChar: para.symbol.char });
+    }
     if (!runs.length) runs.push({ text: '', options: toRunOptions(base) });
     runs.forEach((r, k) => {
       const options = { ...r.options, ...pOpts };
@@ -751,10 +763,18 @@ function paraWithExtras(pPr) {
   const lnSpc = take('lnSpc');
   let spcBef = take('spcBef');
   let spcAft = take('spcAft');
+  let clr = take('buClrTx', 'buClr');
+  let size = take('buSzTx', 'buSzPct', 'buSzPts');
+  let font = take('buFontTx', 'buFont');
+  let bullet = take('buNone', 'buAutoNum', 'buChar', 'buBlip');
   const pts = (v) => `<a:spcPts val="${Math.round(Math.max(0, Math.min(1584, v)) * 100)}"/>`;
   if (Number.isFinite(x.spcBef)) spcBef = `<a:spcBef>${pts(x.spcBef)}</a:spcBef>`;
   if (Number.isFinite(x.spcAft)) spcAft = `<a:spcAft>${pts(x.spcAft)}</a:spcAft>`;
-  return `<a:pPr${attrs}>${lnSpc}${spcBef}${spcAft}${inner}</a:pPr>`;
+  if (/^[0-9A-F]{6}$/i.test(x.buClr || '')) clr = `<a:buClr><a:srgbClr val="${x.buClr.toUpperCase()}"/></a:buClr>`;
+  if (Number.isFinite(x.buSzPct)) size = `<a:buSzPct val="${Math.round(x.buSzPct)}"/>`;
+  if (typeof x.buFont === 'string') font = `<a:buFont typeface="${xmlText(x.buFont)}" pitchFamily="2" charset="2"/>`;
+  if (typeof x.buChar === 'string' && bullet.startsWith('<a:buChar')) bullet = `<a:buChar char="${xmlText(x.buChar)}"/>`;
+  return `<a:pPr${attrs}>${lnSpc}${spcBef}${spcAft}${clr}${size}${font}${bullet}${inner}</a:pPr>`;
 }
 
 /**

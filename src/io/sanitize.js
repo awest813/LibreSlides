@@ -21,6 +21,22 @@ const TEXT_CONFIG = {
 
 const UNSAFE_STYLE = /url\s*\(|expression\s*\(|image(-set)?\s*\(|cross-fade\s*\(|element\s*\(|@import|\\/i;
 
+/**
+ * Custom properties a style may set: a bullet's own colour and size (see
+ * app.css), with values that are only that. Any other is taken out.
+ */
+const CUSTOM_PROPS = {
+  '--bu-color': (v) => !!safeColor(v),
+  '--bu-size': (v) => /^\d{1,3}(\.\d+)?%$/.test(v),
+};
+function cleanCustomProps(style) {
+  if (!style.includes('--')) return style;
+  return style.split(';').map((decl) => decl.trim()).filter((decl) => {
+    const m = /^(--[\w-]*)\s*:\s*(.*)$/s.exec(decl);
+    return decl && (!m || (Object.hasOwn(CUSTOM_PROPS, m[1]) && CUSTOM_PROPS[m[1]](m[2])));
+  }).join('; ');
+}
+
 let hooked = false;
 function ensureHooks() {
   if (hooked) return;
@@ -28,6 +44,11 @@ function ensureHooks() {
   DOMPurify.addHook('afterSanitizeAttributes', (node) => {
     // No external resources from inline styles (CSS escapes could spell url( in disguise); links open in a new tab.
     if (node.hasAttribute?.('style') && UNSAFE_STYLE.test(node.getAttribute('style'))) node.removeAttribute('style');
+    if (node.hasAttribute?.('style')) {
+      const style = cleanCustomProps(node.getAttribute('style'));
+      if (style.trim()) node.setAttribute('style', style);
+      else node.removeAttribute('style');
+    }
     // Text direction: right to left, left to right or worked out from the text.
     if (node.hasAttribute?.('dir') && !['rtl', 'ltr', 'auto'].includes(node.getAttribute('dir').toLowerCase())) node.removeAttribute('dir');
     if (node.hasAttribute?.('data-field') && !FIELD.test(node.getAttribute('data-field'))) node.removeAttribute('data-field');

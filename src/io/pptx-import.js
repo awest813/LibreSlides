@@ -13,6 +13,7 @@ import { readEmbeddedFonts } from './pptx-fonts.js';
 import { readComments } from './pptx-comments.js';
 import { readSections } from './pptx-sections.js';
 import { readDiagram } from './pptx-diagram.js';
+import { bulletGlyph } from './pptx-text.js';
 import { EMU_PER_PT, kids, kid, path, desc, attr, rid, SCHEME_ALIAS, colorOf, alphaOf, blend, Package, addMediaTo } from './ooxml.js';
 
 /**
@@ -148,6 +149,16 @@ function paraProps(pPr, ctx) {
     p.bullet = 'ul';
     p.bulletChar = attr(kid(pPr, 'buChar'), 'char') || undefined;
   }
+  // The bullet's own colour, size and font, or (null) the text's.
+  if (kid(pPr, 'buClr')) p.bulletColor = colorOf(kid(pPr, 'buClr'), ctx.scheme);
+  else if (kid(pPr, 'buClrTx')) p.bulletColor = null;
+  if (kid(pPr, 'buSzPct')) p.bulletSize = { pct: pctOf(attr(kid(pPr, 'buSzPct'), 'val')) };
+  else if (kid(pPr, 'buSzPts')) p.bulletSize = { px: (+attr(kid(pPr, 'buSzPts'), 'val') / 100) * ctx.k * ctx.fontScale };
+  else if (kid(pPr, 'buSzTx')) p.bulletSize = null;
+  if (kid(pPr, 'buFont')) {
+    const face = attr(kid(pPr, 'buFont'), 'typeface');
+    p.bulletFont = face === '+mj-lt' ? ctx.fonts.major : face === '+mn-lt' ? ctx.fonts.minor : face;
+  } else if (kid(pPr, 'buFontTx')) p.bulletFont = null;
   // Where the text starts (marL) and where its first line or bullet starts from there (indent: less than 0 hangs).
   for (const key of ['marL', 'indent']) if (attr(pPr, key) != null) p[key] = ptOf(attr(pPr, key)) * ctx.k;
   if (attr(pPr, 'rtl') != null) p.rtl = isTrue(attr(pPr, 'rtl'));
@@ -208,7 +219,9 @@ function commonest(values) {
  * (margin-top: the one before's space after and its own space before),
  * margins and indents (margin-inline-start and text-indent) and direction
  * (dir). List levels are nested lists, each as far in as PowerPoint puts its
- * text (padding-inline-start). A level with no list above it is a list of
+ * text (padding-inline-start); a list item is coloured and sized as its
+ * first run, so its bullet is, unless the bullet has a colour (--bu-color)
+ * or size (--bu-size) of its own. A level with no list above it is a list of
  * its own, set in, and paragraphs without bullets inside a list stay in it,
  * so its numbering goes on after them.
  */
@@ -262,7 +275,9 @@ function textBody(txBody, ctx, { chain = [], defaults = {}, base: fixedBase = nu
     const bullet = first && (props.bullet === 'ul' || props.bullet === 'ol') ? props.bullet : null;
     const marL = props.marL || 0;
     const indent = props.indent || 0;
-    const fontSize = baseSize;
+    // Formatting a list item takes from its first run (and its bullet with it).
+    const own = bullet ? { ...base, color: first.props.color, size: first.props.size } : base;
+    const fontSize = own.size || baseSize;
     const css = [];
     if (props.align && !uniform) css.push(`text-align: ${props.align}`);
     if (para.linePx) css.push(`line-height: ${px(para.linePx)}`);
@@ -270,7 +285,7 @@ function textBody(txBody, ctx, { chain = [], defaults = {}, base: fixedBase = nu
     // The space above it, where the box's (in em of the text size it's in) isn't right.
     const gapCss = (size) => (i && Math.abs(para.gap - spacing * size) > 0.5 ? [`margin-top: ${px(para.gap)}`] : []);
     const dir = props.rtl ? ' dir="rtl"' : '';
-    const inner = runs.map((r) => (r.br ? '<br>' : spanFor(r.text, r.props, base))).join('') || '<br>';
+    const inner = runs.map((r) => (r.br ? '<br>' : spanFor(r.text, r.props, own))).join('') || '<br>';
     if (!bullet) {
       // Numbering goes on after empty paragraphs, and starts again after one with text at its level or above.
       if (first) counters.length = Math.min(counters.length, lvl);
@@ -283,8 +298,9 @@ function textBody(txBody, ctx, { chain = [], defaults = {}, base: fixedBase = nu
       out.push(`<p${attrs(dir, css)}>${inner}</p>`);
       return;
     }
+    const buSize = props.bulletSize ? props.bulletSize.pct ?? props.bulletSize.px / fontSize : 1;
     // A bullet hangs left of the text (at marL + indent), or sits there with the text after it.
-    const textStart = Math.max(marL, marL + indent + fontSize * 0.75);
+    const textStart = Math.max(marL, marL + indent + fontSize * buSize * 0.75);
     closeTo(lvl + 1);
     const { style: listCss, start: firstNumber } = listStyle(props, stack.some((s) => s.lvl < lvl));
     const key = `${bullet}|${listCss}|${firstNumber}`;
@@ -293,6 +309,10 @@ function textBody(txBody, ctx, { chain = [], defaults = {}, base: fixedBase = nu
     counters.length = Math.min(counters.length, lvl + 1);
     const count = counters[lvl]?.key === key ? counters[lvl] : (counters[lvl] = { key, next: firstNumber });
     const number = count.next++;
+    if (own.color && own.color !== base.color) css.push(`color: ${own.color}`);
+    if (Math.abs(fontSize - baseSize) > 0.4) css.push(`font-size: ${px(fontSize)}`);
+    if (props.bulletColor && props.bulletColor !== own.color) css.push(`--bu-color: ${props.bulletColor}`);
+    if (Math.abs(buSize - 1) > 0.01) css.push(`--bu-size: ${Math.round(buSize * 100)}%`);
     if (top?.lvl === lvl) {
       css.push(...gapCss(fontSize));
       if (Math.abs(textStart - top.start) > 0.5) css.push(`margin-inline-start: ${px(textStart - top.start)}`);
@@ -319,15 +339,16 @@ const numberingCss = (type = '') => (/^alphaLc/.test(type) ? 'lower-alpha' : /^a
 
 /**
  * A list's own style, and the first number of a numbered one: the
- * numbering style, or the bullet character. Round bullets are the default,
- * but a list inside another needs saying so (app.css makes those hollow).
+ * numbering style, or the bullet character (a symbol font's as the Unicode
+ * character that looks like it). Round bullets are the default, but a list
+ * inside another needs saying so (app.css makes those hollow).
  */
 function listStyle(props, nested) {
   if (props.bullet === 'ol') {
     const css = numberingCss(props.numbering?.type);
     return { style: css ? `list-style-type: ${css}` : '', start: Math.max(1, props.numbering?.start || 1) };
   }
-  const ch = props.bulletChar;
+  const ch = bulletGlyph(props.bulletChar, props.bulletFont);
   if (!ch || ch === '•') return { style: nested && ch ? 'list-style-type: disc' : '', start: 1 };
   if (/['"\\<>&;]/.test(ch)) return { style: '', start: 1 };
   return { style: `list-style-type: '${ch} '`, start: 1 };
