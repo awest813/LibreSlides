@@ -17,6 +17,7 @@ import {
 import { anchorOf, insertRow, insertCol, deleteRow, deleteCol, mergeCells, unmergeCell, blockRange, setBorders, setMargins } from '../model/tables.js';
 import { themeById, resolveColor } from '../model/themes.js';
 import { FONT_SIZES } from '../model/fonts.js';
+import { cleanWarp } from '../model/warps.js';
 import { textStyle } from '../render/render.js';
 import { sanitizeHtml, sanitizeElement, sectionName } from '../io/sanitize.js';
 import { readImageFile } from '../io/images.js';
@@ -1095,6 +1096,20 @@ export class EditorScreen {
         if (el.cells) for (const row of el.cells) for (const cell of row) cell.text = effectAll(cell.text, css);
       }
     });
+  }
+
+  /** Bend the text of the box being edited or the selected boxes into a WordArt shape (see model/warps.js), or straighten it (null). */
+  setWarp(warp, { coalesce = null } = {}) {
+    const c = this.canvas;
+    const els = (c.editing ? [c.find(c.editing.id)].filter(Boolean) : this.textElements()).filter(canHoldText);
+    if (!els.length) return;
+    this.change(() => {
+      for (const el of els) {
+        el.style = { ...(el.style || {}) };
+        if (warp) el.style.warp = cleanWarp(warp) || undefined;
+        if (!el.style.warp) delete el.style.warp;
+      }
+    }, { coalesce });
   }
 
   /** Insert the slide number or today's date: at the caret while typing, else in a new box at the foot of the slide. */

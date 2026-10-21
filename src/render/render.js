@@ -6,6 +6,8 @@ import { renderChart } from './chart.js';
 import { renderMedia } from './media.js';
 import { fontStack } from '../model/fonts.js';
 import { registerDeckFonts } from './deck-fonts.js';
+import { renderWarp } from './warp.js';
+import { isPlainWarp } from '../model/warps.js';
 
 /**
  * Renders slides to DOM at 1px = 1pt. The same renderer draws the editor
@@ -111,6 +113,7 @@ function textLayout(box, body, s) {
 function textBox(el, ctx) {
   const box = document.createElement('div');
   box.className = 'el-textbox';
+  let [bw, bh] = [el.w, el.h];
   if (el.type === 'shape') {
     // Preset shapes from PowerPoint say where their text goes; LibreSlides' own shapes keep it inside the outline.
     const ins = el.textRect || (({ x, y, b }) => ({ l: x, r: x, t: y, b }))(textInset(el.shape));
@@ -118,15 +121,26 @@ function textBox(el, ctx) {
     box.style.right = `${ins.r * el.w}px`;
     box.style.top = `${ins.t * el.h}px`;
     box.style.bottom = `${ins.b * el.h}px`;
+    [bw, bh] = [el.w * (1 - ins.l - ins.r), el.h * (1 - ins.t - ins.b)];
   }
-  applyTextStyle(box, el, ctx.theme);
+  const t = applyTextStyle(box, el, ctx.theme);
   const body = document.createElement('div');
   body.className = 'el-text-body';
   if (el.bullets) body.classList.add('has-bullets');
   body.innerHTML = el.text || '';
-  textLayout(box, body, el.style || {});
+  const s = el.style || {};
+  const warped = !isPlainWarp(s.warp);
+  // Warped text is drawn on its own (see warp.js), so it's laid out flat and across.
+  textLayout(box, body, warped ? { ...s, vertical: undefined, columns: undefined } : s);
   if (ctx.editing && el.ph && !el.text) body.dataset.placeholder = PLACEHOLDER_HINTS[el.ph] || '';
   box.append(body);
+  // Its fields hold their text before it's drawn (see fillFields).
+  if (warped && ctx.slideNo) fillFieldsWith(body, ctx.slideNo);
+  const warp = warped && renderWarp(el, body, { t, theme: ctx.theme, bw, bh });
+  if (warp) {
+    box.classList.add('is-warped');
+    box.append(warp);
+  }
   return box;
 }
 
@@ -436,7 +450,7 @@ export function renderSlide(slide, deck, { editing = false, live = false } = {})
   root.style.width = `${w}px`;
   root.style.height = `${h}px`;
   root.style.background = backgroundCss(slide.background, theme, (id) => mediaUrl(deck, id));
-  const ctx = { theme, deck, editing, live };
+  const ctx = { theme, deck, editing, live, slideNo: slideNumber(slide, deck) };
   const decor = document.createElement('div');
   decor.className = 'slide-decor';
   for (const d of decorElements(slide, theme, w, h)) decor.append(renderElement(d, ctx));
@@ -446,11 +460,17 @@ export function renderSlide(slide, deck, { editing = false, live = false } = {})
   return root;
 }
 
+/** A slide's number in its deck (1 for one that isn't in it). */
+export const slideNumber = (slide, deck) => (deck.slides || []).findIndex((s) => s.id === slide.id) + 1 || 1;
+
 /** Put the slide's number and today's date into its fields (see model/deck.js). */
 export function fillFields(root, slide, deck) {
-  const n = (deck.slides || []).findIndex((s) => s.id === slide.id) + 1;
+  fillFieldsWith(root, slideNumber(slide, deck));
+}
+
+function fillFieldsWith(root, n) {
   for (const f of root.querySelectorAll('[data-field]')) {
-    if (FIELD.test(f.dataset.field)) f.textContent = fieldText(f.dataset.field, n || 1);
+    if (FIELD.test(f.dataset.field)) f.textContent = fieldText(f.dataset.field, n);
   }
 }
 

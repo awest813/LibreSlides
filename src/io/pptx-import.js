@@ -4,6 +4,7 @@ import { SHAPES } from '../model/shapes.js';
 import { normalizeTable, NO_BORDER, CELL_MARGIN, SIDES } from '../model/tables.js';
 import { evaluateGeometry, definitionFromXml } from '../model/geometry.js';
 import PRESETS from '../model/preset-shapes.js';
+import { cleanWarp } from '../model/warps.js';
 import { isDarkColor } from '../model/themes.js';
 import { readChart } from './pptx-chart.js';
 import { readAnimations } from './pptx-timing.js';
@@ -279,6 +280,23 @@ function textLayoutOf(bodyAttr, k) {
     if (bodyAttr('spcCol') != null) out.columnGap = Math.round((+bodyAttr('spcCol') / 12700) * k * 10) / 10;
   }
   return out;
+}
+
+/**
+ * WordArt's text warp (see model/warps.js) from the first of a:bodyPr
+ * elements that has one, or null for none (or one that leaves text plain).
+ */
+function warpOf(bodyPrs) {
+  const body = bodyPrs.find((b) => kid(b, 'prstTxWarp'));
+  const warp = kid(body, 'prstTxWarp');
+  if (!warp) return null;
+  const adjust = {};
+  for (const gd of kids(kid(warp, 'avLst'), 'gd')) {
+    const m = /^val\s+(-?\d+)$/.exec((attr(gd, 'fmla') || '').trim());
+    if (m) adjust[attr(gd, 'name')] = +m[1];
+  }
+  const fromWordArt = attr(body, 'fromWordArt');
+  return cleanWarp({ preset: attr(warp, 'prst'), adjust, stretch: fromWordArt === '1' || fromWordArt === 'true' });
 }
 
 /** A font name made safe to put in a style attribute. */
@@ -824,6 +842,8 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         const bodyAttr = (name) => bodyPrs.map((b) => attr(b, name)).find((v) => v != null) ?? null;
         const anchor = bodyAttr('anchor') || (isTitle ? 'ctr' : 't');
         const layout = textLayoutOf(bodyAttr, k);
+        const warp = warpOf(bodyPrs);
+        if (warp) layout.warp = warp;
         const text = txBody ? textBody(txBody, lctx, { chain, defaults }) : { html: '', base: defaults };
         const hasText = !!txBody?.textContent.trim();
         const { base } = text;

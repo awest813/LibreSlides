@@ -133,6 +133,44 @@ describe('PowerPoint text', () => {
     expect(back).toMatchObject({ inset: { l: 0, t: 10, r: 20, b: 5 }, wrap: false, vertical: 'vert270', columns: 2, columnGap: 18 });
   });
 
+  it('reads WordArt text warps, leaving plain ones out', async () => {
+    const box = newTextBox(10, 10, 400, 200);
+    box.text = '<p>Arched</p>';
+    const back = await roundTrip(deckWith(box, { ...box, id: 'b2' }, { ...box, id: 'b3' }), async (zip) => {
+      const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+      let n = 0;
+      // Three text boxes: an arch with its adjust value, PowerPoint's "no transform" and a plain warp at its default.
+      const warps = [
+        '<a:prstTxWarp prst="textArchUp"><a:avLst><a:gd name="adj" fmla="val 12000000"/></a:avLst></a:prstTxWarp>',
+        '<a:prstTxWarp prst="textNoShape"><a:avLst/></a:prstTxWarp>',
+        '<a:prstTxWarp prst="textPlain"><a:avLst><a:gd name="adj" fmla="val 50000"/></a:avLst></a:prstTxWarp>',
+      ];
+      zip.file('ppt/slides/slide1.xml', xml.replace(/<a:bodyPr([^>]*?)\/>|<a:bodyPr([^>]*)>/g, (tag, a1, a2) => {
+        const w = warps[n++] || '';
+        return a1 != null ? `<a:bodyPr${a1} fromWordArt="1">${w}</a:bodyPr>` : `<a:bodyPr${a2} fromWordArt="1">${w}`;
+      }));
+    });
+    const [arch, none, plain] = back.slides[0].elements;
+    expect(arch.style.warp).toEqual({ preset: 'textArchUp', adjust: { adj: 12000000 }, stretch: true });
+    expect(none.style.warp).toBeUndefined();
+    expect(plain.style.warp).toBeUndefined();
+  });
+
+  it('writes text warps first in the text box settings, and reads them back', async () => {
+    const box = newTextBox(10, 10, 400, 200);
+    box.text = '<p>Wavy</p>';
+    box.style.warp = { preset: 'textWave1', adjust: { adj1: 15000, adj2: -2000 }, stretch: true };
+    const shape = newShape('ellipse', 100, 100, 300, 200);
+    shape.text = '<p>Round</p>';
+    shape.style = { ...shape.style, warp: { preset: 'textCircle' } };
+    const xml = await slideXml(deckWith(box, shape));
+    expect(xml).toMatch(/<a:bodyPr [^>]*fromWordArt="1"[^>]*><a:prstTxWarp prst="textWave1"><a:avLst><a:gd name="adj1" fmla="val 15000"\/><a:gd name="adj2" fmla="val -2000"\/><\/a:avLst><\/a:prstTxWarp>/);
+    expect(xml).toMatch(/<a:bodyPr (?![^>]*fromWordArt)[^>]*><a:prstTxWarp prst="textCircle"><a:avLst\/><\/a:prstTxWarp>/);
+    const [a, b] = (await roundTrip(deckWith(box, shape))).slides[0].elements;
+    expect(a.style.warp).toEqual(box.style.warp);
+    expect(b.style.warp).toEqual({ preset: 'textCircle' });
+  });
+
   it('keeps plain text plain next to bold text', async () => {
     const box = newTextBox(10, 10);
     box.text = '<p><b>12k</b></p><p>Weekly active users</p>';
