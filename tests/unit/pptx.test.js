@@ -178,6 +178,22 @@ describe('PowerPoint text', () => {
     expect(el.style.bold).toBe(true);
     expect(el.text).toContain('<span style="font-weight: 400">Weekly active users</span>');
   });
+
+  it('writes formatting a run turns off as off, so it doesn\'t take the box\'s', async () => {
+    const box = newTextBox(10, 10);
+    box.style = { ...box.style, bold: true, italic: true, underline: true };
+    box.text = '<p>all <span style="font-weight: 400; font-style: normal; text-decoration: none">plain</span></p>';
+    const runs = (await slideXml(deckWith(box))).match(/<a:r><a:rPr[^>]*>/g);
+    expect(runs[0]).toMatch(/ b="1"/);
+    expect(runs[1]).toMatch(/ b="0"/);
+    expect(runs[1]).toMatch(/ i="0"/);
+    expect(runs[1]).toMatch(/ u="none"/);
+    expect(runs[1]).not.toMatch(/ b="1"| i="1"| u="sng"/);
+    const el = (await roundTrip(deckWith(box))).slides[0].elements[0];
+    expect(el.style.bold).toBe(true);
+    expect(el.text).toContain('plain');
+    expect(el.text).toMatch(/font-weight: 400[^"]*font-style: normal[^"]*text-decoration: none">plain/);
+  });
 });
 
 describe('PowerPoint pictures and shapes', () => {
@@ -368,6 +384,68 @@ describe('PowerPoint tables', () => {
       zip.file('ppt/slides/slide1.xml', xml.replace(/ anchor="ctr"/g, ''));
     });
     expect(back.slides[0].elements[0].cells.flat().map((c) => c.valign)).toEqual(['top', 'top', 'top', 'top']);
+  });
+
+  it('gives a row as tall as its text (h="0") its share of the frame, and tables the deck\'s font', async () => {
+    const table = newTable(3, 2, 100, 300, 400, 120);
+    const back = await roundTrip(deckWith(table), async (zip) => {
+      const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+      zip.file('ppt/slides/slide1.xml', xml.replace(/<a:tr h="\d+"/, '<a:tr h="0"').replace(/<a:(latin|ea|cs) typeface="[^"]*"[^>]*\/>/g, ''));
+      const theme = await zip.file('ppt/theme/theme1.xml').async('string');
+      zip.file('ppt/theme/theme1.xml', theme.replace(/(<a:minorFont><a:latin typeface=")[^"]*/, '$1Georgia'));
+    });
+    const t = back.slides[0].elements[0];
+    expect(t.rowHeights).toHaveLength(3);
+    expect(t.rowHeights.every((v) => v > 0.2)).toBe(true);
+    expect(t.style.font).toBe('Georgia');
+  });
+});
+
+describe('PowerPoint files with odd content', () => {
+  it('leaves out shapes hidden in PowerPoint\'s selection pane', async () => {
+    const shown = Object.assign(newTextBox(10, 10), { text: '<p>shown</p>' });
+    const hidden = Object.assign(newTextBox(10, 100), { text: '<p>hidden</p>' });
+    const back = await roundTrip(deckWith(shown, hidden), async (zip) => {
+      const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+      zip.file('ppt/slides/slide1.xml', xml.split('<p:sp>').map((sp) => (sp.includes('>hidden<') ? sp.replace(/<p:cNvPr id="(\d+)"/, '<p:cNvPr id="$1" hidden="1"') : sp)).join('<p:sp>'));
+    });
+    const texts = back.slides[0].elements.map((e) => e.text || '');
+    expect(texts.some((t) => t.includes('shown'))).toBe(true);
+    expect(texts.some((t) => t.includes('hidden'))).toBe(false);
+  });
+
+  it('opens a presentation without slides with a blank one', async () => {
+    const back = await roundTrip(deckWith(newTextBox(10, 10)), async (zip) => {
+      const xml = await zip.file('ppt/presentation.xml').async('string');
+      zip.file('ppt/presentation.xml', xml.replace(/<p:sldIdLst>[\s\S]*?<\/p:sldIdLst>/, '<p:sldIdLst/>'));
+    });
+    expect(back.slides).toHaveLength(1);
+    expect(back.slides[0].elements).toEqual([]);
+  });
+});
+
+describe('PowerPoint packages', () => {
+  // Only the first bytes of a JPEG are looked at.
+  const JPEG = `data:image/jpeg;base64,${btoa(String.fromCharCode(0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4))}`;
+
+  it('stores each picture once, under its real format, with content types only for parts there are', async () => {
+    const deck = newDeck({ slides: [] });
+    deck.media = { logo: PNG, photo: JPEG };
+    for (const id of ['a', 'b', 'c']) {
+      deck.slides.push({ id, layout: 'blank', background: { type: 'image', media: 'photo' }, elements: [Object.assign(newImage('logo', 50, 50), { x: 10, y: 10 })], notes: '', transition: { type: 'none', duration: 0.6 }, hidden: false });
+    }
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deck)));
+    const media = Object.keys(zip.files).filter((n) => /^ppt\/media\/./.test(n));
+    expect(media.filter((n) => n.endsWith('.png'))).toHaveLength(1);
+    expect(media.filter((n) => /\.jpe?g$/.test(n))).toHaveLength(1);
+    expect(media).toHaveLength(2);
+    for (const n of Object.keys(zip.files).filter((f) => f.endsWith('.rels'))) {
+      const rels = await zip.file(n).async('string');
+      for (const [, target] of rels.matchAll(/Target="\.\.\/media\/([^"]+)"/g)) expect(zip.file(`ppt/media/${target}`)).toBeTruthy();
+    }
+    const types = await zip.file('[Content_Types].xml').async('string');
+    for (const [, part] of types.matchAll(/PartName="\/([^"]+)"/g)) expect(zip.file(part)).toBeTruthy();
+    expect(types).toMatch(/Extension="jpg"/i);
   });
 });
 

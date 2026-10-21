@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { uid, newDeck, SIZES, customSize, slideSize, FIELD } from '../model/deck.js';
+import { uid, newDeck, newSlide, SIZES, customSize, slideSize, FIELD } from '../model/deck.js';
 import { SHAPES } from '../model/shapes.js';
 import { normalizeTable, NO_BORDER, CELL_MARGIN, SIDES } from '../model/tables.js';
 import { evaluateGeometry, definitionFromXml } from '../model/geometry.js';
@@ -756,6 +756,8 @@ async function readSlide(pkg, slidePath, ctx, deck) {
       const cNvPr = kid(nvOf(node), 'cNvPr');
       pending = { id: attr(cNvPr, 'id'), from: slide.elements.length, link: linkOf(kid(cNvPr, 'hlinkClick'), part.rels) };
       const name = node.localName;
+      // Shapes hidden in PowerPoint's selection pane don't show (nor does anything in a hidden group).
+      if (isTrue(attr(cNvPr, 'hidden'))) continue;
       if (name === 'grpSp') {
         // Groups nested deeper than anyone draws them are left out.
         if (depth >= MAX_GROUP_DEPTH) continue;
@@ -990,7 +992,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         // The table's own text style: the formatting of its last row (the header is often set apart).
         const rows = kids(tbl, 'tr');
         const sample = { ...runProps(desc(rows[0], 'rPr')[0], tctx), ...runProps(desc(rows[rows.length - 1], 'rPr')[0], tctx) };
-        const tableStyle = { size: Math.round(sample.size || 18 * k), color: sample.color || defaultText, font: sample.font, bold: false };
+        const tableStyle = { size: Math.round(sample.size || 18 * k), color: sample.color || defaultText, font: sample.font || ctx.fonts.minor, bold: false };
         // The table style's colours, written into the cells so the table looks the same and stays that way.
         const look = tableLook(tblPr, ctx, rows.length, cols.length);
         const cells = rows.map((tr, r) => kids(tr, 'tc').map((tc, c) => {
@@ -1026,7 +1028,15 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         const width = Math.max(...cells.map((r) => r.length));
         for (const row of cells) while (row.length < width) row.push({ text: '' });
         const stroke = tableBorders(cells, look);
-        const heights = rows.map((tr) => +attr(tr, 'h') || 0);
+        // Row heights are least heights; a row of 0 is as tall as its text, so it takes
+        // its share of what the other rows leave of the frame (at least a line).
+        const heights = rows.map((tr) => Math.max(0, ((+attr(tr, 'h') || 0) / EMU_PER_PT) * k));
+        const unsized = heights.filter((v) => !v).length;
+        if (unsized) {
+          const line = tableStyle.size * 1.2 + CELL_MARGIN.t + CELL_MARGIN.b;
+          const share = Math.max(line, (b.h - heights.reduce((s, v) => s + v, 0)) / unsized);
+          heights.forEach((v, i) => { if (!v) heights[i] = share; });
+        }
         const allHeights = heights.reduce((s, v) => s + v, 0);
         const table = {
           id: uid(), type: 'table', x: b.x, y: b.y, w: b.w, h: b.h, rot: 0,
@@ -1036,7 +1046,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
           fill: `#${(ctx.scheme.accent1 || '4472c4').toLowerCase()}`, stroke,
           style: { size: tableStyle.size, color: tableStyle.color, font: tableStyle.font },
         };
-        if (allHeights && heights.every((v) => v > 0)) table.rowHeights = heights.map((v) => v / allHeights);
+        if (allHeights > 0 && heights.length === cells.length) table.rowHeights = heights.map((v) => v / allHeights);
         slide.elements.push(normalizeTable(table));
       }
     }
@@ -1222,7 +1232,11 @@ async function readPresentation(pkg, fallbackTitle) {
       console.warn('Skipped a slide that could not be read', err);
     }
   }
-  if (!deck.slides.length) throw badFile('No slides could be read from this file.');
+  if (!deck.slides.length) {
+    if (ids.length) throw badFile('No slides could be read from this file.');
+    // A presentation with no slides yet (a template, say) opens with a blank one.
+    deck.slides.push(newSlide('blank', deck));
+  }
   readSections(pres, deck.slides, sldIds);
   // Links to particular slides, now that the slides have ids.
   const idOfPath = new Map(slidePaths.map((p, i) => [p, deck.slides[i]?.id]));
