@@ -109,6 +109,7 @@ export class Toolbar {
         { label: 'Line', icon: 'line', run: () => app.canvas.setTool({ type: 'line' }) },
         { label: 'Arrow', icon: 'arrow', run: () => app.canvas.setTool({ type: 'line', arrow: true }) },
         'separator',
+        { label: 'Comment', icon: 'comment', shortcut: 'Mod-Alt-M', run: () => app.insertComment() },
         { label: 'New slide', icon: 'plus', shortcut: 'Mod-M', run: () => app.addSlide() },
       ],
       Format: () => {

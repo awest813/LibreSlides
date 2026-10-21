@@ -4,6 +4,7 @@ import { slideSize, boxOf, moveElement, canHoldText, newTextBox, newShape, newLi
 import { themeById } from '../model/themes.js';
 import { sanitizeHtml } from '../io/sanitize.js';
 import { tidyHtml, normalizeFontTags, exec } from './richtext.js';
+import { drawCommentMarkers } from './comments.js';
 
 /**
  * The editing surface: the current slide at the zoom level, with a selection
@@ -256,6 +257,7 @@ export class SlideCanvas {
         ov.append(h('div', { class: r === this.marquee ? 'marquee' : 'draft-box', style: { left: `${r.x * s}px`, top: `${r.y * s}px`, width: `${r.w * s}px`, height: `${r.h * s}px` } }));
       }
     }
+    drawCommentMarkers(this, ov);
   }
 
   // ---------------------------------------------------------------- pointer input

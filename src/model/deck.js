@@ -33,6 +33,13 @@ import { DEFAULT_THEME, themeById } from './themes.js';
  * a deck has. A video or sound element points at its file (`media`) and at
  * the picture shown until it plays (`poster`, optional). It plays when the
  * slide appears if `autoplay`, otherwise when its control is clicked.
+ *
+ * A slide may carry review comments, as PowerPoint's do. They're plain text
+ * (never HTML), shown only in the editor, and kept through undo, copies and
+ * .pptx files (see io/pptx-comments.js):
+ *   slide.comments = [{ id, author, initials?, date (ISO string), text,
+ *     x?, y? (where its marker sits, in slide points; none: on the whole slide),
+ *     resolved?, replies?: [{ id, author, initials?, date, text }] }]
  */
 export const SIZES = {
   '16:9': { w: 960, h: 540, label: 'Widescreen (16:9)' },
@@ -235,6 +242,9 @@ export const canHoldText = (el) => el.type === 'text' || el.type === 'shape';
 
 const deepCopy = (v) => JSON.parse(JSON.stringify(v));
 
+/** "Ada Lovelace" → "AL": the initials PowerPoint shows for a comment's author. */
+export const initialsOf = (name) => String(name).split(/\s+/).map((w) => w.match(/[\p{L}\p{N}]/u)?.[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
+
 export function cloneElement(el) {
   return { ...deepCopy(el), id: uid() };
 }
@@ -243,6 +253,9 @@ export function cloneSlide(slide) {
   const copy = deepCopy(slide);
   copy.id = uid();
   copy.elements = copy.elements.map((e) => ({ ...e, id: uid() }));
+  if (Array.isArray(copy.comments)) {
+    copy.comments = copy.comments.map((c) => ({ ...c, id: uid(), ...(c.replies ? { replies: c.replies.map((r) => ({ ...r, id: uid() })) } : {}) }));
+  }
   return copy;
 }
 

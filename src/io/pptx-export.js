@@ -8,6 +8,7 @@ import { saveFile } from './files.js';
 import { addChart } from './pptx-chart.js';
 import { addMediaElement, finishMedia } from './pptx-media.js';
 import { embedFonts } from './pptx-fonts.js';
+import { writeComments } from './pptx-comments.js';
 
 /**
  * PowerPoint export with pptxgenjs. Slides become real PowerPoint text boxes,
@@ -522,6 +523,7 @@ async function postProcess(buffer, deck, allMarks) {
     zip.file(path, xml);
   }
   await finishMedia(zip, deck);
+  await writeComments(zip, deck);
   await embedFonts(zip, deck);
   return zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', compression: 'DEFLATE' });
 }

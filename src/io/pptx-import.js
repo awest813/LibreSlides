@@ -8,6 +8,7 @@ import { isDarkColor } from '../model/themes.js';
 import { readChart } from './pptx-chart.js';
 import { readMedia } from './pptx-media.js';
 import { readEmbeddedFonts } from './pptx-fonts.js';
+import { readComments } from './pptx-comments.js';
 import { EMU_PER_PT, kids, kid, path, desc, attr, rid, SCHEME_ALIAS, colorOf, alphaOf, blend, Package, addMediaTo } from './ooxml.js';
 
 /**
@@ -808,6 +809,10 @@ async function readSlide(pkg, slidePath, ctx, deck) {
       slide.notes = kids(kid(sp, 'txBody'), 'p').map((p) => desc(p, 't').map((t) => t.textContent).join('')).join('\n').trim();
     }
   }
+
+  // Comments, classic or Microsoft 365's threaded kind (see pptx-comments.js).
+  const comments = await readComments(pkg, slidePath, rels, ctx);
+  if (comments.length) slide.comments = comments;
 
   // Give the slide a layout name that matches what's on it, for "Apply layout".
   const roles = slide.elements.map((e) => e.ph).filter(Boolean);
