@@ -4,6 +4,7 @@ import { openColorPicker } from '../ui/color-picker.js';
 import { THEMES, resolveColor, backgroundBaseColor } from '../model/themes.js';
 import { SIZES, slideSize, LAYOUTS, TRANSITIONS, ANIMATIONS, EMPHASES, EXITS, MOTIONS, slideAnimations, CHART_KINDS, newSlide, fillPlaceholders, canHoldText, slideText } from '../model/deck.js';
 import { SHAPES } from '../model/shapes.js';
+import { BORDER_PRESETS, cellMargin } from '../model/tables.js';
 import { renderThumb, textStyle } from '../render/render.js';
 import { seriesColor, pointColor } from '../render/chart.js';
 import { commentsPanel } from './comments.js';
@@ -402,6 +403,7 @@ export class SidePanel {
         checkbox('Header row', el.header, (v) => upd((e) => { e.header = v; })),
         checkbox('Banded rows', el.banded, (v) => upd((e) => { e.banded = v; })),
         h('p', { class: 'pf-hint' }, `${el.cells.length} rows × ${el.cells[0]?.length || 0} columns. Double-click the table to type in it; Tab moves between cells.`)));
+      out.push(cellSection(this, el, theme));
     }
 
     if (single && el.type === 'chart' && el.chart) out.push(...chartSections(el, theme, upd));
@@ -409,6 +411,35 @@ export class SidePanel {
     out.push(section('Arrange', checkbox('Lock position', els.every((e) => e.locked), (v) => upd((e) => { e.locked = v; }))));
     return out;
   }
+}
+
+// ------------------------------------------------------------------ table cells
+
+const DASH_STYLES = [['solid', 'Solid'], ['dash', 'Dashed'], ['dot', 'Dotted'], ['dashDot', 'Dash dot'], ['longDash', 'Long dash']];
+
+/**
+ * Borders and margins for the cells being edited (from the cursor's cell to
+ * the end of the selection), or the whole table. The border's colour, weight
+ * and style are a pen kept by the panel; a choice of borders draws with it.
+ */
+function cellSection(panel, el, theme) {
+  const app = panel.app;
+  const st = el.stroke?.color && el.stroke.color !== 'none' && el.stroke.width ? el.stroke : null;
+  const pen = (panel.borderPen ||= { color: st?.color || 'theme:text', width: st?.width || 1, dash: 'solid' });
+  const borders = select([['', 'Choose…'], ...BORDER_PRESETS], '', (v) => {
+    if (v) app.setCellBorders(v, pen);
+  });
+  const at = app.tableCells();
+  const m = cellMargin(at ? el.cells[at.range.r0][at.range.c0] : null);
+  const margin = (label, side) => field(label, numberInput(m[side], (v) => app.setCellMargins({ [side]: v }), { min: 0, max: 200, step: 0.5, suffix: 'pt' }));
+  return section('Cells',
+    field('Borders', borders),
+    h('div', { class: 'pf-row' },
+      colorButton('Border colour', pen.color, theme, (v) => { pen.color = v; panel.update(true); }),
+      numberInput(pen.width, (v) => { pen.width = v; }, { min: 0.25, max: 20, step: 0.25, suffix: 'pt' })),
+    field('Border style', select(DASH_STYLES, pen.dash, (v) => { pen.dash = v; })),
+    h('div', { class: 'pf-grid' }, margin('Left margin', 'l'), margin('Right margin', 'r'), margin('Top margin', 't'), margin('Bottom margin', 'b')),
+    h('p', { class: 'pf-hint' }, 'Applies to the cells you’re typing in (or have selected), or to the whole table.'));
 }
 
 // ------------------------------------------------------------------ charts

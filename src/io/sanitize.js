@@ -1,6 +1,6 @@
 import DOMPurify from 'dompurify';
 import { PATH_ARGS } from '../model/shapes.js';
-import { normalizeTable } from '../model/tables.js';
+import { normalizeTable, SIDES, CELL_MARGIN } from '../model/tables.js';
 import { isMediaData } from './media-files.js';
 import { CHART_KINDS, uid, ANIM_KINDS, ANIMATIONS, EMPHASES, EXITS, MOTIONS, FIELD } from '../model/deck.js';
 import { FONT_FACES } from '../model/fonts.js';
@@ -63,6 +63,27 @@ export const safeColor = (v) => (typeof v === 'string' && COLOR.test(v.trim()) ?
 
 const isObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const fraction = (v) => (Number.isFinite(v) ? Math.max(0, Math.min(0.99, v)) : 0);
+const DASHES = ['solid', 'dash', 'dot', 'dashDot', 'longDash'];
+
+/** A table cell's own borders and margins: safe colours, known dashes and sensible numbers, or nothing. */
+function cleanCellLook(c) {
+  if (c.borders != null) {
+    const b = isObject(c.borders) ? c.borders : {};
+    const borders = {};
+    for (const side of SIDES) {
+      const s = b[side];
+      const color = isObject(s) && safeColor(s.color);
+      if (!color) continue;
+      borders[side] = { color, width: Number.isFinite(s.width) ? Math.max(0, Math.min(50, s.width)) : 1, dash: DASHES.includes(s.dash) ? s.dash : 'solid' };
+    }
+    if (Object.keys(borders).length) c.borders = borders;
+    else delete c.borders;
+  }
+  if (c.margin != null) {
+    if (isObject(c.margin)) c.margin = Object.fromEntries(SIDES.map((side) => [side, Number.isFinite(c.margin[side]) ? Math.max(0, Math.min(200, c.margin[side])) : CELL_MARGIN[side]]));
+    else delete c.margin;
+  }
+}
 
 /** Clean an element from an untrusted source (file, backup, clipboard) in place. */
 export function sanitizeElement(el) {
@@ -77,6 +98,7 @@ export function sanitizeElement(el) {
         c.text = sanitizeHtml(c.text);
         if (c.fill != null) c.fill = safeColor(c.fill);
         if (c.valign != null && !['top', 'middle', 'bottom'].includes(c.valign)) delete c.valign;
+        cleanCellLook(c);
       }
     }
     for (const key of ['colWidths', 'rowHeights']) {

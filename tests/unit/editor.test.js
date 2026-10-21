@@ -7,7 +7,7 @@ vi.mock('../../src/storage/db.js', () => ({
 }));
 
 import { EditorScreen } from '../../src/editor/editor-screen.js';
-import { newDeck, newSlide, newShape, newTextBox } from '../../src/model/deck.js';
+import { newDeck, newSlide, newShape, newTextBox, newTable } from '../../src/model/deck.js';
 
 // jsdom lacks these.
 globalThis.ResizeObserver ||= class { observe() {} disconnect() {} unobserve() {} };
@@ -139,6 +139,34 @@ describe('editor: side panel', () => {
     fill.dispatchEvent(new Event('change'));
     expect(ed.slide.background?.type).toBe('solid');
     expect([...ed.panel.body.querySelectorAll('.pf-color')].map((b) => b.textContent)).toContain('Colour');
+  });
+
+  it('gives the cell being typed in borders and margins from the format panel, or the whole table', () => {
+    const table = newTable(2, 2, 0, 0, 200, 80);
+    const ed = openEditor(deckWith(table));
+    ed.setSelection([table.id]);
+    ed.openPanel('format');
+    const field = (label) => [...ed.panel.body.querySelectorAll('label.pf')].find((l) => l.firstChild.textContent === label).querySelector('select, input');
+    const borders = field('Borders');
+    borders.value = 'outside';
+    borders.dispatchEvent(new Event('change'));
+    const t = () => ed.slide.elements[0];
+    expect(t().cells[0][0].borders).toMatchObject({ t: { width: 1 }, l: { width: 1 } });
+    expect(t().cells[0][0].borders.r).toBeUndefined();
+    expect(field('Borders').value).toBe(''); // ready for the next choice
+    // Typing in the bottom-right cell: only it changes.
+    ed.canvas.startEdit(table.id);
+    const body = ed.canvas.editing.bodies[3];
+    const range = document.createRange();
+    range.selectNodeContents(body);
+    ed.canvas.savedRange = range;
+    const left = field('Left margin');
+    left.value = '20';
+    left.dispatchEvent(new Event('change'));
+    expect(t().cells[1][1].margin).toMatchObject({ l: 20 });
+    expect(t().cells[0][0].margin).toBeUndefined();
+    ed.undo();
+    expect(t().cells[1][1].margin).toBeUndefined();
   });
 
   it('makes one undo step for Enter in a number field, and updates the locked other side', () => {

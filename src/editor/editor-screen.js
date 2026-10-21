@@ -13,7 +13,7 @@ import {
   slideSize, newSlide, layoutElements, cloneSlide, cloneElement, canHoldText, boxOf, moveElement, addMedia, newImage, newTable, newChart,
   htmlToText, SIZES, customSize, uid, mediaSlots, newMedia, regroup, slideAnimations, ANIM_KINDS, slideTitle, newTextBox, fieldText,
 } from '../model/deck.js';
-import { anchorOf, insertRow, insertCol, deleteRow, deleteCol, mergeCells, unmergeCell } from '../model/tables.js';
+import { anchorOf, insertRow, insertCol, deleteRow, deleteCol, mergeCells, unmergeCell, blockRange, setBorders, setMargins } from '../model/tables.js';
 import { themeById, resolveColor } from '../model/themes.js';
 import { FONT_SIZES } from '../model/fonts.js';
 import { textStyle } from '../render/render.js';
@@ -1272,6 +1272,34 @@ export class EditorScreen {
     const ch = Math.round(Math.min(H * 0.6, 340));
     this.addElements([newChart(Math.round((w - cw) / 2), Math.round((H - ch) / 2), cw, ch)]);
     this.openPanel('format');
+  }
+
+  /**
+   * The cells of the selected table that cell formatting applies to: those
+   * from the cursor's cell to the end of the text selection while it's being
+   * edited, else the whole table. { el, range: { r0, c0, r1, c1 } }, or null.
+   */
+  tableCells() {
+    const el = this.selectedElements().find((e) => e.type === 'table');
+    if (!el) return null;
+    const tdOf = (n) => (n?.nodeType === 3 ? n.parentElement : n)?.closest?.('td');
+    const saved = this.canvas.editing?.id === el.id && this.canvas.savedRange;
+    const a = saved && tdOf(saved.startContainer);
+    const b = saved && tdOf(saved.endContainer);
+    if (!a || !b) return { el, range: { r0: 0, c0: 0, r1: el.cells.length - 1, c1: el.cells[0].length - 1 } };
+    return { el, range: blockRange(el, +a.dataset.r, +a.dataset.c, +b.dataset.r, +b.dataset.c) };
+  }
+
+  /** Borders (see BORDER_PRESETS) for the table cells being formatted, drawn with `stroke`. */
+  setCellBorders(preset, stroke) {
+    const at = this.tableCells();
+    if (at) this.change(() => setBorders(at.el, at.range, preset, stroke));
+  }
+
+  /** Margins ({ t?, r?, b?, l? }, points) for the table cells being formatted. */
+  setCellMargins(margin) {
+    const at = this.tableCells();
+    if (at) this.change(() => setMargins(at.el, at.range, margin));
   }
 
   tableOp(op) {
