@@ -147,11 +147,23 @@ function strokeAttrs(stroke, theme) {
   };
 }
 
-function arrowHead(x1, y1, x2, y2, width, color) {
+/**
+ * A line end at (x2, y2), pointing away from (x1, y1). `type` is true or
+ * 'triangle', 'arrow' (open), 'stealth', 'diamond' or 'oval', as in PowerPoint.
+ */
+export function arrowHead(x1, y1, x2, y2, width, color, type = true) {
   const size = Math.max(7, width * 3.2);
   const a = Math.atan2(y2 - y1, x2 - x1);
-  const p = (ang) => `${x2 - size * Math.cos(a + ang)},${y2 - size * Math.sin(a + ang)}`;
-  return svgEl('polygon', { points: `${x2},${y2} ${p(0.45)} ${p(-0.45)}`, fill: color });
+  // A point `back` along the line from the tip and `side` across it.
+  const at = (back, side) => `${x2 - back * Math.cos(a) - side * Math.sin(a)},${y2 - back * Math.sin(a) + side * Math.cos(a)}`;
+  const w = size * 0.48;
+  switch (type) {
+    case 'arrow': return svgEl('polyline', { points: `${at(size, w)} ${x2},${y2} ${at(size, -w)}`, fill: 'none', stroke: color, 'stroke-width': width, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' });
+    case 'stealth': return svgEl('polygon', { points: `${x2},${y2} ${at(size, w)} ${at(size * 0.6, 0)} ${at(size, -w)}`, fill: color });
+    case 'diamond': return svgEl('polygon', { points: `${x2},${y2} ${at(size / 2, w)} ${at(size, 0)} ${at(size / 2, -w)}`, fill: color });
+    case 'oval': return svgEl('ellipse', { cx: x2, cy: y2, rx: size / 2.4, ry: size / 2.4, fill: color });
+    default: return svgEl('polygon', { points: `${x2},${y2} ${at(size, w)} ${at(size, -w)}`, fill: color });
+  }
 }
 
 let gradientCount = 0;
@@ -257,8 +269,8 @@ export function renderElement(el, ctx) {
     // A wide invisible stroke makes thin lines easy to click.
     svg.append(svgEl('line', { x1, y1, x2, y2, class: 'hit', stroke: 'transparent', 'stroke-width': Math.max(12, (el.stroke?.width || 2) + 10) }));
     svg.append(svgEl('line', { x1, y1, x2, y2, ...sa, 'stroke-linecap': 'round' }));
-    if (el.arrowEnd) svg.append(arrowHead(x1, y1, x2, y2, el.stroke?.width || 2, sa.stroke));
-    if (el.arrowStart) svg.append(arrowHead(x2, y2, x1, y1, el.stroke?.width || 2, sa.stroke));
+    if (el.arrowEnd) svg.append(arrowHead(x1, y1, x2, y2, el.stroke?.width || 2, sa.stroke, el.arrowEnd));
+    if (el.arrowStart) svg.append(arrowHead(x2, y2, x1, y1, el.stroke?.width || 2, sa.stroke, el.arrowStart));
     div.append(svg);
     return div;
   }
@@ -283,8 +295,8 @@ export function renderElement(el, ctx) {
       }
       if ((el.arrowStart || el.arrowEnd) && stroke.stroke !== 'none') {
         const ends = pathEnds(el.paths, el.w, el.h);
-        if (ends && el.arrowEnd) svg.append(arrowHead(...ends.end, el.stroke?.width || 2, stroke.stroke));
-        if (ends && el.arrowStart) svg.append(arrowHead(...ends.start, el.stroke?.width || 2, stroke.stroke));
+        if (ends && el.arrowEnd) svg.append(arrowHead(...ends.end, el.stroke?.width || 2, stroke.stroke, el.arrowEnd));
+        if (ends && el.arrowStart) svg.append(arrowHead(...ends.start, el.stroke?.width || 2, stroke.stroke, el.arrowStart));
       }
     } else svg.append(svgEl('path', { d: shapePath(el.type === 'shape' ? el.shape : 'rect', el.w, el.h), fill, ...stroke }));
     if (shadow) svg.style.filter = shadow;

@@ -133,6 +133,9 @@ export function sanitizeElement(el) {
       else el.clip = { shape: 'custom', paths: holder.paths, ...(holder.preset && { preset: holder.preset }) };
     } else el.clip = { shape: c.shape };
   }
+  for (const end of ['arrowStart', 'arrowEnd']) {
+    if (el[end] != null && el[end] !== true && el[end] !== false && !['arrow', 'stealth', 'diamond', 'oval', 'triangle'].includes(el[end])) el[end] = !!el[end];
+  }
   if (el.textRect != null) {
     if (isObject(el.textRect)) el.textRect = Object.fromEntries(['l', 't', 'r', 'b'].map((k) => [k, Number.isFinite(el.textRect[k]) ? Math.max(-1, Math.min(1, el.textRect[k])) : 0]));
     else delete el.textRect;

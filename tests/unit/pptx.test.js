@@ -498,6 +498,18 @@ describe('PowerPoint round trip', () => {
     expect(htmlToText(t.cells[0][0].text)).toBe('Head');
   });
 
+  it('keeps the style of line ends', async () => {
+    const line = newLine(10, 20, 300, 120);
+    Object.assign(line, { arrowStart: 'diamond', arrowEnd: 'stealth' });
+    const xml = await slideXml(deckWith(line));
+    expect(xml).toContain('<a:headEnd type="diamond"/>');
+    expect(xml).toContain('<a:tailEnd type="stealth"/>');
+    const back = (await roundTrip(deckWith(line))).slides[0].elements[0];
+    expect([back.arrowStart, back.arrowEnd]).toEqual(['diamond', 'stealth']);
+    const node = renderElement(back, { theme: themeById(back.themeId), deck: deckWith(back) });
+    expect(node.querySelectorAll('polygon')).toHaveLength(2);
+  });
+
   it('reads rotated lines', async () => {
     const PptxGenJS = (await import('pptxgenjs')).default;
     const p = new PptxGenJS();

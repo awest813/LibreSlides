@@ -52,6 +52,11 @@ function colorButton(label, value, theme, onPick, opts = {}) {
  * The right-hand panel: themes and backgrounds, transitions, animations,
  * the detailed format options for the selection and the slide's comments.
  */
+// Line ends, as PowerPoint names them.
+const ARROW_ENDS = [['none', 'None'], ['triangle', 'Arrow'], ['arrow', 'Open arrow'], ['stealth', 'Stealth arrow'], ['diamond', 'Diamond'], ['oval', 'Round']];
+const endValue = (end) => (!end ? 'none' : end === true ? 'triangle' : end);
+const endOf = (v) => (v === 'none' ? false : v === 'triangle' ? true : v);
+
 /** Set or clear one of a picture's colour adjustments. */
 function setAdjust(e, key, value) {
   e.adjust = { ...(e.adjust || {}), [key]: value };
@@ -295,8 +300,8 @@ export class SidePanel {
       out.push(section('Line',
         colorButton('Colour', el.stroke?.color, theme, (v) => app.setStroke({ color: v })),
         field('Weight', numberInput(el.stroke?.width || 2, (v) => app.setStroke({ width: v }), { min: 0.5, max: 50, step: 0.5, suffix: 'pt' })),
-        checkbox('Arrow at start', el.arrowStart, (v) => upd((e) => { e.arrowStart = v; })),
-        checkbox('Arrow at end', el.arrowEnd, (v) => upd((e) => { e.arrowEnd = v; }))));
+        field('Start', select(ARROW_ENDS, endValue(el.arrowStart), (v) => upd((e) => { e.arrowStart = endOf(v); }))),
+        field('End', select(ARROW_ENDS, endValue(el.arrowEnd), (v) => upd((e) => { e.arrowEnd = endOf(v); })))));
     } else if (single) {
       const ratio = el.w / el.h;
       out.push(section('Size & rotation',

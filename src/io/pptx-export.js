@@ -34,6 +34,9 @@ export function toHex(css) {
   return null;
 }
 
+/** A line end (true or a style name) as pptxgenjs's arrow type. */
+const arrowType = (end) => (['arrow', 'stealth', 'diamond', 'oval'].includes(end) ? end : 'triangle');
+
 const DASH = { solid: 'solid', dash: 'dash', dot: 'sysDot', dashDot: 'dashDot', longDash: 'lgDash' };
 
 function lineOpts(stroke, theme) {
@@ -275,8 +278,8 @@ async function addElement(pptx, s, el, deck, theme, marks) {
       [arrowStart, arrowEnd] = [arrowEnd, arrowStart];
     }
     const line = lineOpts({ color: 'theme:text', width: 2, ...el.stroke, color: el.stroke?.color === 'none' ? 'theme:text' : el.stroke?.color }, theme);
-    if (arrowStart) line.beginArrowType = 'triangle';
-    if (arrowEnd) line.endArrowType = 'triangle';
+    if (arrowStart) line.beginArrowType = arrowType(arrowStart);
+    if (arrowEnd) line.endArrowType = arrowType(arrowEnd);
     s.addShape('line', { ...geom({ x: x1, y: Math.min(y1, y2), w: x2 - x1, h: Math.abs(y2 - y1) }), flipV: y2 < y1, line, objectName });
     return;
   }
@@ -374,8 +377,8 @@ async function addElement(pptx, s, el, deck, theme, marks) {
     shape = el.preset.name;
     opts.shape = shape;
     if (el.preset.adj && Object.keys(el.preset.adj).length) marks.presets.set(mark(), el.preset.adj);
-    if (el.arrowStart) opts.line.beginArrowType = 'triangle';
-    if (el.arrowEnd) opts.line.endArrowType = 'triangle';
+    if (el.arrowStart) opts.line.beginArrowType = arrowType(el.arrowStart);
+    if (el.arrowEnd) opts.line.endArrowType = arrowType(el.arrowEnd);
   } else if (shape === 'custom') {
     // A freeform: one PowerPoint shape per kind of path (filled or not, outlined or not);
     // the first carries the text.

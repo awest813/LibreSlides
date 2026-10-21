@@ -444,6 +444,9 @@ function tableLook(tblPr, ctx, rows, cols) {
   };
 }
 
+/** A line end's type (a:headEnd / a:tailEnd) as LibreSlides': true (a triangle), a style name, or false. */
+const arrowOf = (type) => (!type || type === 'none' ? false : ['arrow', 'stealth', 'diamond', 'oval'].includes(type) ? type : true);
+
 /** Make elements read from one PowerPoint group (or SmartArt diagram) a LibreSlides group. */
 function groupElements(els) {
   if (els.length < 2) return;
@@ -562,7 +565,7 @@ async function readSlide(pkg, slidePath, ctx, deck) {
     const tail = attr(kid(ln, 'tailEnd'), 'type');
     return {
       id: uid(), type: 'line', x1, y1, x2, y2, rot: 0, stroke: { color: stroke.color, width: Math.round(stroke.width * 10) / 10, dash: stroke.dash },
-      arrowStart: !!head && head !== 'none', arrowEnd: !!tail && tail !== 'none',
+      arrowStart: arrowOf(head), arrowEnd: arrowOf(tail),
     };
   };
 
@@ -719,8 +722,8 @@ async function readSlide(pkg, slidePath, ctx, deck) {
           if (outline.preset) el.preset = outline.preset;
           // Open outlines (freeform curves, connector-like presets) can end in arrowheads.
           for (const [end, key] of [['headEnd', 'arrowStart'], ['tailEnd', 'arrowEnd']]) {
-            const type = attr(kid(kid(spPr, 'ln'), end), 'type');
-            if (type && type !== 'none') el[key] = true;
+            const type = arrowOf(attr(kid(kid(spPr, 'ln'), end), 'type'));
+            if (type) el[key] = type;
           }
         } else if (!plainBox) el.shape = SHAPE_IDS.has(prst) ? prst : 'rect';
         // Empty title and text placeholders stay, as PowerPoint's do: shown only while editing.
