@@ -3,7 +3,7 @@ import { icon } from '../ui/icons.js';
 import { openColorPicker } from '../ui/color-picker.js';
 import { FONTS, FONT_SIZES, fontStack, embedFontsSetting, setEmbedFontsSetting } from '../model/fonts.js';
 import { SHAPES, shapePath } from '../model/shapes.js';
-import { LAYOUTS } from '../model/deck.js';
+import { LAYOUTS, canHoldText } from '../model/deck.js';
 import { resolveColor } from '../model/themes.js';
 
 const iconFn = (n) => icon(n);
@@ -124,6 +124,7 @@ export class Toolbar {
       ],
       Format: () => {
         const t = app.hasTextTarget();
+        const lists = app.canvas.isEditing || app.selectedElements().some(canHoldText);
         return [
           { label: 'Bold', icon: 'bold', shortcut: 'Mod-B', disabled: !t, run: () => app.toggleTextProp('bold') },
           { label: 'Italic', icon: 'italic', shortcut: 'Mod-I', disabled: !t, run: () => app.toggleTextProp('italic') },
@@ -137,8 +138,8 @@ export class Toolbar {
           { label: 'Align right', icon: 'alignRight', shortcut: 'Mod-Shift-R', disabled: !t, run: () => app.setTextProp('align', 'right') },
           { label: 'Justify', icon: 'alignJustify', shortcut: 'Mod-Shift-J', disabled: !t, run: () => app.setTextProp('align', 'justify') },
           'separator',
-          { label: 'Bulleted list', icon: 'bulletList', shortcut: 'Mod-Shift-8', disabled: !t, run: () => app.toggleList('ul') },
-          { label: 'Numbered list', icon: 'orderedList', shortcut: 'Mod-Shift-7', disabled: !t, run: () => app.toggleList('ol') },
+          { label: 'Bulleted list', icon: 'bulletList', shortcut: 'Mod-Shift-8', disabled: !lists, run: () => app.toggleList('ul') },
+          { label: 'Numbered list', icon: 'orderedList', shortcut: 'Mod-Shift-7', disabled: !lists, run: () => app.toggleList('ol') },
           { label: 'Clear formatting', icon: 'clearFormat', shortcut: 'Mod-\\', disabled: !t, run: () => app.clearFormatting() },
           'separator',
           { label: 'Format options…', icon: 'format', disabled: !app.selection.length, run: () => app.openPanel('format') },
@@ -222,6 +223,30 @@ export class Toolbar {
     ];
   }
 
+  /** Row and column actions for the selected table, at `cell` (right-clicked) or the cursor. */
+  tableItems(cell = null) {
+    const app = this.app;
+    const t = app.selectedElements().find((e) => e.type === 'table');
+    const op = (name) => () => app.tableOp(name, cell);
+    return [
+      { label: 'Insert row above', icon: 'rowAbove', run: op('rowAbove') },
+      { label: 'Insert row below', icon: 'rowBelow', run: op('rowBelow') },
+      { label: 'Insert column left', icon: 'colLeft', run: op('colLeft') },
+      { label: 'Insert column right', icon: 'colRight', run: op('colRight') },
+      { label: 'Delete row', icon: 'trash', disabled: t?.cells.length < 2, run: op('deleteRow') },
+      { label: 'Delete column', icon: 'trash', disabled: t?.cells[0]?.length < 2, run: op('deleteCol') },
+    ];
+  }
+
+  mergeItems(cell = null) {
+    const op = (name) => () => this.app.tableOp(name, cell);
+    return [
+      { label: 'Merge with the cell on the right', icon: 'merge', run: op('mergeRight') },
+      { label: 'Merge with the cell below', run: op('mergeDown') },
+      { label: 'Unmerge', run: op('unmerge') },
+    ];
+  }
+
   shapeMenu(anchor) {
     const app = this.app;
     const panel = h('div', { class: 'shape-panel' });
@@ -249,16 +274,29 @@ export class Toolbar {
   }
 
   tableMenu(anchor) {
+    const ROWS = 8;
+    const COLS = 10;
     const label = h('div', { class: 'table-grid-label' }, 'Insert table');
-    const grid = h('div', { class: 'table-grid', role: 'grid' });
+    const grid = h('div', { class: 'table-grid', role: 'group', 'aria-label': 'Table size' });
     const cells = [];
     const mark = (r, c) => {
       cells.forEach((b) => b.classList.toggle('is-on', +b.dataset.r <= r && +b.dataset.c <= c));
       label.textContent = `${c + 1} × ${r + 1} table`;
     };
-    for (let r = 0; r < 8; r++) {
-      for (let c = 0; c < 10; c++) {
-        const b = h('button', { type: 'button', 'aria-label': `${c + 1} by ${r + 1} table`, dataset: { r, c } });
+    // One tab stop; the arrow keys choose the size.
+    grid.addEventListener('keydown', (e) => {
+      const at = e.target.closest?.('button');
+      if (!at) return;
+      const step = { ArrowRight: [0, 1], ArrowLeft: [0, -1], ArrowDown: [1, 0], ArrowUp: [-1, 0] }[e.key];
+      if (!step) return;
+      e.preventDefault();
+      const r = Math.max(0, Math.min(ROWS - 1, +at.dataset.r + step[0]));
+      const c = Math.max(0, Math.min(COLS - 1, +at.dataset.c + step[1]));
+      cells[r * COLS + c].focus();
+    });
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const b = h('button', { type: 'button', tabindex: r || c ? '-1' : '0', 'aria-label': `${c + 1} by ${r + 1} table`, dataset: { r, c } });
         b.addEventListener('pointerenter', () => mark(r, c));
         b.addEventListener('focus', () => mark(r, c));
         b.addEventListener('click', () => { closePopover(); this.app.insertTable(r + 1, c + 1); });
@@ -368,31 +406,20 @@ export class Toolbar {
     ])), { haspopup: true });
     this.bulletBtn = tb('bulletList', 'Bulleted list', () => app.toggleList('ul'), { shortcut: 'Mod-Shift-8' });
     this.numberBtn = tb('orderedList', 'Numbered list', () => app.toggleList('ol'), { shortcut: 'Mod-Shift-7' });
+    this.outdentBtn = tb('outdent', 'Decrease indent', () => app.indent(-1), { shortcut: 'Mod-[' });
+    this.indentBtn = tb('indent', 'Increase indent', () => app.indent(1), { shortcut: 'Mod-]' });
     group('text', this.fontBtn, sizeBox, sep(), this.boldBtn, this.italicBtn, this.underlineBtn, this.colorBtn, this.hiliteBtn, sep(),
-      this.alignBtn, spacingBtn, this.bulletBtn, this.numberBtn,
-      tb('outdent', 'Decrease indent', () => app.indent(-1), { shortcut: 'Mod-[' }),
-      tb('indent', 'Increase indent', () => app.indent(1), { shortcut: 'Mod-]' }),
+      this.alignBtn, spacingBtn, this.bulletBtn, this.numberBtn, this.outdentBtn, this.indentBtn,
       tb('clearFormat', 'Clear formatting', () => app.clearFormatting(), { shortcut: 'Mod-\\' }));
 
     // Pictures
     group('image', tb('imagePlus', 'Replace image', () => app.replaceImage(), { text: 'Replace image' }));
 
     // Tables
+    // Tables: rows and columns in one menu, so the toolbar fits beside the text controls.
     group('table',
-      tb('rowAbove', 'Insert row above', () => app.tableOp('rowAbove')),
-      tb('rowBelow', 'Insert row below', () => app.tableOp('rowBelow')),
-      tb('colLeft', 'Insert column left', () => app.tableOp('colLeft')),
-      tb('colRight', 'Insert column right', () => app.tableOp('colRight')),
-      tb('trash', 'Delete row or column', (b) => showPopover(b, menu([
-        { label: 'Delete row', run: () => app.tableOp('deleteRow') },
-        { label: 'Delete column', run: () => app.tableOp('deleteCol') },
-      ])), { haspopup: true }),
-      tb('merge', 'Merge cells', (b) => showPopover(b, menu([
-        { heading: 'The cell with the cursor' },
-        { label: 'Merge with the cell on the right', run: () => app.tableOp('mergeRight') },
-        { label: 'Merge with the cell below', run: () => app.tableOp('mergeDown') },
-        { label: 'Unmerge', run: () => app.tableOp('unmerge') },
-      ])), { haspopup: true }));
+      tb('rows', 'Rows and columns', (b) => showPopover(b, menu(this.tableItems(), { iconFn }), { label: 'Rows and columns' }), { haspopup: true }),
+      tb('merge', 'Merge cells', (b) => showPopover(b, menu([{ heading: 'The cell with the cursor' }, ...this.mergeItems()], { iconFn }), { label: 'Merge cells' }), { haspopup: true }));
 
     // Charts
     group('chart', tb('chart', 'Edit chart', () => app.openPanel('format'), { text: 'Edit chart' }));
@@ -471,6 +498,11 @@ export class Toolbar {
     show('chart', els.length === 1 && els[0].type === 'chart');
     show('diagram', els.length === 1 && els[0].type === 'diagram');
     show('element', els.length > 0);
+    // Indenting works on the text being typed; lists on text boxes, or a table's text while it's typed in.
+    this.outdentBtn.disabled = !editing;
+    this.indentBtn.disabled = !editing;
+    this.bulletBtn.disabled = !editing && !has(canHoldText);
+    this.numberBtn.disabled = this.bulletBtn.disabled;
     this.undoBtn.disabled = !app.history.canUndo && !editing;
     this.redoBtn.disabled = !app.history.canRedo && !editing;
     this.zoomBtn.querySelector('.tb-text').textContent = app.canvas.zoom === 'fit' ? 'Fit' : `${Math.round(app.canvas.scale * 100)}%`;

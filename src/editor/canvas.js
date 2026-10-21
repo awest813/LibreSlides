@@ -360,7 +360,8 @@ export class SlideCanvas {
     const node = e.target.closest?.('.slide > .el');
     if (node && !this.app.selection.includes(node.dataset.id)) this.app.setSelection([node.dataset.id]);
     if (!node) this.app.setSelection([]);
-    this.app.canvasMenu({ x: e.clientX, y: e.clientY });
+    const td = e.target.closest?.('td[data-r]');
+    this.app.canvasMenu({ x: e.clientX, y: e.clientY }, td ? { r: +td.dataset.r, c: +td.dataset.c } : null);
   }
 
   snapCandidates(exclude) {

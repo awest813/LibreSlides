@@ -342,6 +342,55 @@ describe('editor: charts', () => {
   });
 });
 
+describe('editor: tables', () => {
+  const menuItem = (label) => [...document.querySelectorAll('.popover .menu-item')].find((b) => b.querySelector('.menu-label').textContent === label);
+
+  it('inserts a row at the right-clicked cell from the slide’s context menu', () => {
+    const table = newTable(2, 2, 0, 0, 200, 80);
+    table.cells[0][0].text = '<p>a</p>';
+    table.cells[1][0].text = '<p>b</p>';
+    const ed = openEditor(deckWith(table));
+    const td = ed.canvas.slideEl.querySelector('td[data-r="0"][data-c="0"]');
+    td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    expect(ed.selection).toEqual([table.id]);
+    menuItem('Insert row below').click();
+    const t = ed.slide.elements[0];
+    expect(t.cells.map((row) => row[0].text)).toEqual(['<p>a</p>', '', '<p>b</p>']);
+    ed.undo();
+    expect(ed.slide.elements[0].cells).toHaveLength(2);
+  });
+
+  it('keeps row and column actions in one toolbar menu', () => {
+    const table = newTable(1, 2, 0, 0, 200, 40);
+    const ed = openEditor(deckWith(table));
+    ed.setSelection([table.id]);
+    const group = ed.toolbar.groups.table;
+    expect(group.hidden).toBe(false);
+    expect(group.querySelectorAll('button')).toHaveLength(2);
+    // Lists and indents do nothing to a table until its text is typed in.
+    expect([ed.toolbar.bulletBtn.disabled, ed.toolbar.indentBtn.disabled]).toEqual([true, true]);
+    ed.canvas.startEdit(table.id);
+    expect([ed.toolbar.bulletBtn.disabled, ed.toolbar.indentBtn.disabled]).toEqual([false, false]);
+    ed.canvas.endEdit();
+    group.querySelector('[aria-label="Rows and columns"]').click();
+    expect(menuItem('Delete row').disabled).toBe(true); // the only row
+    menuItem('Insert column right').click();
+    expect(ed.slide.elements[0].cells[0]).toHaveLength(3);
+  });
+
+  it('chooses a table size with the arrow keys', () => {
+    const ed = openEditor(deckWith());
+    ed.toolbar.tableBtn.click();
+    const first = document.querySelector('.table-grid button');
+    first.focus();
+    key(first, { key: 'ArrowRight' });
+    key(document.activeElement, { key: 'ArrowDown' });
+    expect(document.activeElement.getAttribute('aria-label')).toBe('2 by 2 table');
+    document.activeElement.click();
+    expect(ed.slide.elements.at(-1).cells.map((r) => r.length)).toEqual([2, 2]);
+  });
+});
+
 describe('editor: groups', () => {
   it('groups objects together in the stacking order, and copies get groups of their own', () => {
     const [a, b, c] = [newShape('rect', 0, 0), newShape('ellipse', 200, 0), newShape('rect', 400, 0)];

@@ -1482,12 +1482,20 @@ export class EditorScreen {
     if (at) this.change(() => setMargins(at.el, at.range, margin));
   }
 
-  tableOp(op) {
+  /**
+   * Insert, delete, merge or unmerge rows and columns of the selected table
+   * at `cell` ({ r, c }: the one right-clicked), else the cell with the
+   * cursor; with neither, rows and columns go at the edges.
+   */
+  tableOp(op, cell = null) {
     const el = this.selectedElements().find((e) => e.type === 'table');
     if (!el) return;
     let r = el.cells.length - 1;
     let c = el.cells[0].length - 1;
-    if (this.canvas.editing) {
+    if (cell && el.cells[cell.r]?.[cell.c]) {
+      ({ r, c } = cell);
+      this.canvas.endEdit();
+    } else if (this.canvas.editing) {
       // Where the cursor was in the table (a menu may have taken the focus since).
       const at = this.canvas.savedRange?.startContainer || document.getSelection()?.anchorNode;
       const node = at?.nodeType === 3 ? at.parentElement : at;
@@ -1658,8 +1666,11 @@ export class EditorScreen {
     else document.documentElement.requestFullscreen?.().catch(() => {});
   }
 
-  canvasMenu(at) {
+  /** The slide's context menu, at `at` (screen point); `cell` is the table cell right-clicked, if any. */
+  canvasMenu(at, cell = null) {
     const has = this.selection.length > 0;
+    const els = this.selectedElements();
+    const table = els.length === 1 && els[0].type === 'table';
     const items = has ? [
       { label: 'Cut', icon: 'cut', shortcut: 'Mod-X', run: () => this.editCommand('cut') },
       { label: 'Copy', icon: 'copy', shortcut: 'Mod-C', run: () => this.editCommand('copy') },
@@ -1673,6 +1684,7 @@ export class EditorScreen {
       this.selectedElements().some((e) => e.groupId) ? { label: 'Ungroup', shortcut: 'Mod-Shift-G', run: () => this.ungroupSelection() } : null,
       this.selectedElements().some((e) => e.type === 'diagram') ? { label: 'Edit diagram text', icon: 'diagram', run: () => this.editDiagramText() } : null,
       this.selectedElements().some((e) => e.type === 'diagram') ? { label: 'Convert to shapes', run: () => this.convertDiagramToShapes() } : null,
+      ...(table ? ['separator', ...this.toolbar.tableItems(cell), ...(cell ? this.toolbar.mergeItems(cell) : [])] : []),
       'separator',
       { label: 'Animate…', icon: 'animate', run: () => this.openPanel('animate') },
       { label: 'Format options…', icon: 'format', run: () => this.openPanel('format') },
