@@ -27,6 +27,8 @@
 .el-text-body > * + *, .el-text-body li + li, .el-text-body li > ul, .el-text-body li > ol { margin-top: var(--para-gap, 0); }
 .el-text-body a, .cell-body a { color: inherit; text-decoration: underline; }
 .el-img { display: block; width: 100%; height: 100%; }
+/* A diagram's shapes, drawn inside its box */
+.el-diagram-shapes { position: absolute; inset: 0; }
 /* Videos and sounds: the poster (or a dark frame) with a play mark; a real player in the slideshow */
 .el-media-frame { position: relative; width: 100%; height: 100%; overflow: hidden; }
 .el-media-blank { width: 100%; height: 100%; background: #1f1f1f; }
@@ -458,3 +460,14 @@ dialog.dialog { z-index: 3600; }
 .chart-combo-name { flex: 1; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chart-combo select { height: 28px; border: 1px solid var(--border-strong); border-radius: 4px; padding: 0 4px; background: var(--surface); color: inherit; font: inherit; font-size: 12px; }
 .chart-combo .pf-check { font-size: 12px; white-space: nowrap; }
+
+/* Diagrams: the layout picker (Insert › Diagram…) and the text pane in the format options */
+.diagram-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 10px; }
+.diagram-card {
+  display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 6px 6px 8px; border: 1px solid var(--border-strong);
+  border-radius: 8px; background: var(--surface); color: inherit; font: inherit; font-size: 13px; cursor: pointer;
+}
+.diagram-card:hover, .diagram-card:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); outline: none; }
+.diagram-card-preview { position: relative; width: 120px; height: 75px; overflow: hidden; border-radius: 4px; pointer-events: none; }
+.diagram-outline { font-family: inherit; tab-size: 3; white-space: pre; overflow-x: auto; }
+.diagram-tools { gap: 2px; }

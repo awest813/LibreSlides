@@ -10,7 +10,7 @@ import { isDark, toggleTheme } from '../ui/theme.js';
 import { showInstallHelp } from '../ui/install.js';
 import { getDeck, saveDeck, onStorageChange } from '../storage/db.js';
 import {
-  slideSize, newSlide, layoutElements, cloneSlide, cloneElement, canHoldText, boxOf, moveElement, addMedia, newImage, newTable, newChart,
+  slideSize, newSlide, layoutElements, cloneSlide, cloneElement, canHoldText, boxOf, moveElement, addMedia, newImage, newTable, newChart, newDiagram,
   htmlToText, SIZES, customSize, uid, mediaSlots, newMedia, regroup, slideAnimations, ANIM_KINDS, slideTitle, newTextBox, fieldText,
   sectionAt, setSections, moveSlidesWithSections, removeSlidesWithSections, DEFAULT_SECTION,
 } from '../model/deck.js';
@@ -18,7 +18,7 @@ import { anchorOf, insertRow, insertCol, deleteRow, deleteCol, mergeCells, unmer
 import { themeById, resolveColor } from '../model/themes.js';
 import { FONT_SIZES } from '../model/fonts.js';
 import { textStyle } from '../render/render.js';
-import { sanitizeHtml, sanitizeElement, sectionName } from '../io/sanitize.js';
+import { sanitizeHtml, sanitizeElement, sectionName, isXmlPart } from '../io/sanitize.js';
 import { readImageFile } from '../io/images.js';
 import { readMediaFile, mediaTypeOf, isMediaData, LARGE_MEDIA_BYTES } from '../io/media-files.js';
 import { SlideCanvas, aabb } from './canvas.js';
@@ -27,6 +27,8 @@ import { Toolbar } from './toolbar.js';
 import { SidePanel } from './sidepanel.js';
 import { History } from './history.js';
 import { startComment } from './comments.js';
+import { pickDiagramLayout, focusDiagramText } from './diagrams.js';
+import { diagramAsShapes } from '../model/diagram-layout.js';
 import { stripInline, exec, execFontSize, caretFormat, highlightAll, effectAll, TEXT_EFFECTS } from './richtext.js';
 import { VERSION, BUILD, diagnostics } from '../diagnostics.js';
 
@@ -823,7 +825,7 @@ export class EditorScreen {
         const payload = JSON.parse(custom);
         // Clipboard data can come from any page: clean text and colours like an opened file.
         for (const el of payload.elements || []) sanitizeElement(el);
-        payload.media = Object.fromEntries(Object.entries(payload.media || {}).filter(([, v]) => /^data:image\//.test(v) || isMediaData(v)));
+        payload.media = Object.fromEntries(Object.entries(payload.media || {}).filter(([, v]) => /^data:image\//.test(v) || isMediaData(v) || isXmlPart(v)));
         // A video or sound whose file didn't come along can't play.
         payload.elements = (payload.elements || []).filter((el) => el.type !== 'media' || isMediaData(payload.media[el.media]));
         this.pasteElements(payload);
@@ -1328,6 +1330,53 @@ export class EditorScreen {
     this.openPanel('format');
   }
 
+  /** Insert › Diagram…: pick a layout, then a diagram of it with sample text in the middle of the slide, its text ready to edit. */
+  async insertDiagram() {
+    const layout = await pickDiagramLayout(this.deck);
+    if (!layout) return;
+    const { w, h: H } = this.size;
+    const dw = Math.round(Math.min(w * 0.7, 640));
+    const dh = Math.round(Math.min(H * 0.62, 340));
+    this.addElements([newDiagram(layout, Math.round((w - dw) / 2), Math.round((H - dh) / 2), dw, dh)]);
+    this.editDiagramText({ start: true });
+  }
+
+  /**
+   * Change the selected diagrams as one undo step. Once edited, a diagram
+   * from PowerPoint is drawn by its own layout instead of PowerPoint's drawing.
+   */
+  editDiagram(fn, { coalesce = null } = {}) {
+    this.updateSelected((e) => {
+      if (e.type !== 'diagram' || !e.diagram) return;
+      fn(e.diagram, e);
+      delete e.diagram.drawn;
+      e.diagram.edited = true;
+    }, { coalesce });
+  }
+
+  /** The selected diagram's text, ready to type in (Format options › Diagram). */
+  editDiagramText({ start = false } = {}) {
+    this.openPanel('format');
+    focusDiagramText(this.panel, { start });
+  }
+
+  /** "Convert to shapes": the selected diagrams become the plain shapes they're drawn with, grouped. */
+  convertDiagramToShapes() {
+    const diagrams = this.selectedElements().filter((e) => e.type === 'diagram');
+    if (!diagrams.length) return;
+    const made = [];
+    this.change(() => {
+      for (const d of diagrams) {
+        // A group of their own, or the one the diagram was in.
+        const shapes = diagramAsShapes(d, { groupId: d.groupId || uid(), newId: () => uid() });
+        const list = this.slide.elements;
+        list.splice(list.indexOf(d), 1, ...shapes);
+        made.push(...shapes);
+      }
+    });
+    this.setSelection(made.map((e) => e.id));
+  }
+
   /**
    * The cells of the selected table that cell formatting applies to: those
    * from the cursor's cell to the end of the text selection while it's being
@@ -1545,6 +1594,8 @@ export class EditorScreen {
       { label: 'Send to back', icon: 'toBack', shortcut: 'Mod-Shift-Down', run: () => this.order('back') },
       this.selection.length > 1 ? { label: 'Group', shortcut: 'Mod-G', run: () => this.groupSelection() } : null,
       this.selectedElements().some((e) => e.groupId) ? { label: 'Ungroup', shortcut: 'Mod-Shift-G', run: () => this.ungroupSelection() } : null,
+      this.selectedElements().some((e) => e.type === 'diagram') ? { label: 'Edit diagram text', icon: 'diagram', run: () => this.editDiagramText() } : null,
+      this.selectedElements().some((e) => e.type === 'diagram') ? { label: 'Convert to shapes', run: () => this.convertDiagramToShapes() } : null,
       'separator',
       { label: 'Animate…', icon: 'animate', run: () => this.openPanel('animate') },
       { label: 'Format options…', icon: 'format', run: () => this.openPanel('format') },
@@ -1644,6 +1695,7 @@ export class EditorScreen {
     }
     const single = els.length === 1 ? els[0] : null;
     if (single && isTextual(single) && (e.key === 'Enter' || e.key === 'F2')) return run(() => this.canvas.startEdit(single.id, { selectAll: e.key === 'F2' }));
+    if (single?.type === 'diagram' && (e.key === 'Enter' || e.key === 'F2')) return run(() => this.editDiagramText());
     if (mod && !e.altKey) {
       if (!e.shiftKey && k === 'b') return run(() => this.toggleTextProp('bold'));
       if (!e.shiftKey && k === 'i') return run(() => this.toggleTextProp('italic'));
@@ -1897,7 +1949,7 @@ export class EditorScreen {
       ['Undo / Redo', 'Mod-Z', 'Mod-Y'],
       ['Cut / Copy / Paste', 'Mod-X', 'Mod-C', 'Mod-V'],
       ['Select all', 'Mod-A'],
-      ['Edit the selected text box', 'Enter'],
+      ['Edit the selected text box (or diagram’s text)', 'Enter'],
       ['Stop editing text / deselect', 'Escape'],
       ['Select the next object', 'Tab'],
       ['Nudge (fine / large steps)', 'Arrow keys', 'Alt-Arrow', 'Shift-Arrow'],

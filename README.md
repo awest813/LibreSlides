@@ -16,19 +16,19 @@ LibreSlides gives you a slide list, a canvas with drag/resize/rotate handles and
 |---|---|
 | **Slides** | Slide list with thumbnails, multi-select, drag-to-reorder, duplicate, skip, cut/copy/paste; named sections that fold away, as in PowerPoint; 8 layouts (Title, Title and body, Section, Two columns, Title only, Big number, Quote, Blank); "Apply layout" keeps your text |
 | **Canvas** | Select, move, resize and rotate with handles; marquee and Shift-click selection; smart guides that snap to the slide and other objects (hold Alt to move freely); arrow-key nudging; zoom (fit, 50–200 %, Ctrl + wheel) |
-| **Objects** | Text boxes that grow as you type, shapes (with text inside, including all of PowerPoint's preset shapes and freeforms from its files), lines and arrows with arrowhead styles, pictures (insert, paste, drag & drop, replace, crop-to-fill, crop to a shape, greyscale/brightness/contrast, rounded corners, flip, alt text), tables (insert rows/columns, merge cells, header row, banded rows), charts (column, bar, line, area, pie, doughnut, scatter, with editable data), video and sound, groups (Ctrl+G), links to web pages or other slides (Ctrl+K), gradient and picture fills, shadows, slide comments |
+| **Objects** | Text boxes that grow as you type, shapes (with text inside, including all of PowerPoint's preset shapes and freeforms from its files), lines and arrows with arrowhead styles, pictures (insert, paste, drag & drop, replace, crop-to-fill, crop to a shape, greyscale/brightness/contrast, rounded corners, flip, alt text), tables (insert rows/columns, merge cells, header row, banded rows), charts (column, bar, line, area, pie, doughnut, scatter, with editable data), diagrams like PowerPoint's SmartArt (list, vertical list, process, chevron, cycle, hierarchy, pyramid, Venn, matrix, radial: type the outline in a text pane, Tab to indent, and the diagram lays itself out; change its layout, colours and style, or convert it to shapes), video and sound, groups (Ctrl+G), links to web pages or other slides (Ctrl+K), gradient and picture fills, shadows, slide comments |
 | **Text** | Fonts (six bundled for offline use plus common system fonts), size, bold/italic/underline/strikethrough, colour, highlight, alignment, vertical alignment, line and paragraph spacing, bulleted and numbered lists with indent levels, capitals, letter spacing, superscript and subscript, text effects (shadow, glow, outline, hollow, gradient), text box margins, columns and vertical text, slide number and date fields, clear formatting. Formatting applies to selected text while typing, or to whole boxes when they're selected |
 | **Design** | 9 themes with matching fonts, colours and graphics; theme colours follow theme changes; solid, gradient or picture backgrounds per slide or for all; 16:9, 16:10, 4:3, A4, Letter and custom sizes |
 | **Arrange** | Bring forward/backward, to front/back, align and distribute, rotate and flip, lock position, exact size/position/rotation in Format options |
 | **Motion** | 6 slide transitions (fade, slide, push, cover, zoom, flip); entrance, emphasis (pulse, spin, teeter, flash) and exit animations and motion paths, on click, with or after the previous one; preview in the editor |
 | **Present** | Full-screen slideshow with keyboard, click and on-screen controls; black/white screen, jump to slide, speaker notes overlay. **Presenter view** opens the audience in a second window (drag it to the projector) and shows the current and next slide, notes and a timer here |
-| **Files** | Open **PowerPoint** `.pptx` and **LibreSlides** `.lslides` files from your device (text and formatting, shapes and freeforms, pictures, lines, tables and table styles, charts, SmartArt (as editable shapes), video and audio, groups, links, animations, comments, backgrounds, notes, transitions, skipped slides, sections, embedded fonts, PowerPoint's compressed (MicroType Express) ones included; positions and styles inherited from layouts/masters are resolved). Everything above is written back to `.pptx` as native PowerPoint objects. In Chrome and Edge a presentation opened from a file stays linked to it: **Save** (Ctrl+S) writes back to the same file in its format, **Save as** (Ctrl+Shift+S) saves to a new file and keeps saving there. A title-bar indicator shows unsaved changes, and LibreSlides asks before closing with changes not yet saved to the file and warns if another app changed it. Other browsers download the file. PowerPoint files carry the bundled fonts they use (*File › Embed fonts in PowerPoint files*), so they look the same where those fonts aren't installed. You can also download a copy as `.pptx`, **PDF** (vector, via the print dialog) or `.lslides`, and drop files on the window to open them |
+| **Files** | Open **PowerPoint** `.pptx` and **LibreSlides** `.lslides` files from your device (text and formatting, shapes and freeforms, pictures, lines, tables and table styles, charts, SmartArt (as editable diagrams that look as PowerPoint drew them until you change them), video and audio, groups, links, animations, comments, backgrounds, notes, transitions, skipped slides, sections, embedded fonts, PowerPoint's compressed (MicroType Express) ones included; positions and styles inherited from layouts/masters are resolved). Everything above is written back to `.pptx` as native PowerPoint objects; SmartArt goes back as SmartArt (its outline updated when edited) while it keeps the layout, colours and style it came with, and diagrams made in LibreSlides are saved to PowerPoint as grouped shapes, since PowerPoint's diagram layouts aren't LibreSlides' to include. In Chrome and Edge a presentation opened from a file stays linked to it: **Save** (Ctrl+S) writes back to the same file in its format, **Save as** (Ctrl+Shift+S) saves to a new file and keeps saving there. A title-bar indicator shows unsaved changes, and LibreSlides asks before closing with changes not yet saved to the file and warns if another app changed it. Other browsers download the file. PowerPoint files carry the bundled fonts they use (*File › Embed fonts in PowerPoint files*), so they look the same where those fonts aren't installed. You can also download a copy as `.pptx`, **PDF** (vector, via the print dialog) or `.lslides`, and drop files on the window to open them |
 | **Storage** | Autosaved to IndexedDB, with a list of presentations (search, rename, copy, delete), backup/restore of everything, undo/redo, and protection against two tabs overwriting each other |
 | **App** | Installable PWA (Install button on the start screen, or Help › Install) that works fully offline after the first visit, offers new versions with an *Update* button, has a "New presentation" shortcut on its icon, and registers as a handler for `.pptx` and `.lslides` files ("Open with LibreSlides") |
 
 Keyboard shortcuts follow Slides and PowerPoint (Ctrl+M new slide, Ctrl+D duplicate, Ctrl+Enter / F5 present, Ctrl+Shift+> bigger text, Ctrl+↑/↓ to reorder…). Press **Ctrl+/** in the editor for the full list.
 
-Not supported yet: real-time collaboration, WordArt's text warping (warped text comes in straight, keeping its effects), 3-D effects and SmartArt editing as a diagram (it's imported as shapes).
+Not supported yet: real-time collaboration, WordArt's text warping (warped text comes in straight, keeping its effects), 3-D effects, and laying out SmartArt the way PowerPoint does for layouts LibreSlides doesn't have (they're edited as the closest one it has).
 
 ## Getting started
 
@@ -74,6 +74,8 @@ src/
     deck.js                Presentation model: slides, elements, layouts, pictures
     themes.js              Themes and theme colours
     shapes.js              Shape outlines (named after PowerPoint's preset shapes)
+    diagram-layout.js      Diagrams (SmartArt) drawn as shapes from their outline
+    diagram-outline.js     A diagram's outline and the text pane's editing operations
     templates.js           Starter presentations
     fonts.js               Font list
   render/render.js         Draws slides to DOM — used by the editor, thumbnails, slideshow and print
@@ -83,11 +85,13 @@ src/
     filmstrip.js           Slide list
     toolbar.js             Menu bar and contextual toolbar
     sidepanel.js           Design, transition, animation and format panels
+    diagrams.js            Insert › Diagram… and a diagram's format options
     richtext.js, history.js
   present/present.js       Slideshow player, presenter view, previews
   io/
     pptx-export.js         PowerPoint writer (pptxgenjs, plus transitions/skipped slides)
     pptx-import.js         PowerPoint reader
+    pptx-diagram.js        SmartArt in .pptx files
     pptx-sections.js       Slide sections in .pptx files
     file-access.js         Opening, saving back to and saving as files on the device
     files.js, print.js, images.js, sanitize.js

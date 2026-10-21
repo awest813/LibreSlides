@@ -2,7 +2,10 @@ import DOMPurify from 'dompurify';
 import { PATH_ARGS } from '../model/shapes.js';
 import { normalizeTable, SIDES, CELL_MARGIN } from '../model/tables.js';
 import { isMediaData } from './media-files.js';
-import { CHART_KINDS, uid, ANIM_KINDS, ANIMATIONS, EMPHASES, EXITS, MOTIONS, FIELD } from '../model/deck.js';
+import {
+  CHART_KINDS, uid, ANIM_KINDS, ANIMATIONS, EMPHASES, EXITS, MOTIONS, FIELD, DIAGRAM_LAYOUTS, DIAGRAM_COLORS, DIAGRAM_STYLES, DIAGRAM_PARTS, xmlOfDataUrl,
+} from '../model/deck.js';
+import { normalizeLevels, MAX_LEVEL } from '../model/diagram-outline.js';
 import { FONT_FACES } from '../model/fonts.js';
 
 /**
@@ -195,6 +198,7 @@ export function sanitizeElement(el) {
     } else delete el.preset;
   }
   if (el.type === 'chart' || el.chart != null) el.chart = sanitizeChart(el.chart);
+  if (el.type === 'diagram' || el.diagram != null) el.diagram = sanitizeDiagram(el.diagram);
   if (el.crop != null) {
     if (isObject(el.crop)) for (const side of ['l', 't', 'r', 'b']) el.crop[side] = fraction(el.crop[side]);
     else delete el.crop;
@@ -260,6 +264,75 @@ export function sanitizeChart(chart) {
   for (const key of ['valueAxis', 'secondaryAxis', 'categoryAxis']) {
     const axis = chartAxis(c[key], key !== 'categoryAxis', key === 'secondaryAxis');
     if (axis) out[key] = axis;
+  }
+  return out;
+}
+
+/**
+ * A diagram from an untrusted source (see model/deck.js): a known layout,
+ * colours and style, an outline of plain-text nodes of sensible length and
+ * number, and PowerPoint's drawing as elements cleaned like any other. The
+ * SmartArt parts it came with are checked in deck.media (see isXmlPart), and
+ * dropped with the pictures they need by sanitizeDeck when they're missing.
+ */
+export const DIAGRAM_LIMITS = { nodes: 500, text: 1000, id: 64, drawn: 2000, part: 4e6 };
+const known = (list, v, fallback) => (list.some((k) => k.id === v) ? v : fallback);
+const plainLine = (v, max) => (typeof v === 'string' || Number.isFinite(v) ? String(v).replace(/[\u0000-\u001f\u007f]+/g, ' ').slice(0, max) : '');
+const DRAWN_TYPES = ['text', 'shape', 'line', 'image'];
+const mediaId = (v) => typeof v === 'string' && /^[\w-]{1,64}$/.test(v);
+
+/** A SmartArt part in deck.media: XML (as a data URL, see xmlDataUrl) of sensible size that starts like XML and parses as it. */
+export function isXmlPart(v) {
+  if (typeof v !== 'string' || v.length > DIAGRAM_LIMITS.part * 1.4) return false;
+  const xml = xmlOfDataUrl(v);
+  if (!xml || xml.length > DIAGRAM_LIMITS.part || !/^\ufeff?\s*</.test(xml)) return false;
+  try {
+    const doc = new DOMParser().parseFromString(xml, 'application/xml');
+    return !!doc.documentElement && !doc.getElementsByTagName('parsererror').length;
+  } catch {
+    return false;
+  }
+}
+
+export function sanitizeDiagram(diagram) {
+  const d = isObject(diagram) ? diagram : {};
+  const ids = new Set();
+  const nodes = (Array.isArray(d.nodes) ? d.nodes : []).filter(isObject).slice(0, DIAGRAM_LIMITS.nodes).map((n) => {
+    let id = typeof n.id === 'string' && n.id.length <= DIAGRAM_LIMITS.id ? n.id : '';
+    if (!id || ids.has(id)) id = uid();
+    ids.add(id);
+    return { id, text: plainLine(n.text, DIAGRAM_LIMITS.text), level: Number.isInteger(n.level) ? Math.max(0, Math.min(MAX_LEVEL, n.level)) : 0 };
+  });
+  const out = {
+    layout: known(DIAGRAM_LAYOUTS, d.layout, 'list'),
+    nodes: normalizeLevels(nodes),
+    colors: known(DIAGRAM_COLORS, d.colors, 'accent1'),
+    style: known(DIAGRAM_STYLES, d.style, 'flat'),
+  };
+  if (typeof d.font === 'string' && safeFontFamily(d.font)) out.font = safeFontFamily(d.font);
+  if (Array.isArray(d.palette) && d.palette.length === 6 && d.palette.every((c) => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c))) out.palette = [...d.palette];
+  if (d.edited === true) out.edited = true;
+  const drawn = d.drawn;
+  if (isObject(drawn) && Array.isArray(drawn.elements) && Number.isFinite(drawn.w) && Number.isFinite(drawn.h) && drawn.w > 0 && drawn.h > 0) {
+    const elements = drawn.elements.filter((e) => isObject(e) && DRAWN_TYPES.includes(e.type)).slice(0, DIAGRAM_LIMITS.drawn).map(sanitizeElement);
+    if (elements.length) out.drawn = { w: drawn.w, h: drawn.h, elements };
+  }
+  const src = d.source;
+  if (isObject(src)) {
+    const source = {};
+    for (const key of DIAGRAM_PARTS) if (mediaId(src[key])) source[key] = src[key];
+    const look = isObject(src.look) ? src.look : {};
+    source.look = { layout: known(DIAGRAM_LAYOUTS, look.layout, out.layout), colors: known(DIAGRAM_COLORS, look.colors, out.colors), style: known(DIAGRAM_STYLES, look.style, out.style) };
+    // Pictures the parts refer to: relationship ids and deck pictures (checked against deck.media in sanitizeDeck).
+    if (isObject(src.media)) {
+      const media = {};
+      for (const key of ['data', 'drawing']) {
+        const refs = Array.isArray(src.media[key]) ? src.media[key].filter((r) => isObject(r) && typeof r.id === 'string' && /^[\w-]{1,40}$/.test(r.id) && mediaId(r.media)) : [];
+        if (refs.length) media[key] = refs.slice(0, 200).map((r) => ({ id: r.id, media: r.media }));
+      }
+      if (Object.keys(media).length) source.media = media;
+    }
+    if (source.data && source.layout && source.style && source.colors) out.source = source;
   }
   return out;
 }
@@ -337,7 +410,9 @@ export function sanitizeDeck(deck) {
   }
   for (const [id, data] of Object.entries(deck.media || {})) {
     if (isMediaData(data)) continue; // videos and sounds only ever play through <video> and <audio>
-    if (!isImageData(data)) delete deck.media[id];
+    if (/^data:application\/xml[;,]/i.test(data)) {
+      if (!isXmlPart(data)) delete deck.media[id]; // diagrams' SmartArt parts, only ever written into .pptx files
+    } else if (!isImageData(data)) delete deck.media[id];
     else if (/^data:image\/svg\+xml/i.test(data)) {
       // SVG can carry script; it only ever renders through <img>, which doesn't run it, but keep it tidy.
       try {
@@ -350,9 +425,9 @@ export function sanitizeDeck(deck) {
     }
   }
   // Pictures that were dropped (unsupported or unsafe) leave nothing behind.
-  for (const s of deck.slides || []) {
-    s.elements = (s.elements || []).filter((el) => el.type !== 'image' || deck.media?.[el.media]);
-    for (const el of s.elements) {
+  const keepPictures = (list) => {
+    const out = list.filter((el) => el.type !== 'image' || deck.media?.[el.media]);
+    for (const el of out) {
       if (el.fillImage == null) continue;
       if (!isObject(el.fillImage) || !deck.media?.[el.fillImage.media]) delete el.fillImage;
       else {
@@ -360,6 +435,22 @@ export function sanitizeDeck(deck) {
         el.fillImage = { media: el.fillImage.media };
         if (isObject(crop)) el.fillImage.crop = Object.fromEntries(['l', 't', 'r', 'b'].map((k) => [k, fraction(crop[k])]));
       }
+    }
+    return out;
+  };
+  for (const s of deck.slides || []) {
+    s.elements = keepPictures(s.elements || []);
+    for (const el of s.elements) {
+      const drawn = el.diagram?.drawn;
+      if (drawn) drawn.elements = keepPictures(drawn.elements);
+      if (drawn && !drawn.elements.length) delete el.diagram.drawn;
+      // SmartArt parts that are missing, or whose pictures are, can't be written back.
+      const source = el.diagram?.source;
+      if (!source) continue;
+      if (source.drawing && !/^data:application\/xml/.test(deck.media?.[source.drawing] || '')) delete source.drawing;
+      const parts = DIAGRAM_PARTS.filter((key) => source[key]).every((key) => /^data:application\/xml/.test(deck.media?.[source[key]] || ''));
+      const refs = Object.values(source.media || {}).flat();
+      if (!parts || refs.some((r) => !isImageData(deck.media?.[r.media]))) delete el.diagram.source;
     }
     s.elements = s.elements.filter((el) => el.type !== 'media' || keepMediaElement(el, deck));
     if (s.background?.type === 'image' && !deck.media?.[s.background.media]) s.background = null;

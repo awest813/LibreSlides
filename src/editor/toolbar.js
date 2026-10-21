@@ -107,6 +107,7 @@ export class Toolbar {
         { label: 'Video or audio…', icon: 'media', run: () => app.insertMedia() },
         { label: 'Table…', icon: 'table', run: () => this.tableMenu(this.menuButtons.Insert) },
         { label: 'Chart…', icon: 'chart', run: () => app.insertChart() },
+        { label: 'Diagram…', icon: 'diagram', run: () => app.insertDiagram() },
         'separator',
         ...SHAPES.slice(0, 6).map((s) => ({ label: s.name, run: () => app.canvas.setTool({ type: 'shape', shape: s.id }) })),
         { label: 'More shapes…', icon: 'shapes', run: () => this.shapeMenu(this.shapeBtn) },
@@ -391,6 +392,9 @@ export class Toolbar {
     // Charts
     group('chart', tb('chart', 'Edit chart', () => app.openPanel('format'), { text: 'Edit chart' }));
 
+    // Diagrams
+    group('diagram', tb('diagram', 'Edit diagram text', () => app.editDiagramText(), { text: 'Edit diagram' }));
+
     // Any selection
     group('element',
       tb('arrange', 'Arrange', (b) => showPopover(b, menu(this.arrangeItems(), { iconFn }), { label: 'Arrange' }), { haspopup: true }),
@@ -462,6 +466,7 @@ export class Toolbar {
     show('image', els.length === 1 && els[0].type === 'image');
     show('table', els.length === 1 && els[0].type === 'table');
     show('chart', els.length === 1 && els[0].type === 'chart');
+    show('diagram', els.length === 1 && els[0].type === 'diagram');
     show('element', els.length > 0);
     this.undoBtn.disabled = !app.history.canUndo && !editing;
     this.redoBtn.disabled = !app.history.canRedo && !editing;

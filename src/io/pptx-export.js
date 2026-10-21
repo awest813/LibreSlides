@@ -12,6 +12,8 @@ import { embedFonts } from './pptx-fonts.js';
 import { timingXml, insertTiming } from './pptx-timing.js';
 import { writeComments } from './pptx-comments.js';
 import { writeSections } from './pptx-sections.js';
+import { exportsAsSmartArt, writeDiagram } from './pptx-diagram.js';
+import { diagramAsShapes } from '../model/diagram-layout.js';
 
 /**
  * PowerPoint export with pptxgenjs. Slides become real PowerPoint text boxes,
@@ -466,6 +468,13 @@ async function addElement(pptx, s, el, deck, theme, marks) {
     await addMediaElement(pptx, s, el, deck, g, objectName);
     return;
   }
+  if (el.type === 'diagram') {
+    // SmartArt from PowerPoint: a stand-in shape, swapped for the diagram's graphic frame afterwards (see applyDiagrams).
+    const name = objectName || `LibreSlides shape ${++marks.count}`;
+    marks.diagrams.set(name, el);
+    s.addShape('rect', { ...common, rotate: 0, objectName: name, fill: { type: 'none' }, line: { type: 'none' } });
+    return;
+  }
 
   if (el.type === 'table') {
     const t = textStyle({ ...el, type: 'text' }, theme);
@@ -815,6 +824,18 @@ export function applyTableDashes(xml, tables) {
   return xml;
 }
 
+/** Swap the stand-ins for SmartArt diagrams (see addElement) for their graphic frames, adding their parts. */
+async function applyDiagrams(zip, slideNo, xml, diagrams, deck) {
+  for (const [name, el] of diagrams || []) {
+    const b = shapeBlock(xml, name);
+    if (!b) continue;
+    const cNvPr = /<p:cNvPr\b[^>]*?(?:\/>|>[\s\S]*?<\/p:cNvPr>)/.exec(xml.slice(b.start, b.end))?.[0];
+    const frame = await writeDiagram(zip, slideNo, el, themeById(deck.themeId), cNvPr, deck.media);
+    xml = xml.slice(0, b.start) + frame + xml.slice(b.end);
+  }
+  return xml;
+}
+
 /** Give shapes that pptxgenjs numbered the same (tables, media) ids of their own, so animations find the right one. */
 function uniqueShapeIds(xml) {
   const ids = (xml.match(/<p:cNvPr id="\d+"/g) || []).map((m) => +m.match(/\d+/)[0]);
@@ -860,6 +881,7 @@ async function postProcess(buffer, deck, allMarks) {
     xml = applyPlaceholders(xml, allMarks[i].placeholders);
     xml = applyTableDashes(xml, allMarks[i].tableDashes);
     xml = await applyPictureFills(zip, i + 1, xml, allMarks[i]);
+    xml = await applyDiagrams(zip, i + 1, xml, allMarks[i].diagrams, deck);
     const t = slide.transition;
     if (t && TRANSITION_XML[t.type]) {
       const d = t.duration ?? 0.6;
@@ -901,8 +923,10 @@ export async function buildPptx(deck) {
       const n = { next: index + 2, prev: index, first: 1, last: deck.slides.length }[to] ?? deck.slides.findIndex((x) => x.id === to) + 1;
       return to && n >= 1 && n <= deck.slides.length ? { slide: n } : null;
     };
-    const marks = { number: allMarks.length + 1, links, count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), pictureLooks: new Map(), placeholders: new Map(), tableDashes: new Map(), timeline: [], groups: [], background: null };
-    marks.groupSizes = slide.elements.reduce((m, e) => (e.groupId ? m.set(e.groupId, (m.get(e.groupId) || 0) + 1) : m), new Map());
+    const marks = { number: allMarks.length + 1, links, count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), pictureLooks: new Map(), placeholders: new Map(), tableDashes: new Map(), diagrams: new Map(), timeline: [], groups: [], background: null };
+    // Diagrams that don't go as SmartArt go as the shapes they're drawn with.
+    const elements = slide.elements.flatMap((el) => (el.type === 'diagram' && !exportsAsSmartArt(el, deck.media) ? diagramAsShapes(el) : [el]));
+    marks.groupSizes = elements.reduce((m, e) => (e.groupId ? m.set(e.groupId, (m.get(e.groupId) || 0) + 1) : m), new Map());
     allMarks.push(marks);
     const bg = slide.background || theme.background;
     if (bg.type === 'image' && deck.media?.[bg.media]) {
@@ -916,7 +940,7 @@ export async function buildPptx(deck) {
       s.background = { color: toHex(resolveColor(bg.color, theme, backgroundBaseColor(theme.background))) || 'FFFFFF' };
     }
     for (const d of themeDecor(slide, deck)) await addElement(pptx, s, d, deck, theme, marks);
-    for (const el of slide.elements) await addElement(pptx, s, el, deck, theme, marks);
+    for (const el of elements) await addElement(pptx, s, el, deck, theme, marks);
     if (slide.notes) s.addNotes(slide.notes);
   }
   const buffer = await pptx.write({ outputType: 'arraybuffer' });
