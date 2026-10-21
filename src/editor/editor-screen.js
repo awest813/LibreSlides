@@ -131,7 +131,7 @@ export class EditorScreen {
       { label: 'Present from beginning', icon: 'play', shortcut: 'F5', run: () => this.present({ fromStart: true }) },
       { label: 'Presenter view', icon: 'presenter', run: () => this.presenterView() },
     ], { iconFn: (n) => icon(n) }), { placement: 'bottom-end' }));
-    this.darkBtn = h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Toggle dark mode', title: 'Dark mode', html: icon(isDark() ? 'sun' : 'moon'), onclick: () => this.toggleDarkUi() });
+    this.darkBtn = h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Dark mode', 'aria-pressed': String(isDark()), title: 'Dark mode', html: icon(isDark() ? 'sun' : 'moon'), onclick: () => this.toggleDarkUi() });
 
     const titlebar = h('header', { class: 'titlebar editor-titlebar' },
       h('button', { type: 'button', class: 'app-logo', 'aria-label': 'All presentations', title: 'All presentations', html: LOGO_SVG('#fff', 'transparent', 28), onclick: () => this.goHome() }),
@@ -1659,6 +1659,7 @@ export class EditorScreen {
   toggleDarkUi() {
     toggleTheme();
     this.darkBtn.innerHTML = icon(isDark() ? 'sun' : 'moon');
+    this.darkBtn.setAttribute('aria-pressed', String(isDark()));
   }
 
   toggleFullscreen() {

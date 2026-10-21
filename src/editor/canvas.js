@@ -16,7 +16,7 @@ const HANDLES = [
   ['se', 1, 1], ['s', 0, 1], ['sw', -1, 1], ['w', -1, 0],
 ];
 const SNAP_PX = 6;
-const PAD = 40; // space around the slide at "fit" zoom
+const PAD = 40; // space around the slide at "fit" zoom, when the canvas's CSS padding can't be read
 
 const rad = (deg) => (deg * Math.PI) / 180;
 const rotateVec = (x, y, deg) => {
@@ -136,8 +136,11 @@ export class SlideCanvas {
 
   fitScale() {
     const { w, h: H } = this.size;
-    const availW = Math.max(100, this.wrap.clientWidth - PAD * 2);
-    const availH = Math.max(80, this.wrap.clientHeight - PAD * 2);
+    // The space inside the canvas's padding (less on phones).
+    const cs = getComputedStyle(this.wrap);
+    const pad = (v) => (Number.isFinite(parseFloat(v)) ? parseFloat(v) : PAD);
+    const availW = Math.max(100, this.wrap.clientWidth - pad(cs.paddingLeft) - pad(cs.paddingRight));
+    const availH = Math.max(80, this.wrap.clientHeight - pad(cs.paddingTop) - pad(cs.paddingBottom));
     return Math.min(availW / w, availH / H);
   }
 

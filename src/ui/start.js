@@ -6,6 +6,7 @@ import { renderThumb } from '../render/render.js';
 import { sanitizeDeck } from '../io/sanitize.js';
 import { confirmDialog, promptDialog } from './dialog.js';
 import { isInstalledWindow, showInstallHelp } from './install.js';
+import { isDark } from './theme.js';
 
 const THUMB_W = 220;
 const templateDecks = new Map(); // built once per session, for the thumbnails
@@ -164,12 +165,23 @@ export function renderStartScreen(root, { onOpen, onTemplate, onImport, onToggle
     html: `${icon('download')}<span>Install app</span>`,
     onclick: () => showInstallHelp(),
   });
+  // The same switch as in the editor: a sun in dark mode, a moon in light.
+  const darkBtn = h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Dark mode', title: 'Dark mode' });
+  const showTheme = () => {
+    darkBtn.innerHTML = icon(isDark() ? 'sun' : 'moon');
+    darkBtn.setAttribute('aria-pressed', String(isDark()));
+  };
+  darkBtn.addEventListener('click', () => {
+    onToggleTheme();
+    showTheme();
+  });
+  showTheme();
   const screen = h('div', { class: 'start-screen' },
     h('header', { class: 'titlebar' },
       h('span', { class: 'app-logo', html: LOGO_SVG('#c43e1c', '#fff', 28) }),
       h('h1', { class: 'app-name' }, 'LibreSlides'),
       h('div', { style: { flex: 1 } }),
-      h('div', { class: 'titlebar-right' }, installBtn, h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Toggle dark mode', title: 'Toggle dark mode', html: icon('moon'), onclick: onToggleTheme }))),
+      h('div', { class: 'titlebar-right' }, installBtn, darkBtn)),
     h('div', { class: 'start-scroll' },
       h('main', { class: 'start-inner' },
         h('div', { class: 'start-section-title' }, h('h2', {}, 'Start a new presentation')),
