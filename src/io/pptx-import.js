@@ -15,10 +15,11 @@ import { EMU_PER_PT, kids, kid, path, desc, attr, rid, SCHEME_ALIAS, colorOf, al
 /**
  * PowerPoint (.pptx) reader. Brings in what LibreSlides can edit: text boxes
  * and placeholders with their formatting, shapes, pictures (with their crop),
- * lines and arrows, tables, backgrounds, speaker notes, transitions and
- * skipped slides. Positions, text styles and the graphics on layouts and
- * masters are resolved onto each slide. Charts, SmartArt and video aren't
- * supported and are left out.
+ * lines and arrows, freeforms and preset shapes, tables, charts, video and
+ * sound, groups, SmartArt (as the shapes PowerPoint drew it with), links,
+ * animations, comments, backgrounds, speaker notes, transitions and skipped
+ * slides. Positions, text styles and the graphics on layouts and masters are
+ * resolved onto each slide.
  */
 const SHAPE_IDS = new Set(SHAPES.map((s) => s.id));
 

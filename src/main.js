@@ -161,55 +161,59 @@ async function showAudience(id) {
 }
 
 function route() {
-  routing = routing.then(async () => {
-    const m = /^#\/(p|show)\/(.+)$/.exec(location.hash);
-    let id = null;
-    try {
-      id = m ? decodeURIComponent(m[2]) : null;
-    } catch {
-      id = '';
-    }
-    // The "New presentation" app shortcut.
-    if (location.hash === '#/new') {
-      if (screen && !(await screen.confirmLeave())) {
-        history.replaceState(null, '', `#/p/${encodeURIComponent(screen.deckId)}`);
-        return;
-      }
-      const id = await createDeck(TEMPLATES[0].build());
-      history.replaceState(null, '', `#/p/${encodeURIComponent(id)}`);
-      return route();
-    }
-    if (m?.[1] === 'show') {
-      root.removeAttribute('aria-busy');
-      await showAudience(id);
-      return;
-    }
-    if (screen && screen.deckId === id) return;
-    // Back button, links, file launches…: offer to save to the linked file first.
-    if (screen && !(await screen.confirmLeave())) {
-      history.replaceState(null, '', `#/p/${encodeURIComponent(screen.deckId)}`);
-      return;
-    }
-    if (screen) {
-      await screen.destroy();
-      screen = null;
-      window.libreslides = null;
-    }
-    root.removeAttribute('aria-busy');
-    if (m && !id) {
-      history.replaceState(null, '', '#/');
-      toast('That presentation link isn’t valid.', { type: 'error' });
-    }
-    startScreen?.destroy();
-    startScreen = null;
-    if (id) await showEditor(id);
-    else showStart();
-  }).catch((err) => {
+  routing = routing.then(routeNow).catch((err) => {
     console.error(err);
     noteError(err, 'route');
     toast(`Something went wrong: ${err.message || err}`, { type: 'error', timeout: 8000 });
   });
   return routing;
+}
+
+/** Show what the address asks for (route() queues these, so one finishes before the next starts). */
+async function routeNow() {
+  const m = /^#\/(p|show)\/(.+)$/.exec(location.hash);
+  let id = null;
+  try {
+    id = m ? decodeURIComponent(m[2]) : null;
+  } catch {
+    id = '';
+  }
+  // The "New presentation" app shortcut.
+  if (location.hash === '#/new') {
+    if (screen && !(await screen.confirmLeave())) {
+      history.replaceState(null, '', `#/p/${encodeURIComponent(screen.deckId)}`);
+      return;
+    }
+    const id = await createDeck(TEMPLATES[0].build());
+    history.replaceState(null, '', `#/p/${encodeURIComponent(id)}`);
+    // Not route(): that would wait for this step to finish.
+    return routeNow();
+  }
+  if (m?.[1] === 'show') {
+    root.removeAttribute('aria-busy');
+    await showAudience(id);
+    return;
+  }
+  if (screen && screen.deckId === id) return;
+  // Back button, links, file launches…: offer to save to the linked file first.
+  if (screen && !(await screen.confirmLeave())) {
+    history.replaceState(null, '', `#/p/${encodeURIComponent(screen.deckId)}`);
+    return;
+  }
+  if (screen) {
+    await screen.destroy();
+    screen = null;
+    window.libreslides = null;
+  }
+  root.removeAttribute('aria-busy');
+  if (m && !id) {
+    history.replaceState(null, '', '#/');
+    toast('That presentation link isn’t valid.', { type: 'error' });
+  }
+  startScreen?.destroy();
+  startScreen = null;
+  if (id) await showEditor(id);
+  else showStart();
 }
 
 window.addEventListener('libreslides:db-blocked', () => toast('Close other LibreSlides tabs to finish updating.', { timeout: 10000 }));
