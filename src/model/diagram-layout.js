@@ -276,6 +276,12 @@ function chevrons(b, W, H) {
     bh = bw * 0.4;
     bw = (W + (n - 1) * (bh / 2 - bh * 0.1)) / n;
   }
+  // Many steps: that still leaves them taller than wide, which the overlap above doesn't
+  // allow for. Chevrons 0.4 as tall as wide fill the width exactly.
+  if (bh > bw) {
+    bw = W / (n - 0.16 * (n - 1));
+    bh = bw * 0.4;
+  }
   const d = Math.min(bw, bh) / 2;
   const step = bw - d + bh * 0.1;
   const y = lists ? 0 : (H - bh) / 2;
