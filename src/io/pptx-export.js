@@ -274,28 +274,46 @@ function fixRuns(xml) {
 // CSS numbering styles as PowerPoint's.
 const NUMBER_STYLES = { 'lower-alpha': 'alphaLcPeriod', 'upper-alpha': 'alphaUcPeriod', 'lower-roman': 'romanLcPeriod', 'upper-roman': 'romanUcPeriod' };
 
-/** A list's bullet for pptxgenjs: numbered (with its style and first number), or a bullet character of its own. */
+/**
+ * A list's bullet for pptxgenjs: numbered (with its style and first number),
+ * or a bullet character of its own.
+ */
 function listBullet(list) {
   const type = list.style?.listStyleType || '';
   if (list.tagName === 'OL') {
     const b = { type: 'number' };
     if (NUMBER_STYLES[type]) b.style = NUMBER_STYLES[type];
     if (+list.getAttribute('start') > 1) b.numberStartAt = +list.getAttribute('start');
-    return b;
+    return { bullet: b };
   }
   // A string bullet ('– '): its first character.
   const ch = /^["'](.)/u.exec(type)?.[1];
-  return ch && ch.codePointAt(0) <= 0xffff ? { characterCode: ch.codePointAt(0).toString(16).padStart(4, '0').toUpperCase() } : true;
+  if (!ch || ch.codePointAt(0) > 0xffff) return { bullet: true };
+  return { bullet: { characterCode: ch.codePointAt(0).toString(16).padStart(4, '0').toUpperCase() } };
 }
 
-/** Paragraphs of an HTML fragment as pptxgenjs text runs. */
-export function htmlToRuns(html, base = {}, links = null) {
+/** A length in an inline style in points (1px is 1pt): px, pt, or em of `size`; null when unset or in other units. */
+function lengthOf(css, prop, size) {
+  const m = /^(-?[\d.]+)(px|pt|em)$/.exec(styleValue(css, prop) || '');
+  return !m ? null : m[2] === 'em' ? +m[1] * size : +m[1];
+}
+
+/**
+ * Paragraph settings pptxgenjs can't write (margins and indents, direction,
+ * spacing set to none) travel in a tab
+ * stop's alignment as "x-ls-" and hex-coded JSON, and are written into the
+ * paragraph's a:pPr afterwards (see paraWithExtras).
+ */
+const paraTab = (extras) => [{ position: 1, alignment: EXTRAS_LANG + hexOf(JSON.stringify(extras)) }];
+
+/** Paragraphs of an HTML fragment as pptxgenjs text runs; `box` is the text's size and spacing (see render.js textStyle). */
+export function htmlToRuns(html, base = {}, links = null, box = {}) {
   const doc = new DOMParser().parseFromString(`<body>${html || ''}</body>`, 'text/html');
   const root = doc.body;
   // Loose inline content at the top level forms paragraphs of its own.
   let loose = null;
   for (const node of [...root.childNodes]) {
-    if (node.nodeType === 1 && /^(P|DIV|H\d|UL|OL)$/.test(node.tagName)) {
+    if (node.nodeType === 1 && /^(P|DIV|H\d|UL|OL)$/.test(node.nodeName)) {
       loose = null;
       continue;
     }
@@ -305,8 +323,39 @@ export function htmlToRuns(html, base = {}, links = null) {
     }
     loose.append(node);
   }
+  const boxSize = box.size || 18;
+  const isBlock = (n) => n.nodeType === 1 && /^(P|DIV|H\d|UL|OL)$/.test(n.nodeName);
+  const styleOf = (el) => el.getAttribute?.('style') || '';
+  // The text size an element is in: its own or the nearest one set around it.
+  const sizeOf = (el) => {
+    for (let n = el; n && n !== root; n = n.parentElement) {
+      const v = lengthOf(styleOf(n), 'font-size', boxSize);
+      if (v) return v;
+    }
+    return boxSize;
+  };
+  // Lists and paragraphs set in (see textBody in the reader): their own value, else the default.
+  const startOf = (el, fallback) => lengthOf(styleOf(el), 'margin-inline-start', sizeOf(el))
+    ?? lengthOf(styleOf(el), el.closest('[dir]')?.getAttribute('dir') === 'rtl' ? 'margin-right' : 'margin-left', sizeOf(el)) ?? fallback;
+  const insetOf = (list) => lengthOf(styleOf(list), 'padding-inline-start', sizeOf(list))
+    ?? lengthOf(styleOf(list), list.closest('[dir]')?.getAttribute('dir') === 'rtl' ? 'padding-right' : 'padding-left', sizeOf(list))
+    ?? 1.25 * sizeOf(list);
+  // The space above a paragraph: its margin and, where it comes first, those of the lists it starts (as CSS collapses them), else app.css's gap.
+  const gapOf = (el) => {
+    let gap = 0;
+    for (let n = el; n && n !== root; n = n.parentElement) {
+      const own = lengthOf(styleOf(n), 'margin-top', sizeOf(n));
+      const parent = n.parentElement;
+      const stacked = (parent === root && n.previousElementSibling) || (n.tagName === 'LI' && n.previousElementSibling?.tagName === 'LI')
+        || (parent?.tagName === 'LI' && /^(UL|OL|P|DIV)$/.test(n.tagName));
+      gap = Math.max(gap, own ?? (stacked ? (box.spacing || 0) * sizeOf(n) : 0));
+      if (n.previousElementSibling || (parent !== root && [...parent.childNodes].some((c) => c !== n && c.nodeType === 3 && c.textContent.trim() && n.compareDocumentPosition(c) & 2))) break;
+    }
+    return gap;
+  };
 
   const paragraphs = [];
+  // A paragraph's runs: a list item's own text, leaving out the lists and paragraphs inside it (paragraphs of their own).
   const collect = (block, para) => {
     const runs = [];
     // A <br> is a line break inside the paragraph: the next run starts on a new line (<a:br/>).
@@ -322,39 +371,73 @@ export function htmlToRuns(html, base = {}, links = null) {
           runs.push({ text, options: breaks ? { ...options, softBreakBefore: true } : options });
           breaks = 0;
         } else if (c.nodeName === 'BR') breaks++;
-        else if (c.nodeName !== 'UL' && c.nodeName !== 'OL') walk(c);
+        else if (c.nodeName !== 'UL' && c.nodeName !== 'OL' && !para.own.includes(c)) walk(c);
       }
     };
     walk(block);
     // Trailing <br>s only keep an empty line open in the editor.
-    paragraphs.push({ runs, para });
+    paragraphs.push({ runs, para, el: block });
   };
   const blockAlign = (el) => {
     const a = el.style?.textAlign;
     return ['left', 'center', 'right', 'justify'].includes(a) ? a : null;
   };
-  const visitList = (list, level) => {
-    const bullet = listBullet(list);
-    for (const li of list.children) {
-      if (li.tagName !== 'LI') continue;
-      collect(li, { bullet, indentLevel: level, align: blockAlign(li) });
-      for (const sub of li.children) if (sub.tagName === 'UL' || sub.tagName === 'OL') visitList(sub, level + 1);
+  // Blocks inside a list item: ones after its own text are paragraphs of their own, as is any but a first one before it.
+  const ownBlocks = (li) => {
+    const blocks = [...li.children].filter(isBlock);
+    const lead = blocks[0]?.tagName !== 'UL' && blocks[0]?.tagName !== 'OL' && ![...li.childNodes].slice(0, [...li.childNodes].indexOf(blocks[0]))
+      .some((c) => c.nodeType === 3 ? c.textContent.trim() : !isBlock(c));
+    return lead ? blocks.slice(1) : blocks;
+  };
+  const visitBlocks = (blocks, level, from) => {
+    for (const b of blocks) {
+      if (b.tagName === 'UL' || b.tagName === 'OL') visitList(b, level, from);
+      else {
+        const marL = from + startOf(b, 0);
+        collect(b, { own: [], level, marL, indent: lengthOf(styleOf(b), 'text-indent', sizeOf(b)) || 0, align: blockAlign(b) });
+      }
     }
   };
-  for (const node of root.children) {
-    if (node.tagName === 'UL' || node.tagName === 'OL') visitList(node, 0);
-    else collect(node, { align: blockAlign(node) });
-  }
+  const visitList = (list, level, from) => {
+    const { bullet } = listBullet(list);
+    const listStart = from + insetOf(list);
+    for (const item of list.children) {
+      // A list straight inside a list (as browsers indent) is the next level down.
+      if (item.tagName === 'UL' || item.tagName === 'OL') visitList(item, level + 1, listStart);
+      if (item.tagName !== 'LI') continue;
+      const textStart = listStart + startOf(item, 0);
+      const own = ownBlocks(item);
+      // The bullet hangs where it's drawn: just before the text, at most a list's usual inset (1.25em) away.
+      const hang = Math.min(textStart - from, 1.25 * sizeOf(item));
+      collect(item, { own, bullet, level, marL: textStart, indent: -hang, align: blockAlign(item) });
+      visitBlocks(own, level + 1, textStart);
+    }
+  };
+  visitBlocks([...root.children], 0, 0);
+
+  // Space between paragraphs: the box's, unless any has its own, when each one's is written as its space before.
+  const gaps = paragraphs.map(({ el }, i) => (i ? gapOf(el) : 0));
+  const ownGaps = paragraphs.some(({ el }, i) => i && Math.abs(gaps[i] - (box.spacing || 0) * sizeOf(el)) > 0.5);
 
   const out = [];
-  paragraphs.forEach(({ runs, para }, i) => {
+  paragraphs.forEach(({ runs, para, el }, i) => {
     const pOpts = {};
+    const css = styleOf(el);
     if (para.bullet) pOpts.bullet = para.bullet;
-    if (para.indentLevel) pOpts.indentLevel = para.indentLevel;
+    if (para.level) pOpts.indentLevel = para.level;
     if (para.align) pOpts.align = para.align;
+    const line = styleValue(css, 'line-height');
+    if (/^[\d.]+$/.test(line || '') && +line > 0) pOpts.lineSpacingMultiple = Math.round((+line / 1.2) * 100) / 100;
+    else if (lengthOf(css, 'line-height', sizeOf(el)) > 0) pOpts.lineSpacing = lengthOf(css, 'line-height', sizeOf(el));
+    const extras = {};
+    const marL = Math.max(0, para.marL);
+    if (marL || para.indent || para.bullet) Object.assign(extras, { marL, indent: Math.max(-marL, para.indent) });
+    if (el.closest('[dir]')?.getAttribute('dir') === 'rtl') extras.rtl = true;
+    if (ownGaps) Object.assign(extras, { spcBef: Math.round(gaps[i] * 10) / 10, spcAft: 0 });
     if (!runs.length) runs.push({ text: '', options: toRunOptions(base) });
     runs.forEach((r, k) => {
       const options = { ...r.options, ...pOpts };
+      if (k === 0 && Object.keys(extras).length) options.tabStops = paraTab(extras);
       if (k === runs.length - 1 && i < paragraphs.length - 1) options.breakLine = true;
       out.push({ text: r.text, options });
     });
@@ -506,7 +589,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
         return { type: line.dashType === 'solid' ? 'solid' : 'dash', pt: line.width, color: line.color };
       });
       if (cell.margin) options.margin = cellMargins(cell);
-      const runs = htmlToRuns(withFields(cell.text, marks.number), {}, marks.links);
+      const runs = htmlToRuns(withFields(cell.text, marks.number), {}, marks.links, { size: t.size });
       return { text: runs.length ? runs : '', options };
     }).filter(Boolean));
     const name = objectName || (dashes.length ? `LibreSlides shape ${++marks.count}` : undefined);
@@ -605,7 +688,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
     marks.textLinks.set(mark(), hyperlink);
     opts.hyperlink = undefined;
   }
-  s.addText(hasText ? htmlToRuns(withFields(el.text, marks.number), runBase, marks.links) : [{ text: '', options: {} }], opts);
+  s.addText(hasText ? htmlToRuns(withFields(el.text, marks.number), runBase, marks.links, { size: t.size, spacing: t.spacing }) : [{ text: '', options: {} }], opts);
   addExtras();
 }
 
@@ -635,6 +718,45 @@ const TRANSITION_XML = {
   flip: '<p:fade thruBlk="1"/>',
 };
 
+/** A paragraph's a:pPr with its extras (see paraTab) written in, in the order PowerPoint requires. */
+function paraWithExtras(pPr) {
+  const marker = /<a:tabLst><a:tab pos="\d+" algn="x-ls-([0-9a-f]+)"\/><\/a:tabLst>/.exec(pPr);
+  if (!marker) return pPr;
+  pPr = pPr.replace(marker[0], '');
+  let x;
+  try {
+    x = JSON.parse(unhex(marker[1]));
+  } catch {
+    return pPr;
+  }
+  const m = /^<a:pPr\b([^>]*?)\/?>([\s\S]*?)(?:<\/a:pPr>)?$/.exec(pPr);
+  if (!m) return pPr;
+  let [, attrs, inner] = m;
+  const set = (name, v) => {
+    attrs = `${attrs.replace(new RegExp(`\\s${name}="[^"]*"`), '')} ${name}="${v}"`;
+  };
+  if (Number.isFinite(x.marL)) set('marL', emu(x.marL));
+  if (Number.isFinite(x.indent)) set('indent', emu(x.indent));
+  if (x.rtl === true) set('rtl', '1');
+  const take = (...tags) => {
+    for (const tag of tags) {
+      const found = new RegExp(`<a:${tag}\\b[^>]*/>|<a:${tag}\\b[^>]*>[\\s\\S]*?</a:${tag}>`).exec(inner);
+      if (found) {
+        inner = inner.replace(found[0], '');
+        return found[0];
+      }
+    }
+    return '';
+  };
+  const lnSpc = take('lnSpc');
+  let spcBef = take('spcBef');
+  let spcAft = take('spcAft');
+  const pts = (v) => `<a:spcPts val="${Math.round(Math.max(0, Math.min(1584, v)) * 100)}"/>`;
+  if (Number.isFinite(x.spcBef)) spcBef = `<a:spcBef>${pts(x.spcBef)}</a:spcBef>`;
+  if (Number.isFinite(x.spcAft)) spcAft = `<a:spcAft>${pts(x.spcAft)}</a:spcAft>`;
+  return `<a:pPr${attrs}>${lnSpc}${spcBef}${spcAft}${inner}</a:pPr>`;
+}
+
 /**
  * pptxgenjs writes paragraph properties before every run of a paragraph, but
  * PowerPoint only allows them first (it offers to "repair" the file
@@ -647,7 +769,7 @@ export function fixParagraphs(slideXml) {
     const body = inner.replace(/<a:pPr\b[^>]*\/>|<a:pPr\b[^>]*>[\s\S]*?<\/a:pPr>/g, (pPr, at) => {
       const keep = first && at === 0;
       first = false;
-      return keep ? pPr : '';
+      return keep ? paraWithExtras(pPr) : '';
     });
     return `<a:p>${body}</a:p>`;
   });

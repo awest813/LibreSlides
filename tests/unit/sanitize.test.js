@@ -12,6 +12,11 @@ describe('untrusted presentations', () => {
     }
   });
 
+  it('keeps a paragraph\'s direction, and nothing else in its place', () => {
+    expect(sanitizeHtml('<ul dir="rtl"><li style="color: red">a</li></ul>')).toBe('<ul dir="rtl"><li style="color: red">a</li></ul>');
+    expect(sanitizeHtml('<p dir="sideways" style="margin-top: 4px">a</p>')).toBe('<p style="margin-top: 4px">a</p>');
+  });
+
   it('only lets a number through as a gradient angle', () => {
     const deck = sanitizeDeck({ slides: [{ background: { type: 'gradient', from: '#000', to: '#fff', angle: '0deg,#fff,#fff),url(https://t/x),linear-gradient(0' } }, { background: { type: 'gradient', from: '#000', to: '#fff', angle: 45 } }] });
     expect(deck.slides[0].background.angle).toBe(180);

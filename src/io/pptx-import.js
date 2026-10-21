@@ -148,16 +148,25 @@ function paraProps(pPr, ctx) {
     p.bullet = 'ul';
     p.bulletChar = attr(kid(pPr, 'buChar'), 'char') || undefined;
   }
+  // Where the text starts (marL) and where its first line or bullet starts from there (indent: less than 0 hangs).
+  for (const key of ['marL', 'indent']) if (attr(pPr, key) != null) p[key] = ptOf(attr(pPr, key)) * ctx.k;
+  if (attr(pPr, 'rtl') != null) p.rtl = isTrue(attr(pPr, 'rtl'));
+  // Line spacing in lines ("single" is about 1.2 times the text size) or in points.
   const ln = path(pPr, 'lnSpc', 'spcPct');
-  if (ln) p.lineHeight = (+attr(ln, 'val') / 100000) * 1.2; // "single" spacing is about 1.2 lines
+  const lnPts = path(pPr, 'lnSpc', 'spcPts');
+  if (ln) Object.assign(p, { lineHeight: pctOf(attr(ln, 'val')) * 1.2, linePx: null });
+  else if (lnPts) Object.assign(p, { linePx: (+attr(lnPts, 'val') / 100) * ctx.k, lineHeight: null });
   for (const side of ['spcAft', 'spcBef']) {
     const pts = path(pPr, side, 'spcPts');
     const pct = path(pPr, side, 'spcPct');
     if (pts) p[side] = { pt: (+attr(pts, 'val') / 100) * ctx.k };
-    else if (pct) p[side] = { em: (+attr(pct, 'val') / 100000) * 1.2 };
+    else if (pct) p[side] = { em: pctOf(attr(pct, 'val')) * 1.2 };
   }
   return p;
 }
+
+/** A DrawingML percentage ("75000", or "75%" as strict files write it) as a fraction. */
+const pctOf = (v) => (/%\s*$/.test(v || '') ? parseFloat(v) / 100 : +v / 100000) || 0;
 
 /**
  * Where a shape's text formatting comes from, lowest priority first: the
@@ -178,9 +187,31 @@ function levelProps(chain, lvl) {
   return out;
 }
 
-const emOf = (space, size) => (!space ? null : space.em ?? (size ? space.pt / size : 0));
+/** Space before or after a paragraph (see paraProps) in pixels, for text of `size`. */
+const spacePx = (space, size) => (!space ? 0 : space.pt ?? space.em * size);
+const round1 = (v) => Math.round(v * 10) / 10;
+/** The value that comes up most often (the first of those tied). */
+function commonest(values) {
+  const counts = new Map();
+  for (const v of values) counts.set(v, (counts.get(v) || 0) + 1);
+  let best = values[0];
+  for (const [v, n] of counts) if (n > counts.get(best)) best = v;
+  return best;
+}
 
-/** Convert a txBody to HTML; returns { html, base, align, lineHeight, spacing } (base is the box-level run style). */
+/**
+ * Convert a txBody to HTML; returns { html, base, align, lineHeight, spacing }
+ * (base is the box-level run style, lineHeight and spacing the box's).
+ *
+ * Paragraph settings that differ from the box's are the paragraph's own
+ * inline styles: alignment, line spacing (line-height), the space above it
+ * (margin-top: the one before's space after and its own space before),
+ * margins and indents (margin-inline-start and text-indent) and direction
+ * (dir). List levels are nested lists, each as far in as PowerPoint puts its
+ * text (padding-inline-start). A level with no list above it is a list of
+ * its own, set in, and paragraphs without bullets inside a list stay in it,
+ * so its numbering goes on after them.
+ */
 function textBody(txBody, ctx, { chain = [], defaults = {}, base: fixedBase = null } = {}) {
   const paras = kids(txBody, 'p').map((p) => {
     const pPr = kid(p, 'pPr');
@@ -194,71 +225,112 @@ function textBody(txBody, ctx, { chain = [], defaults = {}, base: fixedBase = nu
         if (t || field) runs.push({ text: t || ' ', props: { ...defaults, ...props.run, ...runProps(kid(r, 'rPr'), ctx), field } });
       } else if (r.localName === 'br') runs.push({ br: true });
     }
-    return { lvl, props, runs };
+    const first = runs.find((r) => !r.br);
+    return { lvl, props, runs, first, size: first?.props.size || props.run.size || defaults.size || 18 };
   });
   // Alignment shared by every paragraph belongs to the box, not to each paragraph.
   const aligns = paras.map((p) => p.props.align || null);
   const uniform = aligns.every((a) => a === aligns[0]);
-  const first = paras.flatMap((p) => p.runs).find((r) => !r.br);
-  const base = fixedBase || (first ? { ...first.props } : { ...defaults, ...(paras[0]?.props.run || {}) });
-  const out = [];
-  const listStack = []; // open lists: { tag, attrs }
-  const closeLists = (depth) => {
-    while (listStack.length > depth) out.push(`</li></${listStack.pop().tag}>`);
-  };
-  for (const { lvl, props, runs } of paras) {
-    const bullet = runs.some((r) => !r.br) && (props.bullet === 'ul' || props.bullet === 'ol') ? props.bullet : null;
-    const inner = runs.map((r) => (r.br ? '<br>' : spanFor(r.text, r.props, base))).join('') || '<br>';
-    const style = props.align && !uniform ? ` style="text-align: ${props.align}"` : '';
-    if (bullet) {
-      const depth = lvl + 1;
-      const attrs = listStyle(props);
-      if (listStack.length > depth) closeLists(depth);
-      // A list of another kind (numbered after bulleted, another bullet) at this level starts afresh.
-      const same = listStack[depth - 1];
-      if (same && (same.tag !== bullet || same.attrs !== attrs)) closeLists(depth - 1);
-      if (listStack.length === depth) out.push(`</li><li${style}>${inner}`);
-      else {
-        while (listStack.length < depth) {
-          // The innermost list takes the paragraph's bullet or numbering style.
-          const innermost = listStack.length === depth - 1;
-          out.push(`<${bullet}${innermost ? attrs : ''}><li${innermost ? style : ''}>`);
-          listStack.push({ tag: bullet, attrs: innermost ? attrs : '' });
-        }
-        out.push(inner);
-      }
-    } else {
-      closeLists(0);
-      out.push(`<p${style}>${inner}</p>`);
-    }
-  }
-  closeLists(0);
+  const firstRun = paras.find((p) => p.first)?.first;
+  const base = fixedBase || (firstRun ? { ...firstRun.props } : { ...defaults, ...(paras[0]?.props.run || {}) });
+  const baseSize = base.size || defaults.size || 18;
+  paras.forEach((p, i) => {
+    const { props } = p;
+    p.linePx = props.linePx ? round1(props.linePx) : null;
+    p.line = p.linePx ? null : Math.max(0.1, Math.round((props.lineHeight ?? 1.2) * 100) / 100);
+    // PowerPoint leaves out the first paragraph's space before.
+    p.gap = i ? round1(spacePx(paras[i - 1].props.spcAft, paras[i - 1].size) + spacePx(props.spcBef, p.size)) : 0;
+  });
+  const lines = paras.map((p) => p.line).filter((v) => v != null);
+  const lineHeight = lines.length ? commonest(lines) : 1.2;
+  // A box of one paragraph keeps the space it would put between paragraphs, for ones added to it.
   const lead = paras[0]?.props || {};
-  const size = base.size || defaults.size;
-  return {
-    html: out.join('').replace(/<li>(<[uo]l>)/g, '<li><br>$1'),
-    base,
-    align: uniform ? aligns[0] : null,
-    lineHeight: lead.lineHeight,
-    spacing: emOf(lead.spcAft, size) ?? emOf(lead.spcBef, size),
+  const gapPx = paras.length > 1 ? commonest(paras.slice(1).map((p) => p.gap))
+    : spacePx(lead.spcAft, paras[0]?.size) + spacePx(lead.spcBef, paras[0]?.size);
+  const spacing = Math.round((gapPx / baseSize) * 100) / 100;
+
+  const out = [];
+  const stack = []; // open lists, innermost last: { lvl, tag, key, start (where its items' text starts), size (its open item's text size) }
+  const counters = []; // per level: { key, next } of the numbering going on there
+  const closeTo = (lvl) => {
+    while (stack.length && stack[stack.length - 1].lvl >= lvl) out.push(`</li></${stack.pop().tag}>`);
   };
+  const px = (v) => `${round1(v)}px`;
+  const attrs = (dir, css) => `${dir}${css.length ? ` style="${css.join('; ')}"` : ''}`;
+  paras.forEach((para, i) => {
+    const { lvl, props, runs, first } = para;
+    const bullet = first && (props.bullet === 'ul' || props.bullet === 'ol') ? props.bullet : null;
+    const marL = props.marL || 0;
+    const indent = props.indent || 0;
+    const fontSize = baseSize;
+    const css = [];
+    if (props.align && !uniform) css.push(`text-align: ${props.align}`);
+    if (para.linePx) css.push(`line-height: ${px(para.linePx)}`);
+    else if (Math.abs(para.line - lineHeight) > 0.005) css.push(`line-height: ${para.line}`);
+    // The space above it, where the box's (in em of the text size it's in) isn't right.
+    const gapCss = (size) => (i && Math.abs(para.gap - spacing * size) > 0.5 ? [`margin-top: ${px(para.gap)}`] : []);
+    const dir = props.rtl ? ' dir="rtl"' : '';
+    const inner = runs.map((r) => (r.br ? '<br>' : spanFor(r.text, r.props, base))).join('') || '<br>';
+    if (!bullet) {
+      // Numbering goes on after empty paragraphs, and starts again after one with text at its level or above.
+      if (first) counters.length = Math.min(counters.length, lvl);
+      closeTo(lvl);
+      const top = stack[stack.length - 1];
+      const from = top ? top.start : 0;
+      css.push(...gapCss(top ? top.size : baseSize));
+      if (Math.abs(marL - from) > 0.5) css.push(`margin-inline-start: ${px(marL - from)}`);
+      if (Math.abs(indent) > 0.5) css.push(`text-indent: ${px(indent)}`);
+      out.push(`<p${attrs(dir, css)}>${inner}</p>`);
+      return;
+    }
+    // A bullet hangs left of the text (at marL + indent), or sits there with the text after it.
+    const textStart = Math.max(marL, marL + indent + fontSize * 0.75);
+    closeTo(lvl + 1);
+    const { style: listCss, start: firstNumber } = listStyle(props, stack.some((s) => s.lvl < lvl));
+    const key = `${bullet}|${listCss}|${firstNumber}`;
+    if (stack[stack.length - 1]?.lvl === lvl && stack[stack.length - 1].key !== key) closeTo(lvl);
+    const top = stack[stack.length - 1];
+    counters.length = Math.min(counters.length, lvl + 1);
+    const count = counters[lvl]?.key === key ? counters[lvl] : (counters[lvl] = { key, next: firstNumber });
+    const number = count.next++;
+    if (top?.lvl === lvl) {
+      css.push(...gapCss(fontSize));
+      if (Math.abs(textStart - top.start) > 0.5) css.push(`margin-inline-start: ${px(textStart - top.start)}`);
+      out.push(`</li><li${attrs(dir, css)}>${inner}`);
+      top.size = fontSize;
+      return;
+    }
+    // A new list, inside the open list item if there is one, set in 1.25em (see app.css) unless PowerPoint puts its text elsewhere.
+    const from = top ? top.start : 0;
+    const listSize = top ? top.size : baseSize;
+    const inset = Math.max(0, textStart - from);
+    const ulCss = [listCss, Math.abs(inset - 1.25 * listSize) > 1 && `padding-inline-start: ${px(inset)}`, ...gapCss(listSize)].filter(Boolean);
+    const startAttr = bullet === 'ol' && number > 1 ? ` start="${number}"` : '';
+    out.push(`<${bullet}${attrs(dir, ulCss)}${startAttr}><li${attrs('', css)}>${inner}`);
+    stack.push({ lvl, tag: bullet, key, start: from + inset, size: fontSize });
+  });
+  closeTo(0);
+  return { html: out.join(''), base, align: uniform ? aligns[0] : null, lineHeight, spacing };
 }
 
 // PowerPoint's numbering styles as CSS list styles (the punctuation around the number isn't kept).
 const numberingCss = (type = '') => (/^alphaLc/.test(type) ? 'lower-alpha' : /^alphaUc/.test(type) ? 'upper-alpha'
   : /^romanLc/.test(type) ? 'lower-roman' : /^romanUc/.test(type) ? 'upper-roman' : null);
 
-/** A list's own bullet character, numbering style and first number, as attributes. */
-function listStyle(props) {
+/**
+ * A list's own style, and the first number of a numbered one: the
+ * numbering style, or the bullet character. Round bullets are the default,
+ * but a list inside another needs saying so (app.css makes those hollow).
+ */
+function listStyle(props, nested) {
   if (props.bullet === 'ol') {
     const css = numberingCss(props.numbering?.type);
-    const start = props.numbering?.start > 1 ? ` start="${props.numbering.start}"` : '';
-    return `${css ? ` style="list-style-type: ${css}"` : ''}${start}`;
+    return { style: css ? `list-style-type: ${css}` : '', start: Math.max(1, props.numbering?.start || 1) };
   }
-  // Round bullets are the default; others (dashes, arrows, ticks…) are shown as they are.
   const ch = props.bulletChar;
-  if (!ch || ch === '•' || /['"\\<>&;]/.test(ch)) return '';
-  return ` style="list-style-type: '${ch} '"`;
+  if (!ch || ch === '•') return { style: nested && ch ? 'list-style-type: disc' : '', start: 1 };
+  if (/['"\\<>&;]/.test(ch)) return { style: '', start: 1 };
+  return { style: `list-style-type: '${ch} '`, start: 1 };
 }
 
 // PowerPoint's default text box margins, in EMU (0.1 in at the sides, 0.05 in at the top and bottom).

@@ -15,7 +15,7 @@ import { cleanWarp } from '../model/warps.js';
  */
 const TEXT_CONFIG = {
   ALLOWED_TAGS: ['p', 'div', 'br', 'span', 'b', 'strong', 'i', 'em', 'u', 's', 'strike', 'sub', 'sup', 'ul', 'ol', 'li', 'a', 'font'],
-  ALLOWED_ATTR: ['style', 'href', 'color', 'face', 'size', 'start', 'data-field'],
+  ALLOWED_ATTR: ['style', 'href', 'color', 'face', 'size', 'start', 'data-field', 'dir'],
   ALLOW_DATA_ATTR: false,
 };
 
@@ -28,6 +28,8 @@ function ensureHooks() {
   DOMPurify.addHook('afterSanitizeAttributes', (node) => {
     // No external resources from inline styles (CSS escapes could spell url( in disguise); links open in a new tab.
     if (node.hasAttribute?.('style') && UNSAFE_STYLE.test(node.getAttribute('style'))) node.removeAttribute('style');
+    // Text direction: right to left, left to right or worked out from the text.
+    if (node.hasAttribute?.('dir') && !['rtl', 'ltr', 'auto'].includes(node.getAttribute('dir').toLowerCase())) node.removeAttribute('dir');
     if (node.hasAttribute?.('data-field') && !FIELD.test(node.getAttribute('data-field'))) node.removeAttribute('data-field');
     if (node.tagName === 'A') {
       node.setAttribute('target', '_blank');
