@@ -282,6 +282,24 @@ describe('PowerPoint pictures in shapes and SmartArt', () => {
   });
 });
 
+describe('PowerPoint placeholders', () => {
+  it('writes titles, subtitles and body text as placeholders, empty ones too', async () => {
+    const deck = newDeck(); // a title slide with an empty title and subtitle
+    const body = newTextBox(50, 300, 400, 100);
+    body.ph = 'body';
+    body.text = '<ul><li>Point</li></ul>';
+    deck.slides[0].elements.push(body);
+    const xml = await slideXml(deck);
+    expect(xml).toContain('<p:nvPr><p:ph type="title"/></p:nvPr>');
+    expect(xml).toContain('<p:nvPr><p:ph type="subTitle" idx="1"/></p:nvPr>');
+    expect(xml).toContain('<p:nvPr><p:ph type="body" idx="2"/></p:nvPr>');
+    expect(xml.match(/txBox="1"/g) || []).toHaveLength(0);
+    const back = (await roundTrip(deck)).slides[0];
+    expect(back.elements.map((e) => [e.ph, htmlToText(e.text)])).toEqual(expect.arrayContaining([['title', ''], ['subtitle', ''], ['body', 'Point']]));
+    expect(back.layout).toBe('titleContent');
+  });
+});
+
 describe('PowerPoint slide sizes', () => {
   it('keeps a slide size of its own, and scales standard shapes to LibreSlides\' sizes', async () => {
     const deck = deckWith(newShape('rect', 500, 300, 50, 50));

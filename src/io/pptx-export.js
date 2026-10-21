@@ -397,7 +397,10 @@ async function addElement(pptx, s, el, deck, theme, marks) {
   }
   // Drawn over the main shape, in the order they were in.
   const addExtras = () => { for (const extra of extras) s.addShape(shape, { ...common, objectName: undefined, ...extra }); };
-  if (!hasText) {
+  // Titles, subtitles and body text are PowerPoint placeholders (named, then marked as such afterwards);
+  // an empty one stays, so PowerPoint shows "Click to add title" there too.
+  if (el.ph && el.type === 'text') marks.placeholders.set(mark(), el.ph);
+  if (!hasText && !(el.ph && el.type === 'text')) {
     if (el.type === 'shape' || opts.fill.type !== 'none' || opts.line.type !== 'none') s.addShape(shape, opts);
     addExtras();
     return;
@@ -426,7 +429,7 @@ async function addElement(pptx, s, el, deck, theme, marks) {
   if (box.wrap === false) opts.wrap = false;
   if (box.vertical) opts.vert = box.vertical;
   if (box.columns > 1) marks.columns.set(mark(), { n: box.columns, gap: box.columnGap });
-  s.addText(htmlToRuns(el.text, {}), opts);
+  s.addText(hasText ? htmlToRuns(el.text, {}) : [{ text: '', options: {} }], opts);
   addExtras();
 }
 
@@ -574,6 +577,17 @@ function editShape(xml, name, change) {
   return b ? xml.slice(0, b.start) + change(xml.slice(b.start, b.end)) + xml.slice(b.end) : xml;
 }
 
+/** Mark title, subtitle and body text boxes as PowerPoint placeholders (ids from 1 for those that need one). */
+function applyPlaceholders(xml, placeholders) {
+  let idx = 0;
+  for (const [name, role] of placeholders || []) {
+    const ph = role === 'title' ? '<p:ph type="title"/>' : role === 'subtitle' ? `<p:ph type="subTitle" idx="${++idx}"/>` : `<p:ph type="body" idx="${++idx}"/>`;
+    xml = editShape(xml, name, (sp) => sp.replace(/<p:cNvSpPr txBox="1"\/>/, '<p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr>')
+      .replace(/<p:nvPr\/>|<p:nvPr><\/p:nvPr>/, `<p:nvPr>${ph}</p:nvPr>`));
+  }
+  return xml;
+}
+
 /** A pictures' colour adjustments (see render.js pictureFilters) and the shape it's cropped to. */
 function applyPictureLooks(xml, looks) {
   for (const [name, { clip, adjust }] of looks || []) {
@@ -664,6 +678,7 @@ async function postProcess(buffer, deck, allMarks) {
     const file = zip.file(path);
     if (!file) continue;
     let xml = applyPictureLooks(applyGradients(fixParagraphs(await file.async('string')), allMarks[i]), allMarks[i].pictureLooks);
+    xml = applyPlaceholders(xml, allMarks[i].placeholders);
     xml = await applyPictureFills(zip, i + 1, xml, allMarks[i]);
     const t = slide.transition;
     if (t && TRANSITION_XML[t.type]) {
@@ -697,7 +712,7 @@ export async function buildPptx(deck) {
   const allMarks = [];
   for (const slide of deck.slides) {
     const s = pptx.addSlide();
-    const marks = { count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), pictureLooks: new Map(), timeline: [], groups: [], background: null };
+    const marks = { count: 0, gradients: new Map(), pictures: new Map(), presets: new Map(), columns: new Map(), pictureLooks: new Map(), placeholders: new Map(), timeline: [], groups: [], background: null };
     marks.groupSizes = slide.elements.reduce((m, e) => (e.groupId ? m.set(e.groupId, (m.get(e.groupId) || 0) + 1) : m), new Map());
     allMarks.push(marks);
     const bg = slide.background || theme.background;

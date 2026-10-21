@@ -723,8 +723,10 @@ async function readSlide(pkg, slidePath, ctx, deck) {
             if (type && type !== 'none') el[key] = true;
           }
         } else if (!plainBox) el.shape = SHAPE_IDS.has(prst) ? prst : 'rect';
-        if (role && hasText) el.ph = role;
-        if (!hasText && (plainBox || (paths && fill === 'none' && !stroke))) continue; // nothing to show
+        // Empty title and text placeholders stay, as PowerPoint's do: shown only while editing.
+        if (role && (hasText || (plainBox && part.isSlide))) el.ph = role;
+        if (el.ph === 'body' && !hasText && levelProps(chain, 0).bullet === 'ul') el.bullets = true;
+        if (!hasText && !el.ph && (plainBox || (paths && fill === 'none' && !stroke))) continue; // nothing to show
         // SmartArt can put a shape's text somewhere else (beside an icon, under a picture): a text box of its own there.
         const txBox = hasText && place(boxOfXfrm(kid(node, 'txXfrm')));
         if (txBox && ['x', 'y', 'w', 'h'].some((key) => Math.abs(txBox[key] - box[key]) > 2)) {
