@@ -150,3 +150,83 @@ describe('links in the slideshow', () => {
     expect(linkTarget(d, 'nope', { i: 0, step: 0 })).toBeNull();
   });
 });
+
+describe('finding your way in the slideshow', () => {
+  const key = (root, k) => root.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+
+  it('goes to the slide with the number typed, hidden ones too, and counts slides as the filmstrip does', () => {
+    const d = deckWithAnimations(); // four slides, the third hidden
+    const show = startSlideshow(d, { start: 0 });
+    const root = document.querySelector('.show');
+    expect(root.querySelector('.show-count').textContent).toBe('1 / 4');
+    key(root, '4');
+    key(root, 'Enter');
+    expect(show.pos).toEqual({ i: 3, step: 0 });
+    expect(root.querySelector('.show-count').textContent).toBe('4 / 4');
+    key(root, '3');
+    key(root, 'Enter');
+    expect(show.pos).toEqual({ i: 2, step: 0 });
+    key(root, '9');
+    key(root, 'Enter');
+    expect(show.pos.i).toBe(3);
+    show.exit();
+  });
+
+  it('moves on and back with a swipe, without the tap that may follow counting too', () => {
+    const show = startSlideshow(deckWithAnimations(), { start: 0 });
+    const root = document.querySelector('.show');
+    const touch = (type, x, y, touches) => {
+      const e = new Event(type, { bubbles: true });
+      Object.assign(e, { touches: touches ? [{ clientX: x, clientY: y }] : [], changedTouches: [{ clientX: x, clientY: y }] });
+      root.dispatchEvent(e);
+    };
+    const swipe = (dx, dy = 0) => {
+      touch('touchstart', 500, 300, true);
+      touch('touchend', 500 + dx, 300 + dy, false);
+    };
+    swipe(-120);
+    expect(show.pos).toEqual({ i: 1, step: 0 });
+    root.click(); // sent by the browser for the same touch
+    expect(show.pos).toEqual({ i: 1, step: 0 });
+    swipe(-30); // too short
+    swipe(-80, 200); // mostly up and down
+    expect(show.pos).toEqual({ i: 1, step: 0 });
+    swipe(150);
+    expect(show.pos).toEqual({ i: 0, step: 0 });
+    show.exit();
+  });
+
+  it('doesn’t start a slide’s sound once the show has moved past it', async () => {
+    vi.useFakeTimers();
+    const play = vi.fn(() => Promise.resolve());
+    const proto = globalThis.HTMLMediaElement.prototype;
+    const original = Object.getOwnPropertyDescriptor(proto, 'play');
+    Object.defineProperty(proto, 'play', { value: play, configurable: true, writable: true });
+    Element.prototype.animate = () => ({ finished: new Promise(() => {}), finish() {}, cancel() {} });
+    try {
+      const d = newDeck();
+      const s = newSlide('blank', d);
+      s.transition = { type: 'fade', duration: 1 };
+      d.media.snd = 'data:audio/wav;base64,UklGRg==';
+      s.elements.push({ id: 'snd', type: 'media', kind: 'audio', media: 'snd', x: 0, y: 0, w: 50, h: 50, rot: 0, autoplay: true });
+      const after = newSlide('blank', d);
+      after.transition = { type: 'fade', duration: 1 }; // the sound's slide is still there as it fades in
+      d.slides.push(s, after);
+      const host = document.createElement('div');
+      document.body.append(host);
+      const player = new Player(d, host);
+      player.go({ i: 0, step: 0 });
+      player.go({ i: 1, step: 0 }); // the sound starts once the transition is over…
+      player.go({ i: 2, step: 0 }); // …but the show moves on first
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(play).not.toHaveBeenCalled();
+      player.go({ i: 1, step: 0 }, 'cut');
+      await vi.advanceTimersByTimeAsync(10);
+      expect(play).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      if (original) Object.defineProperty(proto, 'play', original);
+      else delete proto.play;
+    }
+  });
+});

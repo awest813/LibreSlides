@@ -72,6 +72,16 @@ export function prevPos(deck, pos) {
   return p == null ? null : { i: p, step: buildSteps(deck.slides[p]).length };
 }
 
+/**
+ * Where typing a slide's number and Enter goes: the slide with that number
+ * (as the filmstrip and its fields number it, hidden ones too, which this is
+ * the way to show, as in PowerPoint), past its automatic build.
+ */
+export function numberPos(deck, n) {
+  const i = Math.min(deck.slides.length, Math.max(1, Math.floor(n) || 1)) - 1;
+  return deck.slides[i] ? { i, step: minStep(deck.slides[i]) } : null;
+}
+
 export function firstPos(deck, from = 0) {
   const vis = visibleIndices(deck);
   const i = Math.max(0, vis.find((x) => x >= from) ?? vis[vis.length - 1] ?? from);
@@ -239,11 +249,14 @@ export class Player {
   /** Play the videos and sounds under `root` that start by themselves, after `delay` ms. */
   startMedia(root, delay = 0) {
     if (!this.media) return;
+    const layer = this.layer;
     for (const m of root.querySelectorAll('[data-autoplay]')) {
       if (m.closest('.el')?.style.visibility === 'hidden') continue;
       const play = () => {
+        // Not once the show has moved on (the slide may still be on its way out).
+        if (!m.isConnected || this.layer !== layer) return;
         // Browsers may refuse to play sound before the viewer has clicked; the controls still work.
-        if (m.isConnected) Promise.resolve().then(() => m.play()).catch(() => {});
+        Promise.resolve().then(() => m.play()).catch(() => {});
       };
       if (delay > 0) setTimeout(play, delay);
       else play();
@@ -332,8 +345,8 @@ export function startSlideshow(deck, { start = 0, onExit = null, remote = null }
     ended = false;
     endScreen.hidden = true;
     player.go(p, how);
-    const vis = visibleIndices(deck);
-    counter.textContent = `${Math.max(1, vis.indexOf(p.i) + 1)} / ${vis.length}`;
+    // Slide numbers as the filmstrip and the slides' number fields have them.
+    counter.textContent = `${p.i + 1} / ${deck.slides.length}`;
     notesBox.textContent = deck.slides[p.i].notes || 'No speaker notes for this slide.';
     remote?.send?.(p);
   }
@@ -408,10 +421,9 @@ export function startSlideshow(deck, { start = 0, onExit = null, remote = null }
     }
     if (k === 'Enter' && typed) {
       e.preventDefault();
-      const vis = visibleIndices(deck);
-      const i = vis[Math.min(vis.length, Math.max(1, +typed)) - 1];
+      const to = numberPos(deck, +typed);
       typed = '';
-      if (i != null) jump({ i, step: minStep(deck.slides[i]) });
+      if (to) jump(to);
       return;
     }
     typed = '';
@@ -439,7 +451,25 @@ export function startSlideshow(deck, { start = 0, onExit = null, remote = null }
     curtain.hidden = true;
     return true;
   };
+  // Touch screens: swipe left for the next step, right for the one before.
+  root.style.touchAction = 'pinch-zoom'; // a swipe isn't taken for the browser's own panning
+  let touch = null;
+  let swipedAt = 0;
+  root.addEventListener('touchstart', (e) => {
+    touch = e.touches.length === 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null;
+  }, { passive: true });
+  root.addEventListener('touchend', (e) => {
+    const t = e.changedTouches[0];
+    if (!touch || !t || e.touches.length) return;
+    const [dx, dy] = [t.clientX - touch.x, t.clientY - touch.y];
+    touch = null;
+    // Across, far enough, and not a video's seek bar being dragged.
+    if (Math.abs(dx) < 40 || Math.abs(dx) < Math.abs(dy) * 1.5 || e.target.closest?.('video, audio, .show-controls, .show-notes')) return;
+    swipedAt = Date.now(); // a browser may still send a click for it
+    if (!uncover()) (dx < 0 ? next : prev)();
+  });
   root.addEventListener('click', (e) => {
+    if (Date.now() - swipedAt < 600) return;
     // Links: to another slide, or a web page (in a new tab; links in text open there by themselves).
     const link = e.target.closest('a[href], [data-link]');
     if (link) {
@@ -561,8 +591,7 @@ export function startPresenterView(deck, { start = 0, onExit = null } = {}) {
     if (!p) return;
     pos = p;
     player.go(p, 'cut');
-    const vis = visibleIndices(deck);
-    counter.textContent = `Slide ${vis.indexOf(p.i) + 1} of ${vis.length}`;
+    counter.textContent = `Slide ${p.i + 1} of ${deck.slides.length}`;
     titleEl.textContent = slideTitle(deck.slides[p.i]) || deck.title;
     notes.textContent = deck.slides[p.i].notes || 'No speaker notes for this slide.';
     notes.classList.toggle('is-empty', !deck.slides[p.i].notes);
@@ -612,10 +641,9 @@ export function startPresenterView(deck, { start = 0, onExit = null } = {}) {
     }
     const run = (fn) => { e.preventDefault(); fn(); };
     if (k === 'Enter' && typed) {
-      const vis = visibleIndices(deck);
-      const i = vis[Math.min(vis.length, Math.max(1, +typed)) - 1];
+      const to = numberPos(deck, +typed);
       typed = '';
-      if (i != null) run(() => go({ i, step: minStep(deck.slides[i]) }, 'cut'));
+      if (to) run(() => go(to, 'cut'));
       return;
     }
     typed = '';
