@@ -205,12 +205,20 @@ export function addMedia(deck, dataUrl) {
   return id;
 }
 
+/** Where an element (or slide background) refers to deck.media: [holder, key] pairs. */
+export function mediaSlots(el) {
+  const slots = [];
+  if (el?.media) slots.push([el, 'media']);
+  if (el?.poster) slots.push([el, 'poster']);
+  if (el?.fillImage?.media) slots.push([el.fillImage, 'media']);
+  return slots;
+}
+
 /** Ids of the pictures the deck still uses. */
 export function usedMedia(deck) {
   const used = new Set();
   for (const s of deck.slides) {
-    if (s.background?.media) used.add(s.background.media);
-    for (const el of s.elements) if (el.media) used.add(el.media);
+    for (const holder of [s.background, ...s.elements]) for (const [o, key] of mediaSlots(holder)) used.add(o[key]);
   }
   return used;
 }

@@ -165,6 +165,20 @@ export function gradientPaint(svg, g, w, h, theme) {
   return `url(#${id})`;
 }
 
+/** A picture stretched over a shape (keeping only the part its crop leaves), as an SVG paint. */
+function picturePaint(svg, el, url) {
+  const id = `ls-pic-${++gradientCount}`;
+  const { l = 0, t = 0, r = 0, b = 0 } = el.fillImage.crop || {};
+  const iw = el.w / Math.max(0.01, 1 - l - r);
+  const ih = el.h / Math.max(0.01, 1 - t - b);
+  const pattern = svgEl('pattern', { id, patternUnits: 'userSpaceOnUse', width: el.w, height: el.h });
+  pattern.append(svgEl('image', { href: url, x: -l * iw, y: -t * ih, width: iw, height: ih, preserveAspectRatio: 'none' }));
+  const defs = svgEl('defs');
+  defs.append(pattern);
+  svg.append(defs);
+  return `url(#${id})`;
+}
+
 /** The DOM for one element. */
 export function renderElement(el, ctx) {
   const { theme } = ctx;
@@ -196,7 +210,10 @@ export function renderElement(el, ctx) {
 
   if (el.type === 'shape' || (el.type === 'text' && ((el.fill && el.fill !== 'none') || (el.stroke && el.stroke.color !== 'none' && el.stroke.width)))) {
     const svg = svgEl('svg', { class: 'el-svg', overflow: 'visible', width: el.w, height: el.h, viewBox: `0 0 ${el.w} ${el.h}`, preserveAspectRatio: 'none' });
-    const fill = el.gradient && el.fill !== 'none' ? gradientPaint(svg, el.gradient, el.w, el.h, theme) : resolveColor(el.fill, theme, 'transparent');
+    const picture = el.fillImage && ctx.deck?.media?.[el.fillImage.media];
+    const fill = picture ? picturePaint(svg, el, mediaUrl(ctx.deck, el.fillImage.media))
+      : el.gradient && el.fill !== 'none' ? gradientPaint(svg, el.gradient, el.w, el.h, theme)
+        : resolveColor(el.fill, theme, 'transparent');
     const stroke = strokeAttrs(el.stroke, theme);
     if (el.type === 'shape' && el.shape === 'custom' && Array.isArray(el.paths)) {
       for (const p of el.paths) {

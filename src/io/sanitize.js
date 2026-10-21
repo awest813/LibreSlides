@@ -146,6 +146,15 @@ export function sanitizeDeck(deck) {
   // Pictures that were dropped (unsupported or unsafe) leave nothing behind.
   for (const s of deck.slides || []) {
     s.elements = (s.elements || []).filter((el) => el.type !== 'image' || deck.media?.[el.media]);
+    for (const el of s.elements) {
+      if (el.fillImage == null) continue;
+      if (!isObject(el.fillImage) || !deck.media?.[el.fillImage.media]) delete el.fillImage;
+      else {
+        const { crop } = el.fillImage;
+        el.fillImage = { media: el.fillImage.media };
+        if (isObject(crop)) el.fillImage.crop = Object.fromEntries(['l', 't', 'r', 'b'].map((k) => [k, fraction(crop[k])]));
+      }
+    }
     if (s.background?.type === 'image' && !deck.media?.[s.background.media]) s.background = null;
   }
   return deck;

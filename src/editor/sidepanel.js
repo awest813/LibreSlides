@@ -283,7 +283,12 @@ export class SidePanel {
       const fillable = els.some((e) => e.type === 'shape' || e.type === 'text' || e.type === 'table');
       const look = h('div', { class: 'pf-stack' });
       if (fillable) look.append(colorButton(el.type === 'table' ? 'Header colour' : 'Fill', el.fill, theme, (v) => app.setElementProp('fill', v), { allowNone: true }));
-      if (fillable && el.type !== 'table' && el.fill !== 'none') look.append(...gradientControls(app, el, theme));
+      if (fillable && el.type !== 'table' && el.fill !== 'none' && !el.fillImage) look.append(...gradientControls(app, el, theme));
+      if (fillable && el.type !== 'table') {
+        look.append(h('div', { class: 'pf-row' },
+          h('button', { type: 'button', class: 'btn', onclick: () => app.pickFillImage() }, el.fillImage ? 'Change fill picture…' : 'Fill with a picture…'),
+          el.fillImage ? h('button', { type: 'button', class: 'btn btn-ghost', onclick: () => app.removeFillImage() }, 'Remove picture') : null));
+      }
       look.append(
         colorButton('Border', el.stroke?.width ? el.stroke.color : 'none', theme, (v) => app.setStroke({ color: v, width: Math.max(1, el.stroke?.width || 2) }), { allowNone: true, noneLabel: 'No border' }),
         field('Border weight', numberInput(el.stroke?.width || 0, (v) => app.setStroke({ width: v }), { min: 0, max: 50, step: 0.5, suffix: 'pt' })),

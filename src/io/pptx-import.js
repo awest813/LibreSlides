@@ -617,6 +617,11 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         if (fill === undefined) fill = refs.hasFill ? refs.fill : 'none';
         const alpha = ownFill?.alpha ?? 1;
         const { gradient } = ownFill || {};
+        // A picture filling the shape (a photo in a circle…).
+        const blipFill = kid(spPr, 'blipFill');
+        const pictureTarget = blipFill && part.rels[rid(desc(blipFill, 'blip')[0], 'embed')];
+        const picture = pictureTarget && !pictureTarget.external ? await pkg.dataUrl(pictureTarget.path) : null;
+        if (picture && fill === 'none') fill = '#ffffff';
         const ln = kid(spPr, 'ln');
         let stroke = lineOf(ln, ctx.scheme, k);
         if (!stroke && refs.hasLine && refs.line && !kid(ln, 'noFill')) {
@@ -664,6 +669,11 @@ async function readSlide(pkg, slidePath, ctx, deck) {
         };
         if (fadeAll) el.opacity = Math.round(alpha * 100) / 100;
         if (gradient && fill !== 'none') el.gradient = gradient;
+        if (picture) {
+          el.fillImage = { media: addMediaTo(deck, picture) };
+          const crop = cropOf(blipFill);
+          if (crop) el.fillImage.crop = crop;
+        }
         if (shadowOf(spPr, refs)) el.shadow = true;
         if (paths) {
           el.shape = 'custom';

@@ -11,7 +11,7 @@ import { showInstallHelp } from '../ui/install.js';
 import { getDeck, saveDeck, onStorageChange } from '../storage/db.js';
 import {
   slideSize, newSlide, layoutElements, cloneSlide, cloneElement, canHoldText, boxOf, moveElement, addMedia, newImage, newTable,
-  htmlToText, SIZES, uid,
+  htmlToText, SIZES, uid, mediaSlots,
 } from '../model/deck.js';
 import { anchorOf, insertRow, insertCol, deleteRow, deleteCol, mergeCells, unmergeCell } from '../model/tables.js';
 import { themeById, resolveColor } from '../model/themes.js';
@@ -631,7 +631,7 @@ export class EditorScreen {
   /** Pictures referenced by elements, so a copy carries them along. */
   mediaFor(els) {
     const media = {};
-    for (const el of els) if (el.media && this.deck.media[el.media]) media[el.media] = this.deck.media[el.media];
+    for (const el of els) for (const [o, key] of mediaSlots(el)) if (this.deck.media[o[key]]) media[o[key]] = this.deck.media[o[key]];
     return media;
   }
 
@@ -639,7 +639,7 @@ export class EditorScreen {
   importMedia(media, els) {
     const map = {};
     for (const [id, data] of Object.entries(media || {})) map[id] = addMedia(this.deck, data);
-    for (const el of els) if (el.media && map[el.media]) el.media = map[el.media];
+    for (const el of els) for (const [o, key] of mediaSlots(el)) if (map[o[key]]) o[key] = map[o[key]];
   }
 
   clipboardPayload() {
@@ -755,7 +755,11 @@ export class EditorScreen {
     this.updateSelected((e) => {
       if (e.type === 'line' || e.type === 'image') return;
       e[prop] = value;
-      if (prop === 'fill') delete e.gradient; // a colour picked for the fill replaces a gradient
+      if (prop === 'fill') {
+        // A colour picked for the fill replaces a gradient or picture.
+        delete e.gradient;
+        delete e.fillImage;
+      }
     });
   }
 
@@ -769,7 +773,29 @@ export class EditorScreen {
       }
       e.gradient = JSON.parse(JSON.stringify(gradient));
       e.fill = gradient.stops[0].color;
+      delete e.fillImage;
     });
+  }
+
+  /** Fill the selected shapes with a picture from the device (stretched over each one). */
+  async pickFillImage() {
+    const file = await pickFileInput('image/*');
+    if (!file) return;
+    try {
+      const img = await readImageFile(file);
+      const media = addMedia(this.deck, img.dataUrl);
+      this.updateSelected((e) => {
+        if (e.type !== 'shape' && e.type !== 'text') return;
+        e.fillImage = { media };
+        if (!e.fill || e.fill === 'none') e.fill = '#ffffff';
+      });
+    } catch (err) {
+      toast(err.message || 'Couldn’t read that picture.', { type: 'error' });
+    }
+  }
+
+  removeFillImage() {
+    this.updateSelected((e) => { delete e.fillImage; });
   }
 
   setStroke(partial) {

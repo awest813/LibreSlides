@@ -176,6 +176,56 @@ describe('PowerPoint gradients and shadows', () => {
   });
 });
 
+describe('PowerPoint pictures in shapes and SmartArt', () => {
+  it('keeps a picture filling a shape, crop and all', async () => {
+    const shape = newShape('ellipse', 10, 20, 200, 100);
+    shape.fill = '#ffffff';
+    shape.fillImage = { media: 'm1', crop: { l: 0.1, t: 0, r: 0.2, b: 0 } };
+    const deck = deckWith(shape);
+    deck.media.m1 = PNG;
+    const zip = await JSZip.loadAsync(await toBuffer(await buildPptx(deck)));
+    const xml = await zip.file('ppt/slides/slide1.xml').async('string');
+    expect(xml).toContain('<a:blipFill rotWithShape="1"><a:blip r:embed="rIdLsFill1"></a:blip><a:srcRect l="10000" t="0" r="20000" b="0"/>');
+    expect(await zip.file('ppt/slides/_rels/slide1.xml.rels').async('string')).toContain('Target="../media/ls-fill-1-1.png"');
+    expect(zip.file('ppt/media/ls-fill-1-1.png')).toBeTruthy();
+    const back = await importPptx(await zip.generateAsync({ type: 'arraybuffer' }));
+    const el = back.slides[0].elements[0];
+    expect(el.shape).toBe('ellipse');
+    expect(back.media[el.fillImage.media]).toBe(PNG);
+    expect(el.fillImage.crop).toEqual({ l: 0.1, t: 0, r: 0.2, b: 0 });
+  });
+
+  /** A slide with a SmartArt diagram in a frame at (1 in, 1 in); `drawing` is the drawn copy's shapes (or none). */
+  const withSmartArt = (drawing) => roundTrip(deckWith(), async (zip) => {
+    const ns = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"';
+    const frame = `<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="9" name="Diagram"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x="914400" y="914400"/><a:ext cx="3657600" cy="1828800"/></p:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram"><dgm:relIds xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" r:dm="rIdDm" r:lo="rIdLo" r:qs="rIdQs" r:cs="rIdCs"/></a:graphicData></a:graphic></p:graphicFrame>`;
+    const slide = await zip.file('ppt/slides/slide1.xml').async('string');
+    zip.file('ppt/slides/slide1.xml', slide.replace('</p:spTree>', `${frame}</p:spTree>`));
+    const rels = await zip.file('ppt/slides/_rels/slide1.xml.rels').async('string');
+    zip.file('ppt/slides/_rels/slide1.xml.rels', rels.replace('</Relationships>', '<Relationship Id="rIdDm" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramData" Target="../diagrams/data1.xml"/>'
+      + '<Relationship Id="rIdDr" Type="http://schemas.microsoft.com/office/2007/relationships/diagramDrawing" Target="../diagrams/drawing1.xml"/></Relationships>'));
+    zip.file('ppt/diagrams/data1.xml', `<dgm:dataModel xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" ${ns}><dgm:ptLst><dgm:pt modelId="0" type="doc"><dgm:t><a:p><a:r><a:t>Doc</a:t></a:r></a:p></dgm:t></dgm:pt>`
+      + '<dgm:pt modelId="1"><dgm:t><a:bodyPr/><a:p><a:r><a:t>First</a:t></a:r></a:p></dgm:t></dgm:pt><dgm:pt modelId="2"><dgm:t><a:p><a:r><a:t>Second</a:t></a:r></a:p></dgm:t></dgm:pt></dgm:ptLst>'
+      + '<dgm:extLst><a:ext uri="http://schemas.microsoft.com/office/drawing/2008/diagram"><dsp:dataModelExt xmlns:dsp="http://schemas.microsoft.com/office/drawing/2008/diagram" relId="rIdDr"/></a:ext></dgm:extLst></dgm:dataModel>');
+    zip.file('ppt/diagrams/drawing1.xml', `<dsp:drawing xmlns:dsp="http://schemas.microsoft.com/office/drawing/2008/diagram" ${ns}><dsp:spTree><dsp:nvGrpSpPr><dsp:cNvPr id="0" name=""/><dsp:cNvGrpSpPr/></dsp:nvGrpSpPr><dsp:grpSpPr/>${drawing}</dsp:spTree></dsp:drawing>`);
+  });
+
+  it('brings in SmartArt\'s drawn shapes, in its frame', async () => {
+    const back = await withSmartArt('<dsp:sp modelId="{1}"><dsp:nvSpPr><dsp:cNvPr id="0" name=""/><dsp:cNvSpPr/></dsp:nvSpPr><dsp:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/></a:xfrm><a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="4472C4"/></a:solidFill></dsp:spPr>'
+      + '<dsp:txBody><a:bodyPr/><a:p><a:r><a:rPr sz="1800"/><a:t>First</a:t></a:r></a:p></dsp:txBody><dsp:txXfrm><a:off x="914400" y="0"/><a:ext cx="1828800" cy="914400"/></dsp:txXfrm></dsp:sp>');
+    const [circle, label] = back.slides[0].elements;
+    expect(circle).toMatchObject({ type: 'shape', shape: 'ellipse', fill: '#4472c4', text: '', x: 72, y: 72, w: 72, h: 72 });
+    expect(label).toMatchObject({ type: 'text', fill: 'none', x: 144, y: 72, w: 144, h: 72 });
+    expect(htmlToText(label.text)).toBe('First');
+  });
+
+  it('lists SmartArt\'s text when there\'s no drawn copy', async () => {
+    const [list] = (await withSmartArt('')).slides[0].elements;
+    expect(list).toMatchObject({ type: 'text', x: 72, y: 72, w: 288, h: 144 });
+    expect(list.text).toBe('<ul><li>First</li><li>Second</li></ul>');
+  });
+});
+
 describe('PowerPoint freeform shapes', () => {
   /** Export one shape, swap its preset outline for `geometry` (or another preset), and read it back. */
   const withGeometry = async (geometry) => {

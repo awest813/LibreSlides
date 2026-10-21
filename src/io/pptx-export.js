@@ -321,8 +321,14 @@ async function addElement(pptx, s, el, deck, theme, marks) {
     fill: fillOpts(el.fill, theme, opacity),
     line: lineOpts(el.stroke, theme),
   };
-  if (el.gradient && opts.fill.type !== 'none') {
-    // pptxgenjs only writes solid fills: name the shape, and its fill becomes the gradient afterwards.
+  const picture = el.fillImage && (await exportableImage(deck.media?.[el.fillImage.media], el.w, el.h));
+  if (picture) {
+    // pptxgenjs only writes solid fills: name the shape, and its fill becomes the picture afterwards.
+    opts.objectName = `LibreSlides picture fill ${marks.pictures.size + 1}`;
+    if (opts.fill.type === 'none') opts.fill = { color: 'FFFFFF' };
+    marks.pictures.set(opts.objectName, { data: picture, crop: el.fillImage.crop, opacity });
+  } else if (el.gradient && opts.fill.type !== 'none') {
+    // Likewise for gradients.
     opts.objectName = `LibreSlides gradient ${marks.gradients.size + 1}`;
     marks.gradients.set(opts.objectName, gradFillXml(el.gradient, theme, opacity));
   }
@@ -438,22 +444,49 @@ export function gradFillXml(g, theme, opacity = 1) {
   return `<a:gradFill rotWithShape="1"><a:gsLst>${gs}</a:gsLst>${dir}</a:gradFill>`;
 }
 
+/** Swap the solid fill of the shape called `name` for `fillXml`. */
+function replaceShapeFill(xml, name, fillXml) {
+  const at = xml.indexOf(`name="${name}"`);
+  if (at < 0) return xml;
+  const start = xml.lastIndexOf('<p:sp>', at);
+  const end = xml.indexOf('</p:sp>', at);
+  const spPr = xml.slice(start, end).match(/<p:spPr>[\s\S]*?<\/p:spPr>/);
+  if (start < 0 || end < 0 || !spPr) return xml;
+  // The shape's fill comes before its outline (whose own fill is inside <a:ln>).
+  const fixed = spPr[0].replace(/^([\s\S]*?)<a:solidFill>[\s\S]*?<\/a:solidFill>/, (whole, before) => (before.includes('<a:ln') ? whole : `${before}${fillXml}`));
+  return xml.slice(0, start) + xml.slice(start, end).replace(spPr[0], fixed) + xml.slice(end);
+}
+
 /** Turn the solid fills of the shapes named for gradients (and a gradient background) into real gradients. */
 export function applyGradients(xml, marks) {
   if (!marks) return xml;
-  for (const [name, grad] of marks.gradients) {
-    const at = xml.indexOf(`name="${name}"`);
-    if (at < 0) continue;
-    const start = xml.lastIndexOf('<p:sp>', at);
-    const end = xml.indexOf('</p:sp>', at);
-    const spPr = xml.slice(start, end).match(/<p:spPr>[\s\S]*?<\/p:spPr>/);
-    if (start < 0 || end < 0 || !spPr) continue;
-    // The shape's fill comes before its outline (whose own fill is inside <a:ln>).
-    const fixed = spPr[0].replace(/^([\s\S]*?)<a:solidFill>[\s\S]*?<\/a:solidFill>/, (whole, before) => (before.includes('<a:ln') ? whole : `${before}${grad}`));
-    const block = xml.slice(start, end).replace(spPr[0], fixed);
-    xml = xml.slice(0, start) + block + xml.slice(end);
-  }
+  for (const [name, grad] of marks.gradients) xml = replaceShapeFill(xml, name, grad);
   if (marks.background) xml = xml.replace(/<p:bg>[\s\S]*?<\/p:bg>/, `<p:bg><p:bgPr>${marks.background}<a:effectLst/></p:bgPr></p:bg>`);
+  return xml;
+}
+
+/** Put the pictures that fill shapes into the package, and point those shapes' fills at them. */
+async function applyPictureFills(zip, slideNo, xml, marks) {
+  if (!marks?.pictures.size) return xml;
+  const relsPath = `ppt/slides/_rels/slide${slideNo}.xml.rels`;
+  let rels = await zip.file(relsPath).async('string');
+  let types = await zip.file('[Content_Types].xml').async('string');
+  let n = 0;
+  for (const [name, { data, crop, opacity }] of marks.pictures) {
+    const m = /^data:image\/(png|jpeg|gif);base64,(.*)$/s.exec(data);
+    if (!m) continue;
+    const ext = m[1] === 'jpeg' ? 'jpg' : m[1];
+    const id = `rIdLsFill${++n}`;
+    zip.file(`ppt/media/ls-fill-${slideNo}-${n}.${ext}`, m[2], { base64: true });
+    rels = rels.replace('</Relationships>', `<Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/ls-fill-${slideNo}-${n}.${ext}"/></Relationships>`);
+    if (!new RegExp(`Extension="${ext}"`, 'i').test(types)) types = types.replace('<Default ', `<Default Extension="${ext}" ContentType="image/${m[1]}"/><Default `);
+    const pct = (v) => Math.round((v || 0) * 100000);
+    const src = crop ? `<a:srcRect l="${pct(crop.l)}" t="${pct(crop.t)}" r="${pct(crop.r)}" b="${pct(crop.b)}"/>` : '';
+    const alpha = opacity < 1 ? `<a:alphaModFix amt="${pct(opacity)}"/>` : '';
+    xml = replaceShapeFill(xml, name, `<a:blipFill rotWithShape="1"><a:blip r:embed="${id}">${alpha}</a:blip>${src}<a:stretch><a:fillRect/></a:stretch></a:blipFill>`);
+  }
+  zip.file(relsPath, rels);
+  zip.file('[Content_Types].xml', types);
   return xml;
 }
 
@@ -465,6 +498,7 @@ async function postProcess(buffer, deck, allMarks) {
     const file = zip.file(path);
     if (!file) continue;
     let xml = applyGradients(fixParagraphs(await file.async('string')), allMarks[i]);
+    xml = await applyPictureFills(zip, i + 1, xml, allMarks[i]);
     const t = slide.transition;
     if (t && TRANSITION_XML[t.type]) {
       const d = t.duration ?? 0.6;
@@ -494,7 +528,7 @@ export async function buildPptx(deck) {
   const allMarks = [];
   for (const slide of deck.slides) {
     const s = pptx.addSlide();
-    const marks = { gradients: new Map(), background: null };
+    const marks = { gradients: new Map(), pictures: new Map(), background: null };
     allMarks.push(marks);
     const bg = slide.background || theme.background;
     if (bg.type === 'image' && deck.media?.[bg.media]) {
